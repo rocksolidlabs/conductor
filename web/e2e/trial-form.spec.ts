@@ -220,7 +220,7 @@ test('More options opens downward in five groups, the button staying where it wa
       const fit = await placeholderFits(input)
       expect(fit.text, `${sel}'s placeholder is ${fit.text} px in ${fit.room} px (${at})`).toBeLessThanOrEqual(fit.room)
     }
-    await expect(more.locator('[data-compare-agent-args="0"]')).toHaveAttribute('placeholder', 'Flags, as in a terminal')
+    await expect(more.locator('[data-compare-agent-args="0"]')).toHaveAttribute('placeholder', 'Type -- to see its flags')
     await expect(more.locator('[data-compare-agent-approach="0"]')).toHaveAttribute('placeholder', 'Optional: a way to try it')
     await expect(more.locator('[data-compare-criterion="0"]')).toHaveValue('Does what the task asks')
     await expect(more.locator('[data-compare-instructions]')).toHaveAttribute('placeholder', 'Extra instructions, the same for each')

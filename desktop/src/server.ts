@@ -8,6 +8,11 @@ export type ServerState = 'stopped' | 'starting' | 'running' | 'failed'
 export interface ServerStatus {
   state: ServerState
   url: string
+  /**
+   * The address the server bound, as an origin (http://127.0.0.1:<port>): what the app loads its windows from, trusts and talks to,
+   * so that no name is resolved to reach its server. '' when the server bound no loopback address written as an address.
+   */
+  origin?: string
   pid?: number
   version?: string
   failures: number
@@ -18,6 +23,8 @@ export interface SupervisorOptions {
   launcher: Launcher
   args: string[]
   env: () => Record<string, string>
+  /** The first line written on the server's stdin as it is spawned (secretsLine): its secrets, which no environment holds. */
+  firstLine?: () => string
   /** Runs before each start of the server, before env(): the app reads the shell's PATH again while it has none (#363). */
   beforeStart?: () => Promise<void>
   /** How long beforeStart may take (60 s): one that does not settle by then is left behind and the start goes on without it. */
@@ -40,9 +47,30 @@ export interface SupervisorOptions {
 /**
  * ServerSupervisor keeps one `conductor serve` running: it spawns it through the launcher, reads the handshake from its stdout, polls
  * its health, restarts it with backoff when it dies or stops answering, and gives up after too many failures in a row. The admin
- * token travels in the environment it builds and in the handshake, never on disk.
+ * token travels on the server's stdin (firstLine), never in its environment, its arguments or on disk.
  */
 /** The start was stopped (stop) while it prepared, before the server spawned: nothing runs, and nothing is restarted. */
+/**
+ * loopbackOrigin is http://<listen> for a listen address that is a loopback address written as one (127.x.x.x or [::1]) with a port,
+ * '' for anything else (a name, another address, no port): the app talks to its server by the socket it bound, never by a name.
+ */
+export function loopbackOrigin(listen: string): string {
+  const m = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\]):(\d{1,5})$/.exec(listen)
+  if (!m) return ''
+  const port = Number(m[2])
+  if (port < 1 || port > 65535) return ''
+  if (m[1]!.startsWith('127.') && m[1]!.split('.').some((o) => Number(o) > 255)) return ''
+  return `http://${m[1]}:${port}`
+}
+
+/**
+ * trustedOrigin is the origin the app trusts now: its server's bound address while that server runs, '' otherwise. While the server
+ * stops, starts or has failed, no page is answered and nothing is loaded or sent: a port it freed may be another program's.
+ */
+export function trustedOrigin(st: ServerStatus): string {
+  return st.state === 'running' ? (st.origin ?? '') : ''
+}
+
 export class StartStopped extends Error {
   constructor() {
     super('the server was stopped before it started')
@@ -63,6 +91,10 @@ export class ServerSupervisor extends EventEmitter {
   private generation = 0
   private current: Promise<Handshake> | null = null
   private stopping: Promise<void> | null = null
+  /** The restart under way, whose outcome a start it stopped reports. */
+  private restarting: Promise<Handshake> | null = null
+  /** The generation of the restart's own start, once it has begun: that start's outcome is the restart's, never the reverse. */
+  private restartingGen: number | undefined
   private healthTimer: NodeJS.Timeout | null = null
   private restartTimer: NodeJS.Timeout | null = null
   private failTimes: number[] = []
@@ -125,6 +157,10 @@ export class ServerSupervisor extends EventEmitter {
     const env = this.o.env()
     const child = this.o.launcher.spawn(this.o.args, env)
     this.child = child
+    // A server that exits before it read the line closes its stdin: nothing to do but let it fail as it does.
+    child.stdin?.on('error', () => {})
+    const first = this.o.firstLine?.()
+    if (first) child.stdin?.write(first)
     const reader = new HandshakeReader()
     const handshakeMs = this.o.handshakeMs ?? 60_000
     const handshake = new Promise<Handshake>((resolve, reject) => {
@@ -154,15 +190,28 @@ export class ServerSupervisor extends EventEmitter {
       })
     })
     child.on('exit', (code, signal) => this.onExit(child, code, signal))
+    // A start told to stop while it started (a stop, a restart or a newer start before its handshake): never trusted, whatever it
+    // prints. A server that exited by itself is no such start: its start failed.
+    const superseded = () => !this.wanted || gen !== this.generation || (this.child !== null && this.child !== child)
+    // Its outcome is the restart's that stopped it (never for that restart's own start, whose outcome the restart is), or the newer
+    // start's; a plain stop's is StartStopped.
+    const stale = (): Promise<Handshake> => {
+      if (this.restarting && this.restartingGen !== gen) return this.restarting
+      if (gen !== this.generation && this.current && this.wanted) return this.current
+      throw new StartStopped()
+    }
     try {
       const h = await handshake
+      if (superseded()) return stale()
       this.handshake = h
       this.backoff = this.o.backoffMinMs ?? 1000
-      this.setState('running', { url: h.publicUrl, pid: h.pid, version: h.version, lastError: undefined })
+      this.setState('running', { url: h.publicUrl, origin: loopbackOrigin(h.listen), pid: h.pid, version: h.version, lastError: undefined })
       this.o.log('main', `server listening at ${h.listen} (${h.publicUrl}), pid ${h.pid}, ${h.version}`)
       this.startHealth()
       return h
     } catch (e) {
+      if (e instanceof StartStopped) throw e
+      if (superseded()) return stale()
       const err = e as Error
       this.setState('failed', { lastError: err.message })
       this.o.log('main', `server start failed: ${err.message}`)
@@ -215,7 +264,7 @@ export class ServerSupervisor extends EventEmitter {
     this.healthTimer = setInterval(async () => {
       if (!this.handshake || !this.child) return
       try {
-        const res = await f(`${this.handshake.publicUrl}/api/health`, { signal: AbortSignal.timeout(period) })
+        const res = await f(`${loopbackOrigin(this.handshake.listen) || this.handshake.publicUrl}/api/health`, { signal: AbortSignal.timeout(period) })
         misses = res.ok ? 0 : misses + 1
       } catch {
         misses++
@@ -241,10 +290,9 @@ export class ServerSupervisor extends EventEmitter {
     this.restartTimer = null
     this.stopHealth()
     const child = this.child
-    if (!child) {
-      this.setState('stopped', { pid: undefined })
-      return Promise.resolve()
-    }
+    // Trusted no more from this moment, before the server is told to stop: its port is freed before it has exited.
+    this.setState('stopped', child ? {} : { pid: undefined })
+    if (!child) return Promise.resolve()
     this.stopping = new Promise<void>((resolve) => {
       const grace = this.o.stopGraceMs ?? 12_000
       const timer = setTimeout(() => {
@@ -267,8 +315,22 @@ export class ServerSupervisor extends EventEmitter {
 
   /** restart stops and starts again, with the same settings read afresh (env()). */
   async restart(): Promise<Handshake> {
-    await this.stop()
-    this.failTimes = []
-    return this.start()
+    // Assigned before the body's first await returns: the body reads it after.
+    let next!: Promise<Handshake>
+    next = (async () => {
+      await this.stop()
+      this.failTimes = []
+      const own = this.start()
+      // start spawns at once up to its preparation: the generation is its own.
+      if (this.restarting === next) this.restartingGen = this.generation
+      return own
+    })()
+    this.restarting = next
+    this.restartingGen = undefined
+    try {
+      return await next
+    } finally {
+      if (this.restarting === next) this.restarting = null
+    }
   }
 }

@@ -126,6 +126,58 @@ export function followSaved<T extends object>(form: T, sent: T | null, now: T, c
   return followed
 }
 
+/**
+ * A draft brought back (UX3 R81): each field the draft holds an edit in (it differs from what the draft was read against) is set to
+ * that edit, unless what is saved changed meanwhile, which then wins. `keys` limits the fields. Returns the fields brought back.
+ */
+export function draftBack<T extends object>(form: T, draft: T, draftSaved: T, now: T, keys?: ReadonlyArray<keyof T>): Array<keyof T> {
+  const back: Array<keyof T> = []
+  for (const k of keys ?? (Object.keys(draft) as Array<keyof T>)) {
+    if (stable(draft[k]) === stable(draftSaved[k])) continue
+    if (stable(draftSaved[k]) !== stable(now[k])) continue
+    form[k] = (draft[k] === undefined ? undefined : JSON.parse(JSON.stringify(draft[k]))) as T[keyof T]
+    back.push(k)
+  }
+  return back
+}
+
+/**
+ * The folders agents can use after what is saved changed outside the page (UX3 R62): the list as edited here, less a folder taken
+ * out of what is saved since it was read (unless this page added it), plus each folder saved since that the list does not hold yet
+ * (a folder allowed from a dialog). Unedited, it is what is saved now. The press keeps its folders apart from the typed ones in the
+ * app; the page has one list, and its next Save sends it whole, so a folder allowed meanwhile is kept.
+ */
+export function rootsFollow(edited: readonly string[], read: readonly string[], now: readonly string[]): string[] {
+  const out = edited.filter((r) => now.includes(r) || !read.includes(r))
+  for (const r of now) if (!read.includes(r) && !out.includes(r)) out.push(r)
+  return out
+}
+
+/**
+ * The app's form after its settings changed outside the page while it was open (UX3 R62): every field not edited here follows what
+ * is saved now, an edited field keeps its edit, and the folders follow `rootsFollow`, so a folder allowed meanwhile joins the list
+ * though the list was edited. What arrived so is saved already: it is no change of this form, never counted in what a Save would
+ * change or cost, and Discard keeps it. Returns the fields set.
+ */
+export function followOutside(form: DesktopSettings, read: DesktopSettings, now: DesktopSettings): Array<keyof DesktopSettings> {
+  const keys = (Object.keys(now) as Array<keyof DesktopSettings>).filter((k) => k !== 'allowedRoots')
+  const set = followSaved(form, read, now, form, keys)
+  const roots = rootsFollow(form.allowedRoots, read.allowedRoots, now.allowedRoots)
+  if (stable(roots) !== stable(form.allowedRoots)) {
+    form.allowedRoots = roots
+    set.push('allowedRoots')
+  }
+  return set
+}
+
+/** A configuration form kept as the page was left (`configForm`'s `keep`): the form as the server takes it, what it was set from, its token's generation and whether a stale refusal waited. */
+export interface ConfigDraft<T> {
+  form: T
+  base: T
+  gen: number
+  stale: boolean
+}
+
 /** The one comparison: whether `a` carries a revision newer than `b`'s (no `b`: none is held). */
 export function newer(a: { rev: number } | null | undefined, b: { rev: number } | null | undefined): boolean {
   return !!a && (!b || a.rev > b.rev)
@@ -327,7 +379,43 @@ export function configForm<T extends { rev: number }>(deps: ConfigFormDeps<T>) {
       return true
     })
   }
-  return { form, base, gen, busy, stale, staleError, choosing, edited, dirty, reset, drop, follow, op, save, readAgain, keepMine }
+  /**
+   * Discard (UX3 R56): the form put back to what is saved, under its generation. A stale refusal that waits for its choice keeps
+   * waiting: its Read again or Keep mine still reads what is saved now.
+   */
+  function discard(): boolean {
+    const s = deps.saved()
+    if (!s || !form.value) return false
+    base.value = copy(s)
+    form.value = copy(s)
+    staleError.value = ''
+    deps.shown(form.value, 'all')
+    return true
+  }
+  /** The form as the page is left (UX3 R81), when it holds a change: what `restore` brings back on the page's return. */
+  function keep(): ConfigDraft<T> | null {
+    const c = current()
+    if (!c || !base.value || !dirty.value) return null
+    return { form: copy(c), base: copy(base.value), gen: gen.value, stale: stale.value }
+  }
+  /**
+   * A kept form brought back over the one just set from what is saved (UX3 R81): every field edited in it, unless what is saved
+   * changed meanwhile, which wins (`draftBack`); at the revision saved now. A stale refusal that waited still waits when nothing was
+   * saved since. A form kept under another token is dropped. Whether it was brought back.
+   */
+  function restore(d: ConfigDraft<T>): boolean {
+    const s = deps.saved()
+    if (!s || !form.value || d.gen !== deps.generation()) return false
+    const next = copy(s)
+    draftBack(next, d.form, d.base, s)
+    next.rev = s.rev
+    base.value = copy(s)
+    form.value = next
+    stale.value = d.stale && d.base.rev === s.rev
+    deps.shown(form.value, 'all')
+    return true
+  }
+  return { form, base, gen, busy, stale, staleError, choosing, edited, dirty, reset, drop, follow, op, save, readAgain, keepMine, discard, keep, restore }
 }
 
 /** A save refused since the configuration was saved elsewhere since the form's revision (its cause the server's refusal). */

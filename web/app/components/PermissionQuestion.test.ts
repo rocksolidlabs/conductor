@@ -106,7 +106,7 @@ describe('the permission question', () => {
     expect(src).toMatch(/<template v-if="canAnswer">[\s\S]*data-permission-allow[\s\S]*data-permission-deny[\s\S]*<\/template>\s*<p v-else[^>]*data-permission-operator-only>Only the person who runs this server can answer\.<\/p>/)
     // The page's view of who answers: the chat's own welcome when it has one, else the page's word, and a read-only view never.
     const view = readFileSync(new URL('./ChatView.vue', import.meta.url), 'utf8')
-    expect(view).toContain('const canAnswer = computed(() => !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))')
+    expect(view).toContain('const canAnswer = computed(() => !props.tile && !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))')
     expect(view).toContain(':can-answer="canAnswer"')
   })
 
@@ -214,5 +214,9 @@ describe('the permission question', () => {
     expect(src).toMatch(/<dt v-if="r\.key\.pieces\.length" class="[^"]*\[overflow-wrap:anywhere\][^"]*">/)
     expect(src).toMatch(/<dd class="[^"]*\[overflow-wrap:anywhere\][^"]*"><MarkedText :pieces="r\.value\.pieces" \/><\/dd>/)
     expect(src).toMatch(/<dd class="[^"]*\[overflow-wrap:anywhere\][^"]*"><MarkedText :pieces="cwd\.pieces" \/><\/dd>/)
+  })
+  it('saysTheReasonGoesWithADeny: the field for the agent names a deny, the old words gone', () => {
+    expect(src).toContain('placeholder="Why you deny, for the agent (optional)"')
+    expect(src).not.toContain('Why, for the agent')
   })
 })

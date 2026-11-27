@@ -137,7 +137,8 @@ test('the Crews home shows the run as running now, and the crew\'s Runs tab list
 test('the full sidebar groups the run: its header, then its four members', async ({ page, api }) => {
   await page.goto('/crews')
   const run = await api.run(runId)
-  const sessions = new Set(run.members.map((m) => `/sessions/${m.sessionId}`))
+  // Each member's row links to its place inside its crew (UX3 R72).
+  const sessions = new Set(run.members.map((m) => `/runs/${encodeURIComponent(runId)}?session=${m.sessionId}`))
   await expect.poll(async () => (await sidebarLinks(page)).filter((h) => sessions.has(h)).length).toBe(4)
   const links = await sidebarLinks(page)
   const header = links.indexOf(`/runs/${encodeURIComponent(runId)}`)

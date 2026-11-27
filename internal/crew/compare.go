@@ -69,18 +69,18 @@ const (
 
 // ErrLane refuses a message from one lane of a comparison to another:
 // nothing is written. The API answers it 409 lane.
-var ErrLane = errors.New("another lane of this comparison")
+var ErrLane = errors.New("another lane of this trial")
 
 // ErrNotListed refuses a command a compare run does not take
 // (compareIntents) before anything is written: no command row, no
 // receipt. It is a task_state refusal to the API.
-var ErrNotListed = fmt.Errorf("%w: this command is not open to a comparison's candidates yet", ErrTaskState)
+var ErrNotListed = fmt.Errorf("%w: this command is not open to a trial's candidates yet", ErrTaskState)
 
 // ErrNotSelected refuses what only a comparison's selected candidate is
 // given (a repair, a delivery, a command) to a candidate no applied
 // selection selects, before anything is written. It is no task_state
 // refusal: the API answers it 409 not_selected.
-var ErrNotSelected = errors.New("not the comparison's selected candidate")
+var ErrNotSelected = errors.New("not the trial's selected candidate")
 
 // compareIntents are the commands a compare run takes, through act, the
 // one path of every task and run command. Any other, whatever row or plan
@@ -96,7 +96,7 @@ var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAcc
 // refused unless the person repeats the count (the API's ticket launch).
 // prepare, which every launch and continuation calls, refuses it before a
 // run exists for every caller that holds no package.
-var errComparisonNoTicket = invalidf("a comparison is launched from a ticket's approved plan revision")
+var errComparisonNoTicket = invalidf("an agent trial starts from a ticket's approved plan revision")
 
 // clone returns a copy of cmp that shares no slice with it.
 func (cmp Compare) clone() Compare {
@@ -222,10 +222,10 @@ func (e *Engine) SetCompareOpenForTest(open bool) { e.compareOpen = open }
 // or the one review of one, every member in one lane) and its selector.
 func (cmp *Compare) validate(c Crew) error {
 	if n := len(cmp.Candidates); n < minCandidates || n > maxCandidates {
-		return invalidf("compare: a comparison has %d to %d candidates, not %d", minCandidates, maxCandidates, n)
+		return invalidf("compare: a trial has %d to %d candidates, not %d", minCandidates, maxCandidates, n)
 	}
 	if n := len(cmp.Criteria); n == 0 || n > maxCompareCriteria {
-		return invalidf("compare: a comparison has 1 to %d criteria, not %d", maxCompareCriteria, n)
+		return invalidf("compare: a trial has 1 to %d criteria, not %d", maxCompareCriteria, n)
 	}
 	var ids []string
 	for i, cr := range cmp.Criteria {
@@ -269,12 +269,12 @@ func (cmp *Compare) validate(c Crew) error {
 			continue
 		}
 		if t.Instructions != first.Instructions {
-			return invalidf("compare: candidates %s and %s have different instructions: a comparison gives every candidate the same", quote(first.ID), quote(t.ID))
+			return invalidf("compare: candidates %s and %s have different instructions: a trial gives every candidate the same", quote(first.ID), quote(t.ID))
 		}
 		if !slices.EqualFunc(t.Checks, first.Checks, func(a, b Check) bool {
 			return a.ID == b.ID && slices.Equal(a.Argv, b.Argv) && a.TimeoutSeconds == b.TimeoutSeconds
 		}) {
-			return invalidf("compare: candidates %s and %s have different checks: a comparison checks every candidate alike", quote(first.ID), quote(t.ID))
+			return invalidf("compare: candidates %s and %s have different checks: a trial checks every candidate alike", quote(first.ID), quote(t.ID))
 		}
 	}
 	// Something to compare: the candidates' checks, or the project
@@ -300,9 +300,9 @@ func (cmp *Compare) validate(c Crew) error {
 			}
 		}
 		if len(cands) > 1 {
-			return invalidf("compare: task %s needs %s and %s: a comparison never builds on two candidates", quote(t.ID), quote(cands[0]), quote(cands[1]))
+			return invalidf("compare: task %s needs %s and %s: a trial never builds on two candidates", quote(t.ID), quote(cands[0]), quote(cands[1]))
 		}
-		return invalidf("compare: task %s is in no lane: every task of a comparison is a candidate or the review of one", quote(t.ID))
+		return invalidf("compare: task %s is in no lane: every task of a trial is a candidate or the review of one", quote(t.ID))
 	}
 	reviewOf := map[string]string{}
 	for _, t := range c.Tasks {
@@ -449,7 +449,7 @@ func writeCompare(b *strings.Builder, f TaskFile) {
 	if tc == nil {
 		return
 	}
-	b.WriteString("## A comparison\n\n")
+	b.WriteString("## An agent trial\n\n")
 	if f.Kind == TaskReview {
 		fmt.Fprintf(b, "You review %s, one of %d candidates for this objective, each of which started at %s and worked alone. Judge its result against the objective and the criteria below and change nothing. Do not read, fetch or merge another candidate's branch or worktree: you review this one alone.\n\n", tc.Candidate, tc.Of, short(tc.base))
 	} else {
@@ -474,7 +474,7 @@ func writeCompare(b *strings.Builder, f TaskFile) {
 
 // noDerivedContext is task.md's context section for an attempt of a
 // comparison, whose attempts ask no context provider (askContext).
-const noDerivedContext = "## Context\n\nNo derived context: a comparison's candidates and reviews read their task, the base and their own work.\n\n"
+const noDerivedContext = "## Context\n\nNo derived context: a trial's candidates and reviews read their task, the base and their own work.\n\n"
 
 // CompareSpec is what the compare template makes a crew of
 // (CompareTemplate): the crew's name, working directory and goal (the
@@ -516,7 +516,7 @@ type CandidateSpec struct {
 func CompareTemplate(spec CompareSpec) (Crew, error) {
 	n := len(spec.Candidates)
 	if n < minCandidates || n > maxCandidates {
-		return Crew{}, invalidf("compare: a comparison has %d to %d candidates, not %d", minCandidates, maxCandidates, n)
+		return Crew{}, invalidf("compare: a trial has %d to %d candidates, not %d", minCandidates, maxCandidates, n)
 	}
 	if spec.Reviews != (spec.ReviewAgent != "") {
 		return Crew{}, invalidf("compare: reviews need a reviewAgent, and a reviewAgent is only set with reviews")

@@ -59,7 +59,7 @@ type Protocol interface {
 	// a first message has arrived.
 	Begin(ctx context.Context) error
 	// Send writes one message as a new user turn, with the protocol's
-	// as-written mark where Verbatim is true, and returns once its bytes
+	// as-written mark where Verbatim is true unless m.Expand, and returns once its bytes
 	// are written to the agent's input, or the write failed. A written
 	// message is not a taken one: the agent's acknowledgement arrives as
 	// ProtocolEvents.Accepted with m.Ref.
@@ -118,6 +118,19 @@ type ProtocolEvents interface {
 	TurnEnded(outcome string, u Usage)
 	// Notice is something the agent said that is none of the above.
 	Notice(code, words string)
+	// Commands is the agent's own commands as its program lists them now,
+	// the whole list each time (docs/plans/chat-or-terminal.md, row 12):
+	// the session cleans and bounds it, keeps it with the chat and sends
+	// it to the operator's own chat connection alone.
+	Commands(list []Command)
+}
+
+// Command is one of the agent's own commands, as its driver read it: its
+// name without the slash, the agent's words for it, its argument hint and
+// its aliases, unchecked (the session's commands.go cleans them).
+type Command struct {
+	Name, Words, Hint string
+	Aliases           []string
 }
 
 // Message is one message the session sends into the conversation.
@@ -127,6 +140,13 @@ type Message struct {
 	Ref string
 	// Text is the message as written.
 	Text string
+	// Expand sends it without the as-written mark, for the agent's own
+	// program to expand its @path and run its /command: the operator's own
+	// typed line alone (docs/plans/chat-or-terminal.md, I19). The zero value
+	// is the mark. Set only where the session builds the message it queues
+	// (submitProtocol), read only by a driver's Send; a source walk holds
+	// both (expand_walk_test.go).
+	Expand bool
 }
 
 // ToolStep is a tool call the agent announced.

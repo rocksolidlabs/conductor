@@ -20,6 +20,10 @@ import (
 // acpSession is the session the ACP tests take up.
 const acpSession = "ses_0123456789abcdef"
 
+// acpTestKeys are the raw input's keys the tests teach the client, as an
+// agent's own look would record them.
+var acpTestKeys = []string{"command", "path"}
+
 // acpServer is a fake ACP agent on a client's pipes: it answers initialize
 // and the session's resume or load, and a test writes the rest.
 type acpServer struct {
@@ -52,6 +56,9 @@ func acpPipes(t *testing.T, opts ACPOptions) (*ACP, *acpServer) {
 	}
 	if opts.Cwd == "" {
 		opts.Cwd = "/work"
+	}
+	if opts.RawInputKeys == nil {
+		opts.RawInputKeys = acpTestKeys
 	}
 	c := NewACP(inW, outR, opts)
 	go s.serve(inR)
@@ -406,7 +413,12 @@ func TestACPGate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &recorder{}
-			c, s := newACPServer(t, rec, ACPOptions{InitWait: 300 * time.Millisecond})
+			opts := ACPOptions{}
+			if tc.name == "no answer" {
+				// The client's own bound is what this case is about.
+				opts.InitWait = 300 * time.Millisecond
+			}
+			c, s := newACPServer(t, rec, opts)
 			tc.edit(s)
 			err := c.Begin(context.Background())
 			if !errors.Is(err, tc.want) || StartWords(err) == "" {
@@ -486,7 +498,7 @@ func TestACPFixturesReplay(t *testing.T) {
 			}
 			defer f.Close()
 			w := &discard{}
-			c := NewACP(w, f, ACPOptions{Session: acpSession, Cwd: "/work"})
+			c := NewACP(w, f, ACPOptions{Session: acpSession, Cwd: "/work", RawInputKeys: acpTestKeys})
 			c.sessionID = acpSession
 			c.promptRef = "m1"
 			c.nextID = 2
@@ -522,10 +534,11 @@ func TestACPFixturesReplay(t *testing.T) {
 // What the client does not read is declined, never asked without it: a
 // request about a call announced with a field the client does not read, or
 // changed by an update since it was announced, one whose own toolCall holds
-// such a field, and one whose params do. Each is answered at once (never an
-// allow) with a notice, and none reaches the session; a request whose
-// toolCall gives the call's fields its own values is handed over with them,
-// for the session's binding to judge.
+// such a field, one whose params do, and one whose toolCall gives a shown
+// field another value (and a later one about that call). Each is answered
+// at once (never an allow) with a notice, and none reaches the session; a
+// request whose toolCall gives the call's fields their own values is handed
+// over as the call was announced.
 func TestACPWhatTheClientDoesNotReadIsDeclined(t *testing.T) {
 	_, s, rec := begun(t, ACPOptions{})
 	opts := `[{"optionId":"o1","name":"Allow","kind":"allow_once"},{"optionId":"r1","name":"Reject","kind":"reject_once"}]`
@@ -559,9 +572,25 @@ func TestACPWhatTheClientDoesNotReadIsDeclined(t *testing.T) {
 	if n := len(rec.kinds("permission")); n != 0 {
 		t.Fatalf("%d declined requests reached the session", n)
 	}
+	// A request whose own toolCall gives a shown field another value
+	// changes the call: declined, and so is a later one giving only its id.
 	ask(65, `{"toolCallId":"a5","rawInput":{"command":"rm -rf /"}}`, "")
+	ask(66, `{"toolCallId":"a5"}`, "")
+	for _, id := range []string{"65", "66"} {
+		if got := s.await(`"id":` + id + `,`); strings.Contains(got, `"o1"`) {
+			t.Fatalf("request %s answered %s", id, got)
+		}
+	}
+	waitEvent(t, rec, "notice", 6)
+	if n := len(rec.kinds("permission")); n != 0 {
+		t.Fatalf("%d declined requests reached the session", n)
+	}
+	// One whose toolCall gives the call's fields their own values is
+	// handed over as the call was announced.
+	call("a6", "")
+	ask(67, `{"toolCallId":"a6","title":"ls","rawInput":{"command":"ls"}}`, "")
 	p := waitEvent(t, rec, "permission", 1)[0].perm
-	if p.Call != "a5" || string(p.Input) != `{"kind":"execute","rawInput":{"command":"rm -rf /"},"title":"ls"}` {
+	if p.Call != "a6" || string(p.Input) != `{"kind":"execute","rawInput":{"command":"ls"},"title":"ls"}` {
 		t.Fatalf("handed over %+v %s", p, p.Input)
 	}
 }
@@ -578,4 +607,282 @@ func TestACPAVerdictOnARequestTakenBackReachesNobody(t *testing.T) {
 	if err := c.Reply(context.Background(), p.ref, session.Verdict{Allow: true}); !errors.Is(err, ErrNoRequest) {
 		t.Fatalf("Reply: %v", err)
 	}
+}
+
+const acpOpts = `[{"optionId":"o1","name":"Allow","kind":"allow_once"},{"optionId":"r1","name":"Reject","kind":"reject_once"}]`
+
+// askAbout announces the call id with input and asks about it under the
+// request id n, and returns the request as the session was handed it.
+func askAbout(t *testing.T, s *acpServer, rec *recorder, n int, id, input string, before int) event {
+	t.Helper()
+	s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"` + id + `","title":"t","kind":"execute","status":"pending","rawInput":` + input + `}`))
+	s.write(`{"jsonrpc":"2.0","id":` + itoa(n) + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"` + id + `"},"options":` + acpOpts + `}}`)
+	return waitEvent(t, rec, "permission", before+1)[before]
+}
+
+// A call that changes closes its card: an update after the request that
+// gives a shown field another value (a number written another way too) or
+// holds only a field the client does not read, a repeated announcement with
+// other fields, an update that sets the call running, a line too long to
+// read, and an update of the call that does not read strictly (a key twice
+// whose last copy is as announced; text not UTF-8, or a lone surrogate, in a
+// field nothing shows) each withdraw the open request (the session is told, the agent answered
+// cancelled), and a later verdict on it writes nothing, so allow_once is
+// never selected; a later request about each changed call is declined.
+func TestACPACallThatChangesClosesItsCard(t *testing.T) {
+	c, s, rec := begun(t, ACPOptions{})
+	changes := []struct {
+		name, id, line string
+		input          string
+	}{
+		{"an update after the request", "c1", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c1","rawInput":{"command":"cat /etc/passwd"}}`), ""},
+		{"a repeated announcement", "c2", acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"c2","title":"t","kind":"execute","status":"pending","rawInput":{"command":"cat /etc/passwd"}}`), ""},
+		{"the call set running", "c3", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c3","status":"in_progress"}`), ""},
+		{"a line too long to read", "c4", `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + acpSession + `","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"` + strings.Repeat("a", session.MaxProtocolLine) + `"}}}}`, ""},
+		{"an update holding only a field the client does not read", "c5", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c5","_meta":{"x":1}}`), ""},
+		{"a number written another way", "c6", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c6","rawInput":{"command":"ls","path":1.0}}`), `{"command":"ls","path":1}`},
+		{"an update with a key twice, its last copy as announced", "c7", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c7","rawInput":{"command":"cat /etc/passwd","command":"ls"}}`), ""},
+		{"an update that is not UTF-8 where nothing shown changes", "c8", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c8","rawOutput":"a` + "\xff" + `"}`), ""},
+		{"an update with a lone surrogate where nothing shown changes", "c9", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c9","rawOutput":"\ud800"}`), ""},
+	}
+	for i, tc := range changes {
+		input := tc.input
+		if input == "" {
+			input = `{"command":"ls"}`
+		}
+		p := askAbout(t, s, rec, 80+i, tc.id, input, i)
+		s.write(tc.line)
+		w := waitEvent(t, rec, "permission_withdrawn", i+1)[i]
+		if w.ref != p.ref {
+			t.Fatalf("%s: withdrew %s, want %s", tc.name, w.ref, p.ref)
+		}
+		if got := s.await(`"id":` + itoa(80+i) + `,`); got != `{"id":`+itoa(80+i)+`,"jsonrpc":"2.0","result":{"outcome":{"outcome":"cancelled"}}}` {
+			t.Fatalf("%s: the agent was answered %s", tc.name, got)
+		}
+		if err := c.Reply(context.Background(), p.ref, session.Verdict{Allow: true}); !errors.Is(err, ErrNoRequest) {
+			t.Fatalf("%s: a verdict on the closed card: %v", tc.name, err)
+		}
+	}
+	// A later request about each changed call is declined.
+	for i, tc := range changes {
+		if tc.id == "c3" {
+			continue
+		}
+		n := itoa(140 + i)
+		s.write(`{"jsonrpc":"2.0","id":` + n + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"` + tc.id + `"},"options":` + acpOpts + `}}`)
+		if got := s.await(`"id":` + n + `,`); strings.Contains(got, `"o1"`) {
+			t.Fatalf("%s: a later request answered %s", tc.name, got)
+		}
+	}
+	for _, l := range s.written() {
+		if strings.Contains(l, `"optionId":"o1"`) {
+			t.Fatalf("allow_once selected for a changed call: %s", l)
+		}
+	}
+	if n := len(rec.kinds("permission")); n != len(changes) {
+		t.Fatalf("%d requests reached the session, want %d", n, len(changes))
+	}
+}
+
+// An option the client does not read declines the request: an option with
+// a field beyond optionId, name and kind, an empty or repeated id, a kind
+// protocol 1 does not name, more than one of kind allow_once. Options whose
+// allow_once comes second are read, and an Allow selects that one's own id.
+func TestACPOptionsTheClientDoesNotReadDeclineTheRequest(t *testing.T) {
+	c, s, rec := begun(t, ACPOptions{})
+	for i, opts := range []string{
+		`[{"optionId":"a","name":"Allow","kind":"allow_once","_meta":{"x":1}}]`,
+		`[{"optionId":"","name":"Allow","kind":"allow_once"}]`,
+		`[{"optionId":"x","name":"Allow","kind":"allow_once"},{"optionId":"x","name":"Always","kind":"allow_always"}]`,
+		`[{"optionId":"a","name":"Allow","kind":"allow_for_now"}]`,
+		`[{"optionId":"a","name":"Allow and stop asking","kind":"allow_once"},{"optionId":"b","name":"Allow","kind":"allow_once"}]`,
+	} {
+		call := "d" + itoa(i)
+		s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"` + call + `","title":"t","kind":"execute","status":"pending","rawInput":{"command":"ls"}}`))
+		s.write(`{"jsonrpc":"2.0","id":` + itoa(100+i) + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"` + call + `"},"options":` + opts + `}}`)
+		if got := s.await(`"id":` + itoa(100+i) + `,`); !strings.Contains(got, `{"outcome":"cancelled"}`) {
+			t.Fatalf("options %s answered %s", opts, got)
+		}
+	}
+	waitEvent(t, rec, "notice", 5)
+	if n := len(rec.kinds("permission")); n != 0 {
+		t.Fatalf("%d requests with options the client does not read reached the session", n)
+	}
+	s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"e1","title":"t","kind":"execute","status":"pending","rawInput":{"command":"ls"}}`))
+	s.write(`{"jsonrpc":"2.0","id":110,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"e1"},"options":[{"optionId":"always-1","name":"Always","kind":"allow_always"},{"optionId":"once-1","name":"Allow","kind":"allow_once"},{"optionId":"no-1","name":"Reject","kind":"reject_once"}]}}`)
+	p := waitEvent(t, rec, "permission", 1)[0]
+	if err := c.Reply(context.Background(), p.ref, session.Verdict{Allow: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.await(`"id":110,`); !strings.Contains(got, `{"optionId":"once-1","outcome":"selected"}`) {
+		t.Fatalf("an Allow with allow_once listed second answered %s", got)
+	}
+}
+
+// A request named by an open one's id closes the open one's card before it
+// is asked, and a verdict on the old card reaches nobody.
+func TestACPAReusedRequestIDClosesTheOldCard(t *testing.T) {
+	c, s, rec := begun(t, ACPOptions{})
+	first := askAbout(t, s, rec, 120, "f1", `{"command":"ls"}`, 0)
+	second := askAbout(t, s, rec, 120, "f2", `{"command":"pwd"}`, 1)
+	if w := waitEvent(t, rec, "permission_withdrawn", 1)[0]; w.ref != first.ref {
+		t.Fatalf("withdrew %s, want %s", w.ref, first.ref)
+	}
+	if err := c.Reply(context.Background(), first.ref, session.Verdict{Allow: true}); !errors.Is(err, ErrNoRequest) {
+		t.Fatalf("the old card's verdict: %v", err)
+	}
+	if err := c.Reply(context.Background(), second.ref, session.Verdict{Allow: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.await(`"id":120,`); !strings.Contains(got, `"optionId":"o1"`) {
+		t.Fatalf("answered %s", got)
+	}
+	n := 0
+	for _, l := range s.written() {
+		if strings.Contains(l, `"id":120,`) {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("request 120 answered %d times", n)
+	}
+}
+
+// The call is shown, bound and floored as the agent wrote it: its input
+// keeps a number past what a float holds and a large integer exactly, and a
+// raw input holding a key the client was not taught for the agent, or one
+// that is not an object, declines the call's request.
+func TestACPTheCallIsShownAsTheAgentWroteIt(t *testing.T) {
+	c, s, rec := begun(t, ACPOptions{RawInputKeys: []string{"command", "timeout", "n"}})
+	_ = c
+	p := askAbout(t, s, rec, 130, "g1", `{"command":"ls", "timeout":1e999,"n":9007199254740993}`, 0)
+	if string(p.perm.Input) != `{"kind":"execute","rawInput":{"command":"ls","timeout":1e999,"n":9007199254740993},"title":"t"}` {
+		t.Fatalf("the input %s", p.perm.Input)
+	}
+	for i, raw := range []string{`{"command":"ls","directory":"/x"}`, `"ls"`, `["ls"]`} {
+		id := 131 + i
+		s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"h` + itoa(i) + `","title":"t","kind":"execute","status":"pending","rawInput":` + raw + `}`))
+		s.write(`{"jsonrpc":"2.0","id":` + itoa(id) + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"h` + itoa(i) + `"},"options":` + acpOpts + `}}`)
+		if got := s.await(`"id":` + itoa(id) + `,`); strings.Contains(got, `"o1"`) {
+			t.Fatalf("raw input %s answered %s", raw, got)
+		}
+	}
+	waitEvent(t, rec, "notice", 3)
+	if n := len(rec.kinds("permission")); n != 1 {
+		t.Fatalf("%d requests reached the session", n)
+	}
+}
+
+// A chat of a yolo launch begins by saying the chat asks.
+func TestACPAYoloLaunchsChatSaysItAsks(t *testing.T) {
+	rec := &recorder{}
+	c, _ := newACPServer(t, rec, ACPOptions{YoloLeft: true})
+	if err := c.Begin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := waitEvent(t, rec, "notice", 1)[0]; n.code != "yolo_left" || n.text != ACPYoloLeftWords {
+		t.Fatalf("the notice %+v", n)
+	}
+}
+
+// A call with an open request is not forgotten: ended calls leave the
+// calls the client follows, so a thousand of them later an update of the
+// call still closes its card; and when a thousand open calls later the
+// client stops following it, its card closes, the agent answered
+// cancelled.
+func TestACPACallWithAnOpenRequestIsNotForgotten(t *testing.T) {
+	_, s, rec := begun(t, ACPOptions{})
+	p := askAbout(t, s, rec, 150, "c1", `{"command":"ls"}`, 0)
+	for i := range maxOpenTools {
+		s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"f` + itoa(i) + `","title":"t","kind":"read","status":"completed"}`))
+	}
+	// Every line before it handled once the text after them is: the card
+	// is open still.
+	texts := len(rec.kinds("text"))
+	s.write(acpUpdate(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"}}`))
+	waitEvent(t, rec, "text", texts+1)
+	if n := len(rec.kinds("permission_withdrawn")); n != 0 {
+		t.Fatalf("the card closed after %d ended calls", maxOpenTools)
+	}
+	s.write(acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c1","rawInput":{"command":"cat /etc/passwd"}}`))
+	if w := waitEvent(t, rec, "permission_withdrawn", 1)[0]; w.ref != p.ref {
+		t.Fatalf("withdrew %s, want %s", w.ref, p.ref)
+	}
+	p = askAbout(t, s, rec, 151, "c2", `{"command":"ls"}`, 1)
+	for i := range maxOpenTools {
+		s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"g` + itoa(i) + `","title":"t","kind":"read","status":"pending"}`))
+	}
+	if w := waitEvent(t, rec, "permission_withdrawn", 2)[1]; w.ref != p.ref {
+		t.Fatalf("withdrew %s, want %s", w.ref, p.ref)
+	}
+	if got := s.await(`"id":151,`); got != `{"id":151,"jsonrpc":"2.0","result":{"outcome":{"outcome":"cancelled"}}}` {
+		t.Fatalf("the agent was answered %s", got)
+	}
+}
+
+// A request that itself changes its call marks it changed: its own
+// toolCall giving a shown field another value, or the request declined for
+// another reason, closes every open card about the call, and a later
+// request giving only the call's id is declined.
+func TestACPARequestThatChangesItsCallClosesItsCards(t *testing.T) {
+	_, s, rec := begun(t, ACPOptions{})
+	for i, tc := range []struct{ name, toolCall, opts string }{
+		{"its toolCall gives another title", `{"toolCallId":"c1","title":"cat /etc/passwd"}`, acpOpts},
+		{"its options are not read", `{"toolCallId":"c2"}`, `[{"optionId":"o1","name":"Allow","kind":"allow_once","_meta":{}}]`},
+	} {
+		id := "c" + itoa(i+1)
+		p := askAbout(t, s, rec, 160+i*10, id, `{"command":"ls"}`, i)
+		s.write(`{"jsonrpc":"2.0","id":` + itoa(161+i*10) + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":` + tc.toolCall + `,"options":` + tc.opts + `}}`)
+		if w := waitEvent(t, rec, "permission_withdrawn", i+1)[i]; w.ref != p.ref {
+			t.Fatalf("%s: withdrew %s, want %s", tc.name, w.ref, p.ref)
+		}
+		if got := s.await(`"id":` + itoa(160+i*10) + `,`); !strings.Contains(got, `{"outcome":"cancelled"}`) {
+			t.Fatalf("%s: the open request was answered %s", tc.name, got)
+		}
+		s.write(`{"jsonrpc":"2.0","id":` + itoa(162+i*10) + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"` + id + `"},"options":` + acpOpts + `}}`)
+		if got := s.await(`"id":` + itoa(162+i*10) + `,`); strings.Contains(got, `"o1"`) {
+			t.Fatalf("%s: a later request answered %s", tc.name, got)
+		}
+		if n := len(rec.kinds("permission")); n != i+1 {
+			t.Fatalf("%s: %d requests reached the session", tc.name, n)
+		}
+	}
+}
+
+// A line is read strictly only where it is judged: text with a lone
+// surrogate or bytes that are not UTF-8 is kept and closes no card; a
+// permission request that does not read strictly is answered cancelled by
+// its id, closing the open cards; an update with a key twice is skipped,
+// closing them; the prompt's answer that does not read strictly still ends
+// the turn.
+func TestACPALineIsReadStrictlyOnlyWhereItIsJudged(t *testing.T) {
+	c, s, rec := begun(t, ACPOptions{})
+	p := askAbout(t, s, rec, 170, "c1", `{"command":"ls"}`, 0)
+	texts := len(rec.kinds("text"))
+	s.write(acpUpdate(`{"sessionUpdate":"agent_message_chunk","messageId":"m2","content":{"type":"text","text":"a\ud800b` + "\xff" + `"}}`))
+	if got := waitEvent(t, rec, "text", texts+1)[texts]; got.ref != "m2" || got.text == "" {
+		t.Fatalf("the text %+v", got)
+	}
+	if n := len(rec.kinds("permission_withdrawn")); n != 0 {
+		t.Fatalf("text closed %d cards", n)
+	}
+	s.write(`{"jsonrpc":"2.0","id":171,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"c1"},"options":` + acpOpts + `,"options":` + acpOpts + `}}`)
+	if got := s.await(`"id":171,`); got != `{"id":171,"jsonrpc":"2.0","result":{"outcome":{"outcome":"cancelled"}}}` {
+		t.Fatalf("the request that does not read strictly was answered %s", got)
+	}
+	if w := waitEvent(t, rec, "permission_withdrawn", 1)[0]; w.ref != p.ref {
+		t.Fatalf("withdrew %s, want %s", w.ref, p.ref)
+	}
+	if err := c.Reply(context.Background(), p.ref, session.Verdict{Allow: true}); !errors.Is(err, ErrNoRequest) {
+		t.Fatalf("a verdict on the closed card: %v", err)
+	}
+	// An update with a key twice, read loosely as text, could hide a change
+	// of a call: skipped, the open cards closed.
+	p = askAbout(t, s, rec, 172, "c2", `{"command":"ls"}`, 1)
+	s.write(acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c2","rawInput":{"command":"cat /etc/passwd"},"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`))
+	if w := waitEvent(t, rec, "permission_withdrawn", 2)[1]; w.ref != p.ref {
+		t.Fatalf("withdrew %s, want %s", w.ref, p.ref)
+	}
+	s.write(`{"jsonrpc":"2.0","id":` + s.promptID() + `,"result":{"stopReason":"end_turn","_meta":{"note":"\ud800"}}}`)
+	waitEvent(t, rec, "turn_ended", 1)
 }

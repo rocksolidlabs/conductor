@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Locator, Page, Route } from '@playwright/test'
 import { DAILY, atRest, dayPage, expect, openMore, test } from './fixtures'
 import { ownServer, type OwnServer } from './own-server'
@@ -123,7 +125,7 @@ test("typing -- lists the agent's own flags, Tab and Enter take one, its values 
     await page.keyboard.press('Tab')
     await expect(field).toHaveValue('--add-dir ')
     await expect(field).toBeFocused()
-    await expect(page.getByRole('listbox')).toHaveCount(0)
+    // (Its value lists folders: the test of a folder flag below.)
 
     // The arrows and Enter take another; after a flag whose help lists its values, they show at once.
     await field.fill('')
@@ -259,3 +261,138 @@ test("Brakeman's Model field in Settings offers the names its agent's help gives
     await page.context().close()
   }
 })
+
+test("each trial agent's Arguments offers its own flags, the model flag and its names among them, and its chip shows the line", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, path: '/crews', width: 1440, height: 900 })
+  try {
+    await page.locator('[data-new-comparison]').click()
+    const form = page.locator('[data-compare-template]')
+    await expect(form).toBeVisible()
+    await expect(form.locator('[data-trial-agent="1"]')).toBeVisible()
+    const more = await openMore(form)
+    // Agent A is the Claude Code stub's copy: the form has no Model field, so its model flag and the names its help gives are offered.
+    const a = more.locator('input[data-compare-agent-args="0"]')
+    await expect(a).toHaveAttribute('placeholder', 'Type -- to see its flags')
+    await a.click()
+    await a.pressSequentially('--mo')
+    expect(await rows(page)).toEqual(['--model', '--permission-mode'])
+    await highlight(page, '--model')
+    await page.keyboard.press('Tab')
+    expect(await rows(page)).toEqual(['alpha', 'beta'])
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    // Agent B is the Codex stub's copy: its own flags, and its chip shows the line as typed.
+    const b = more.locator('input[data-compare-agent-args="1"]')
+    await b.click()
+    await b.pressSequentially('--sa')
+    await page.keyboard.press('Enter')
+    await expect(b).toHaveValue('--sandbox ')
+    await highlight(page, 'read-only')
+    await page.keyboard.press('Enter')
+    await expect(b).toHaveValue('--sandbox read-only ')
+    await expect(form.locator('[data-trial-agent="1"] [data-trial-agent-args]')).toHaveText('--sandbox read-only')
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("a folder flag's value lists the folders beside the session's, a pick goes on to its children, and a path outside is sent as typed", async ({ browser }) => {
+  const shared = join(own.root, 'shared')
+  mkdirSync(join(shared, 'inner'), { recursive: true })
+  const page = await dayPage(browser, { server: own.started, ...DAILY })
+  try {
+    const { field } = await argsOf(page, CLAUDE, 'flags')
+    await field.click()
+    await field.pressSequentially('--add-dir ')
+    // Nothing typed: the folders beside the session's (the server's default folder, the scratch repository, under the root).
+    await expect.poll(() => rows(page)).toContain(shared)
+    await highlight(page, shared)
+    await page.keyboard.press('Enter')
+    await expect(field).toHaveValue(`--add-dir ${shared}`)
+    // The list goes on to the folder's children.
+    await expect.poll(() => rows(page)).toEqual([join(shared, 'inner')])
+    // A space ends the value: the list closes.
+    await field.pressSequentially(' ')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    // A path outside the folders agents may use lists nothing, and is sent as typed.
+    await field.fill('--add-dir /')
+    const listed = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/paths' && new URL(r.url()).searchParams.get('prefix') === '/e')
+    await field.pressSequentially('e')
+    await expect(field).toHaveValue('--add-dir /e')
+    // Its listing answered: no list is a list that was not drawn.
+    await listed
+    const launches = await holdLaunches(page)
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    await page.keyboard.press('ControlOrMeta+Enter')
+    await expect.poll(() => launches.held.length, { message: 'the launch was sent' }).toBe(1)
+    expect(launches.held[0]!.request().postDataJSON()).toMatchObject({ agentId: 'flags', args: ['--add-dir', '/e'] })
+    await launches.refuse()
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("a crew member's Extra arguments and Model offer its agent's flags and names", async ({ browser }) => {
+  const { body } = await own.api.call<{ crew: { id: string } }>('POST', '/api/crews', { name: 'flags-crew', goal: '', cwd: '', where: 'server', isolation: 'none', openAfterLaunch: false, yolo: false, members: [{ name: 'lead', agentId: 'flags', prompt: '', start: { when: 'manual' } }] })
+  const page = await dayPage(browser, { server: own.started, path: `/crews/${body.crew.id}`, width: 1440, height: 900 })
+  try {
+    const row = page.locator('[data-crew-member]').first()
+    await expect(row).toBeVisible()
+    // The member's fields ask for its agent's flags as the page draws them; the list opens once the answer is in.
+    await row.locator('[data-member-menu]').click()
+    await page.getByRole('menuitem', { name: 'Extra arguments' }).click()
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    const args = row.locator('input[data-member-args]')
+    await args.click()
+    await args.pressSequentially('--')
+    // The member has a Model field: its model flag is the field's.
+    expect(await rows(page)).toEqual(['--add-dir', '--effort', '--permission-mode', '--tone', '--verbose'])
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    const model = row.locator('input[data-member-model]')
+    await model.click()
+    expect(await rowsOf(page, '[data-model-name]')).toEqual(['alpha', 'beta'])
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+  } finally {
+    await page.context().close()
+    await own.api.call('DELETE', `/api/crews/${encodeURIComponent(body.crew.id)}`)
+  }
+})
+
+/** Whether the point at the centre of `l` is `l` itself or inside it: nothing drawn over it there. */
+async function uncovered(l: Locator): Promise<boolean> {
+  return l.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+    return !!at && (el === at || el.contains(at))
+  })
+}
+
+for (const size of [{ width: 1440, height: 900 }, DAILY]) {
+  test(`at ${size.width} x ${size.height} a flag's values open above Extra arguments: Yolo and Launch stay uncovered, and the list is whole in the window`, async ({ browser }) => {
+    const page = await dayPage(browser, { server: own.started, ...size })
+    try {
+      const { dialog, field } = await argsOf(page, CLAUDE, 'flags')
+      await field.click()
+      await field.pressSequentially('--eff')
+      await page.keyboard.press('Tab')
+      await expect(field).toHaveValue('--effort ')
+      expect(await rows(page)).toEqual(['low', 'medium', 'high'])
+      const list = page.getByRole('listbox')
+      const box = (await list.boundingBox())!
+      const at = (await field.boundingBox())!
+      expect(box.y + box.height, 'the list opens above the field').toBeLessThanOrEqual(at.y + 1)
+      expect(box.y).toBeGreaterThanOrEqual(0)
+      expect(box.x).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width).toBeLessThanOrEqual(size.width)
+      const yolo = dialog.locator('[data-yolo-switch]')
+      const launch = dialog.getByRole('button', { name: 'Launch', exact: true })
+      await expect(yolo).toBeVisible()
+      expect(await uncovered(yolo), 'the Yolo switch is not covered').toBe(true)
+      expect(await uncovered(launch), 'Launch is not covered').toBe(true)
+    } finally {
+      await page.context().close()
+    }
+  })
+}

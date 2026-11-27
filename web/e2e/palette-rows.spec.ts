@@ -251,7 +251,7 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   await page.unroute('**/api/integrations')
   // Agents: Launch opens the dialog.
   await runRow(page, 'page:launch')
-  await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByLabel('Folder', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
   // Settings in the browser is the server's file and a notice: no Save row that could never act (the desktop app's rows are
   // the app's, under the settings spec's stand-in bridge).
@@ -280,7 +280,11 @@ test("the run page: the broadcast field, the views, the run's chat, Share, Stop"
   await page.goto(`/runs/${encodeURIComponent(run.id)}`)
   await expect(page.locator('[data-palette]')).toBeHidden()
   await expect(page.locator('[data-run-chat-button]')).toBeVisible({ timeout: 30_000 })
-  // Message the crew takes a line in the row (Enter opens the field; nothing is sent without a line). Its old word is gone.
+  // Message the crew takes a line in the row (Enter opens the field; nothing is sent without a line). Its old word is gone. The row
+  // sends to whom the message bar does, and is off while nobody can get a line (lead still starting, its prompt not yet typed): wait
+  // until the page holds lead as one who gets it, the bar's chip ticked, which is the selection the row reads.
+  budget(4) // lead's start: its prompt typed, at most four of a step's caps
+  await expect(page.locator('[data-message-bar] [data-message-chip="lead"]')).toHaveAttribute('data-chip-state', 'on', { timeout: 4 * STEP_MS })
   let palette = await enterRow(page, 'page:broadcast')
   await expect(palette.locator('[data-palette-row="page:broadcast"] [data-palette-field] input')).toBeFocused()
   await expect(palette.locator('[data-palette-row="page:broadcast"]')).toContainText('Message the crew…')
@@ -425,7 +429,7 @@ test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notif
   await expect(page.locator('[data-shortcuts]')).toBeVisible()
   await page.keyboard.press('Escape')
   await runRow(page, 'action:launch', '> launch an agent')
-  await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByLabel('Folder', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
   // The prefixes each pick their kind.
   for (const [prefix, chip] of [['>', 'Actions'], ['#', 'Runs and crews'], [':', 'Files'], ['@', 'People'], ['!', 'Events'], ['?', 'Shortcuts'], ['~', 'History']] as const) {

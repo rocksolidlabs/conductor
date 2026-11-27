@@ -671,14 +671,11 @@ const countsOf = (known: Known) => Object.fromEntries(Object.entries(known).map(
 
 const YOLO_FOLDED_KNOWN: Known = {}
 
-const SETTINGS_FOLDS_KNOWN: Known = {
-  'components/BrakemanSettings.vue': { count: 1, why: "Brakeman's card folds its advanced settings: to be unfolded" },
-}
+const SETTINGS_FOLDS_KNOWN: Known = {}
 
 const BROWSER_WORDS_KNOWN: Known = {
   'components/AddAgentSlideover.vue': { count: 1, why: "a real browser: an agent's browser profile folder" },
-  'components/WelcomeCard.vue': { count: 1, why: '"from any browser": to be reworded as from anywhere' },
-  'pages/settings.vue': { count: 3, why: 'a real browser: Open in browser, which the desktop app opens' },
+  'pages/settings.vue': { count: 1, why: "a real browser: Open in browser, The app's server row, which the desktop app opens" },
 }
 
 describe('what stays in view, and the words', () => {

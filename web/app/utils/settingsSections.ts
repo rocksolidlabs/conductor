@@ -1,19 +1,61 @@
 /**
  * Settings' sections (#433): which show on this machine and in what order, the id each keeps in `/settings?section=<id>`, and which
  * is in view as the panel's body scrolls. The ids are part of the page's address once shipped: keep them, and give a new section
- * (#346, #347) an entry here and nowhere else in this list's logic.
+ * (#346, #347) an entry here and nowhere else in this list's logic. The page opens on where and how agents work (UX3 R54).
  */
 export const SETTINGS_SECTIONS = [
-  { id: 'webrtc', title: 'WebRTC from WSL', icon: 'i-lucide-network' },
-  { id: 'switchyard', title: 'Switchyard', icon: 'i-lucide-globe' },
   { id: 'folders', title: 'Where agents work', icon: 'i-lucide-folder-tree' },
   { id: 'running', title: 'How agents run', icon: 'i-lucide-square-terminal' },
   { id: 'agents', title: 'Agents on this machine', icon: 'i-lucide-bot' },
   { id: 'accounts', title: 'Accounts', icon: 'i-lucide-key-round' },
+  { id: 'switchyard', title: 'Switchyard', icon: 'i-lucide-globe' },
   { id: 'github', title: 'GitHub', icon: 'i-lucide-github' },
   { id: 'brakeman', title: 'Brakeman', icon: 'i-lucide-notebook-pen' },
   { id: 'app', title: 'The app', icon: 'i-lucide-info' },
 ] as const
+
+/**
+ * The addresses `?section=` may name that are not a section of their own: a row inside one, by the section that holds it. WebRTC
+ * from WSL was a section before UX3 R54; it is the Windows firewall row of Switchyard now, and its address still lands there.
+ */
+export const SECTION_ROWS = { webrtc: 'switchyard' } as const
+
+/** The section each of the app's settings is shown in: what the save bar names as changed (UX3 R56). */
+const SECTION_OF_SETTING: Record<string, SettingsSectionId> = {
+  dataDir: 'folders',
+  allowedRoots: 'folders',
+  defaultCwd: 'folders',
+  wslWindowsHome: 'folders',
+  yolo: 'running',
+  wslDistro: 'running',
+  reach: 'switchyard',
+  switchyardEnabled: 'switchyard',
+  switchyardServer: 'switchyard',
+  switchyardToken: 'switchyard',
+  switchyardName: 'switchyard',
+  closeToTray: 'app',
+}
+
+/**
+ * The sections that hold a change, in page order: each of the app's settings whose form differs from what is saved, by the section it
+ * is shown in, and Brakeman's when its form holds a change. None before the app's settings were read.
+ */
+export function changedSections(saved: object | null, form: object, brakeman: boolean): SettingsSectionId[] {
+  const changed = new Set<SettingsSectionId>()
+  if (saved) {
+    const a = saved as Record<string, unknown>
+    const b = form as Record<string, unknown>
+    for (const [k, id] of Object.entries(SECTION_OF_SETTING)) if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) changed.add(id)
+  }
+  if (brakeman) changed.add('brakeman')
+  return SETTINGS_SECTIONS.filter((s) => changed.has(s.id)).map((s) => s.id)
+}
+
+/** What the save bar says of the sections changed: `Changed: How agents run, Brakeman.`, '' for none. */
+export function changedWords(ids: readonly SettingsSectionId[]): string {
+  if (!ids.length) return ''
+  return `Changed: ${ids.map((id) => SETTINGS_SECTIONS.find((s) => s.id === id)!.title).join(', ')}.`
+}
 
 /**
  * A setting as one row once the sections' column has room (48rem, a container query: the sidebar resizes and collapses), its label
@@ -22,8 +64,13 @@ export const SETTINGS_SECTIONS = [
  */
 export const SETTINGS_FIELD_UI = { root: '@3xl:grid @3xl:grid-cols-[minmax(0,1fr)_minmax(0,32rem)] @3xl:items-start @3xl:gap-x-8', container: 'max-w-xl @3xl:mt-0' }
 
+/** A setting whose control is a switch: the same row, the switch at its right end and the words given the room it leaves. */
+export const SETTINGS_SWITCH_UI = { root: 'grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-6 @3xl:gap-x-8', container: 'mt-0.5' }
+
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 export type SettingsSectionId = SettingsSection['id']
+/** What `?section=` may name: a section, or a row a section holds (SECTION_ROWS). */
+export type SettingsAddress = SettingsSectionId | keyof typeof SECTION_ROWS
 
 /** What decides the sections shown: the desktop app's page or the browser's, and what the bridge, the catalog and Brakeman said. */
 export interface SettingsShown {
@@ -31,8 +78,6 @@ export interface SettingsShown {
   desktop: boolean
   /** The bridge's platform ('win32' on Windows). */
   platform?: string
-  /** Whether the bridge answered with what it forwards for WebRTC from WSL (asked on Windows only). */
-  ice: boolean
   /** How many agents the catalog lists. */
   agents: number
   /** Whether the server offers Brakeman (useBrakeman's available is not false). */
@@ -46,12 +91,11 @@ export interface SettingsShown {
 /** The sections shown, in page order. */
 export function shownSections(s: SettingsShown): SettingsSection[] {
   const on: Record<SettingsSectionId, boolean> = {
-    webrtc: s.desktop && s.platform === 'win32' && s.ice,
-    switchyard: s.desktop,
     folders: s.desktop,
     running: s.desktop,
     agents: s.desktop && s.agents > 0,
     accounts: s.accounts !== false,
+    switchyard: s.desktop,
     // The token is the server's, not the app's: shown in a browser too.
     github: s.github !== false,
     brakeman: s.brakeman,
@@ -61,13 +105,19 @@ export function shownSections(s: SettingsShown): SettingsSection[] {
 }
 
 /**
- * The section `?section=` names: a known id, or null for none or an unknown one. Given twice, the first counts, as Vue Router reads
- * a repeated key as a list.
+ * The place `?section=` names: a known section or row, or null for none or an unknown one. Given twice, the first counts, as Vue
+ * Router reads a repeated key as a list.
  */
-export function sectionFromQuery(value: unknown): SettingsSectionId | null {
+export function sectionFromQuery(value: unknown): SettingsAddress | null {
   const first = Array.isArray(value) ? value[0] : value
   if (typeof first !== 'string') return null
+  if (Object.hasOwn(SECTION_ROWS, first)) return first as keyof typeof SECTION_ROWS
   return SETTINGS_SECTIONS.find((x) => x.id === first)?.id ?? null
+}
+
+/** The section an address lies in: itself, or the section that holds the row it names. */
+export function sectionOf(address: SettingsAddress): SettingsSectionId {
+  return (SECTION_ROWS as Record<string, SettingsSectionId>)[address] ?? (address as SettingsSectionId)
 }
 
 /** Where a section's card sits in the scrolled body, in the body's own coordinates (offsets from the top of what scrolls). */

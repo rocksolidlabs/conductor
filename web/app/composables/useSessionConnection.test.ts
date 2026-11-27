@@ -98,3 +98,34 @@ describe('useSessionConnection', () => {
     expect([conn.way.value, conn.noted.value, conn.role.value]).toEqual(['protocol', 'terminal', 'view'])
   })
 })
+
+describe('useSessionConnection, the server\'s word on expand (UX3 R10)', () => {
+  it('expandIsTheServersWordAlone: the welcome says it, a way message without it withdraws it, a new connection starts without it', async () => {
+    const made: ReturnType<typeof fakeTransport>[] = []
+    const conn = useSessionConnection(() => {
+      const f = fakeTransport()
+      made.push(f)
+      return f.transport
+    })
+    await conn.connect({ cols: 80, rows: 24 })
+    expect(conn.expand.value).toBe(false)
+    made[0]!.owner.control({ t: 'welcome', role: 'control', fileView: true, way: 'protocol', expand: true } as unknown as Welcome)
+    expect(conn.expand.value).toBe(true)
+    // A move away and back: each way message says it again or withdraws it.
+    made[0]!.owner.control({ t: 'way', way: 'terminal' } as unknown as ControlMessage)
+    expect(conn.expand.value).toBe(false)
+    made[0]!.owner.control({ t: 'way', way: 'protocol', expand: true } as unknown as ControlMessage)
+    expect(conn.expand.value).toBe(true)
+    made[0]!.owner.control({ t: 'way', way: 'protocol' } as unknown as ControlMessage)
+    expect(conn.expand.value).toBe(false)
+    made[0]!.owner.control({ t: 'way', way: 'protocol', expand: true } as unknown as ControlMessage)
+    // A connection made again remembers no yes: false until its own welcome says so.
+    await conn.connect({ cols: 80, rows: 24 })
+    expect(conn.expand.value).toBe(false)
+    made[1]!.owner.control({ t: 'welcome', role: 'control', fileView: true, way: 'protocol' } as unknown as Welcome)
+    expect(conn.expand.value).toBe(false)
+    // A frame of the connection before is not this one's word.
+    made[0]!.owner.control({ t: 'welcome', role: 'control', fileView: true, way: 'protocol', expand: true } as unknown as Welcome)
+    expect(conn.expand.value).toBe(false)
+  })
+})

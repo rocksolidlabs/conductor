@@ -41,9 +41,9 @@ report, set_state, ask, form_crew, add_member, run_status, link and open_url, th
 commands as tools, and guide, what the server says this session may do. The server registers it with agents that take an MCP server at
 launch; run it by hand only to try it. A Brakeman turn's session (CONDUCTOR_BRAKEMAN
 set) lists brakeman_request, observe and brief_submit, and no crew or ticket tool;
-it lists act too when the person has granted the turn an operation. A chat's session
-(CONDUCTOR_PROTOCOL set) lists permission, which the agent's program calls to ask
-the person about a tool call; the model never calls it.
+it lists act too when the person has granted the turn an operation. Claude Code's
+chat (CONDUCTOR_PROTOCOL=1) lists permission, which Claude Code calls to ask the
+person about a tool call; the model never calls it. Another agent's chat lists none.
 `
 
 // mcpProtocolVersion is the MCP revision answered when the client's is unknown.
@@ -113,10 +113,9 @@ var taskOnly = map[string]bool{"decision_request": true, "decision_list": true, 
 // (docs/plans/context-seams.md, CT-2).
 var lookupOnly = map[string]bool{"context_lookup": true}
 
-// protocolOnly is the tools only a session whose agent runs its protocol
-// way (a chat, CONDUCTOR_PROTOCOL set) lists: permission, which the
-// agent's own program calls for a permission prompt, never the model
-// (docs/plans/chat-or-terminal.md, design 7).
+// protocolOnly is the tools only Claude Code's chat (CONDUCTOR_PROTOCOL=1)
+// lists: permission, which Claude Code itself calls for a permission
+// prompt, never the model (docs/plans/chat-or-terminal.md, design 7).
 var protocolOnly = map[string]bool{permissionTool: true}
 
 // mcpTools is the tools as tools/list gives them, from the server's table
@@ -124,7 +123,7 @@ var protocolOnly = map[string]bool{permissionTool: true}
 // the tools and the guide cannot drift (internal/api, guide.go).
 // brakeman is a Brakeman turn's session (CONDUCTOR_BRAKEMAN set), granted
 // that its turn is granted an operation (its request's permissions.act),
-// protocol a session on the protocol way (CONDUCTOR_PROTOCOL set).
+// protocol Claude Code's chat (CONDUCTOR_PROTOCOL=1).
 func mcpTools(brakeman, granted, protocol bool) []mcpTool {
 	return mcpToolsFrom(api.Operations(), brakeman, granted, protocol)
 }
@@ -467,7 +466,9 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 		return map[string]any{}, nil
 	case "tools/list":
 		turn := s.getenv(envBrakeman) != ""
-		tools := mcpTools(turn, turn && s.granted(ctx), s.getenv(protocolEnv) != "")
+		// The permission tool, to Claude Code's chat alone (CONDUCTOR_PROTOCOL=1):
+		// another protocol's child asks in its own stream.
+		tools := mcpTools(turn, turn && s.granted(ctx), s.getenv(protocolEnv) == "1")
 		if s.getenv("CONDUCTOR_TASK") == "" {
 			tools = slices.DeleteFunc(tools, func(t mcpTool) bool { return taskOnly[t.Name] })
 		}

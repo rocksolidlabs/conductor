@@ -149,14 +149,15 @@ export abstract class BaseTransport implements TerminalTransport {
    * ANSWER_TIMEOUT_MS. To an older owner it goes as a plain `submit` and settles false at once. A line whose frame would pass
    * MAX_CONTROL as encoded is not sent: a ReplyError coded TOO_LONG, in CONTROL_TOO_LARGE's words.
    */
-  submitAcked(text: string, opts: { unlessWaiting?: boolean } = {}): Promise<boolean> {
+  submitAcked(text: string, opts: { unlessWaiting?: boolean; expand?: boolean } = {}): Promise<boolean> {
     if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
     if (!this.acksSubmits) {
       if (!this.submit(text)) return Promise.reject(new ReplyError(TOO_LONG, CONTROL_TOO_LARGE))
       return Promise.resolve(false)
     }
     const reqId = `s${(++this.reqCounter).toString(36)}`
-    const frame = encodeControl({ t: 'submit', text, reqId, ...(opts.unlessWaiting ? { unlessWaiting: true } : {}) })
+    // `expand` (I19) only where the caller asks for it; an older owner, which acknowledges nothing, is sent the plain submit above.
+    const frame = encodeControl({ t: 'submit', text, reqId, ...(opts.unlessWaiting ? { unlessWaiting: true } : {}), ...(opts.expand ? { expand: true } : {}) })
     if (!controlFits(frame)) return Promise.reject(new ReplyError(TOO_LONG, CONTROL_TOO_LARGE))
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {

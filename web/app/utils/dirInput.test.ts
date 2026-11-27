@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, GIT_FIRST_COMMIT, gitCheckLine, gitMark, matchingEntries, moreNote, movesHighlight } from './dirInput'
+import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, GIT_FIRST_COMMIT, gitCheckLine, gitMark, homeExpanded, matchingEntries, moreNote, movesHighlight } from './dirInput'
 
 describe('dirInput', () => {
   it('a chosen folder leaves the field focused, the caret at the end and the field scrolled to its end (#167)', () => {
@@ -125,5 +125,19 @@ describe('moreNote', () => {
     expect(moreNote({ truncated: true, moreUnknown: true })).toBe('More folders here than were read: type the start of a name to narrow the list.')
     expect(moreNote({ truncated: true })).toBe('Some folders are not marked: git did not answer in time.')
     expect(moreNote({ truncated: false, more: 3 })).toBe(null)
+  })
+})
+
+describe('a leading ~/ typed', () => {
+  it("is the server's home, as a shell reads it", () => {
+    expect(homeExpanded('~/', '/home/ada')).toBe('/home/ada/')
+    expect(homeExpanded('~/code/shop', '/home/ada')).toBe('/home/ada/code/shop')
+    expect(homeExpanded('~/code', '/home/ada/')).toBe('/home/ada/code')
+  })
+  it('leaves every other text alone, and all of it while the home is not known', () => {
+    expect(homeExpanded('~/code', '')).toBe('~/code')
+    expect(homeExpanded('~', '/home/ada')).toBe('~')
+    expect(homeExpanded('~ada/code', '/home/ada')).toBe('~ada/code')
+    expect(homeExpanded('/srv/~/x', '/home/ada')).toBe('/srv/~/x')
   })
 })

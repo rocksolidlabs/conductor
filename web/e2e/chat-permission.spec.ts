@@ -54,6 +54,8 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
     await expect(q.locator('[data-permission-whole][data-permission-short]')).toContainText('echo allowed')
     await expect(q.locator('[data-permission-line]')).toHaveCount(0)
     await expect(q.locator('[data-permission-hidden]')).toHaveCount(0)
+    // The reason goes with a deny alone, and its field says so.
+    await expect(q.locator('[data-permission-message]')).toHaveAttribute('placeholder', 'Why you deny, for the agent (optional)')
     // No bar repeats the question under the chat that shows it, and the sidebar's row says where it is answered, with no field.
     await expect(page.locator('[data-quick-reply]')).toHaveCount(0)
     const row = page.locator(`#dashboard-sidebar-main [data-sidebar-row="s:${s.id}"]`).first()
@@ -116,7 +118,8 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
 test("a call with its description, as every real one has, is allowed with one press; one whose end shows with its top out of view waits", async ({ browser }) => {
   const api = own.api
   const { s, conv } = await launch(api, sessions, 'e2e chat permission described', 'asker-proto')
-  const page = await dayPage(browser, { server: own.started, width: 1440, height: 420 })
+  // A window short enough that the seven lines' call cannot lie whole in the chat's pane above the box (one row since UX3 R4).
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 360 })
   try {
     const view = await openSession(page, s.id)
     await firstTurn(page, api, s.id)
@@ -361,6 +364,49 @@ test("a view link's join page shows the question and who answers it, with no but
     await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).not.toBe('')
   } finally {
     await guest?.ctx.close()
+    await page.context().close()
+  }
+})
+
+test('a request scrolled out of view leaves one line above the box; Show it brings the card back with the focus on its first button', async ({ browser }) => {
+  const api = own.api
+  const { s } = await launch(api, sessions, 'e2e chat permission away', 'asker-proto')
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 560 })
+  try {
+    const view = await openSession(page, s.id)
+    await firstTurn(page, api, s.id)
+    await toChat(api, s.id, view)
+    const chat = page.locator('[data-chat-view]')
+    // A conversation taller than its pane: two turns of steps, opened, then the request.
+    for (const words of ['steps one', 'steps two']) {
+      await say(page, words)
+      budget(LONG_MS + STEP_MS)
+      await expect(chat.locator(`[data-chat-turn][data-turn-outcome="done"]`).filter({ hasText: `stub chat: ${words}` })).toHaveCount(1, { timeout: LONG_MS })
+      await chat.locator('[data-chat-turn]').filter({ hasText: `stub chat: ${words}` }).locator('[data-chat-steps-line]').click()
+    }
+    await say(page, 'ask short')
+    budget(8 * STEP_MS + LONG_MS)
+    const q = openQuestion(page)
+    await expect(q.locator('[data-permission-allow]')).toBeVisible({ timeout: LONG_MS })
+    const away = chat.locator('[data-chat-permission-away]')
+    await expect(away).toHaveCount(0)
+    // Scrolled to the top, the card out of view: the line says what it asks.
+    const scroll = chat.locator('[data-chat-scroll]')
+    expect(await scroll.evaluate((el) => el.scrollHeight > el.clientHeight + 200), 'the conversation is taller than its pane').toBe(true)
+    await scroll.evaluate((el) => (el.scrollTop = 0))
+    await expect(away).toBeVisible()
+    await expect(away).toContainText('asks: Run a command?')
+    // Show it: the card in view, the focus on its first button, and the line gone.
+    await away.locator('[data-chat-permission-show]').click()
+    await expect(q).toBeInViewport()
+    await expect(q.locator('button:not([disabled])').first()).toBeFocused()
+    await expect(away).toHaveCount(0)
+    // Answered, nothing is left of it.
+    await q.locator('[data-permission-deny]').click()
+    await expect(chat.locator('[data-permission-question]').last()).toHaveAttribute('data-permission-state', 'denied', { timeout: LONG_MS })
+    await scroll.evaluate((el) => (el.scrollTop = 0))
+    await expect(away).toHaveCount(0)
+  } finally {
     await page.context().close()
   }
 })

@@ -54,7 +54,8 @@ function markUnsent(name: UiName, on: boolean) {
 
 /**
  * The app's screens' state, kept by the server (docs/plans/sync-seams.md, OS-2): the layout (the editor's layout and splits, the
- * sidebar's mode, width and folds, the crew graph's switches, the run and project pages' views), the palette's recents and the pinned
+ * sidebar's mode, width and folds, the crew graph's switches, the run and project pages' views, the run page's last layout of its
+ * tiles and Activity), the palette's recents and the pinned
  * sessions. Local storage is the cache read first, so the page draws at once; the server's documents are read once the workbench token
  * is held, after the first paint, and a change is written a second after it is made (UI_WRITE_DELAY), so a drag writes once. The
  * server's layout and pins take the place of the browser's; the recents merge (each key's greater count and later use). A server

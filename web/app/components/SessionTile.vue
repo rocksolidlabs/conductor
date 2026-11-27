@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
 import type { TerminalTransport } from '~/utils/transport/types'
-import { isEnded } from '~/utils/attention'
+import { answerDigit, isEnded } from '~/utils/attention'
 import { agentInitials } from '~/utils/sessions'
 import { sessionStatus, type MarkView } from '~/utils/status'
 import { TILE_FONT_SIZE, TILE_SCROLLBACK } from '~/utils/tile'
@@ -22,7 +22,18 @@ const props = defineProps<{
   resumeWord?: boolean
 }>()
 
-const emit = defineEmits<{ select: [] }>()
+const emit = defineEmits<{ select: []; digit: [n: number] }>()
+
+/**
+ * A number key on the frame itself (not its terminal, not a field), handed to the page: a run's tile answers its question with it.
+ * A held key's repeats are taken and answer nothing (answerDigit).
+ */
+function frameKey(e: KeyboardEvent) {
+  if (e.altKey || e.ctrlKey || e.metaKey || !/^[1-9]$/.test(e.key)) return
+  e.preventDefault()
+  const n = answerDigit(e)
+  if (n) emit('digit', n)
+}
 
 const events = useEvents()
 const now = useNow()
@@ -57,6 +68,7 @@ const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.val
       :aria-label="label"
       @keydown.enter.self.prevent="emit('select')"
       @keydown.space.self.prevent="emit('select')"
+      @keydown.self="frameKey"
     >
       <div class="flex cursor-pointer items-center gap-2 border-b border-default px-2.5 py-1 text-xs shrink-0 select-none" :class="$slots.leading && 'pl-8'" data-tile-header @dblclick="emit('select')">
         <span class="flex-none font-mono text-[10px] font-semibold text-muted">{{ agentInitials(props.session.agentId) }}</span>

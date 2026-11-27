@@ -10,7 +10,7 @@ Your role: You are candidate B of 3 for this objective. You work alone, from the
 
 Make GET /v1/users answer from a cache.
 
-## A comparison
+## An agent trial
 
 You are approach-b, one of 3 candidates for this objective, each starting at aaaaaaaaaaaa and working alone. Do not read, fetch or merge another candidate's branch or worktree; nothing of theirs is an input of yours.
 
@@ -27,7 +27,7 @@ Your worktree is `/repo/.conductor/worktrees/r-0123456789ab/approach-b.1`, on th
 
 ## Context
 
-No derived context: a comparison's candidates and reviews read their task, the base and their own work.
+No derived context: a trial's candidates and reviews read their task, the base and their own work.
 
 ## Checks
 

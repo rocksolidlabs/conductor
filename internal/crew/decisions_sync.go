@@ -75,7 +75,7 @@ func heldRefused(rec ledger.DecisionRecord, pol policyIn, rc *ResponseReceipt) (
 	case pol.routes && routed:
 		rc.Code, rc.Words = CodeAnsweredAtServer, answeredAtServerWords(id)
 	case rec.Origin == ledger.OriginCompare:
-		rc.Code, rc.Words = CodeNotApprover, fmt.Sprintf("%s is a comparison's selection: it is answered only at this server", id)
+		rc.Code, rc.Words = CodeNotApprover, fmt.Sprintf("%s is a trial's selection: it is answered only at this server", id)
 	case pol.routes && pol.conf == nil:
 		return true, refuse(CodeStalePolicy, "%s's policy was not confirmed for this answer: try again", id)
 	default:

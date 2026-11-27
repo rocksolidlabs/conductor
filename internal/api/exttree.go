@@ -246,8 +246,8 @@ func (s *Server) treeDenied(top string) func(path string) bool {
 	}
 	deny := session.DeniedByEach(list)
 	var roots []string
-	for _, r := range s.cfg.AllowedRoots {
-		if real, err := filepath.EvalSymlinks(r); err == nil {
+	for _, r := range s.roots.list() {
+		if real, _, ok := r.resolve(); ok {
 			roots = append(roots, real)
 		}
 	}

@@ -2188,7 +2188,7 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	in := brakeman.Request{OpID: body.OpID, Kind: body.Kind, Subjects: body.Subjects, Note: body.Note, Since: body.Since, By: body.By}
 	if strings.HasPrefix(body.OpID, compareOpPrefix) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "an op id beginning "+compareOpPrefix+" is a comparison's own request: choose another")
+		writeError(w, http.StatusBadRequest, "invalid_request", "an op id beginning "+compareOpPrefix+" is a trial's own request: choose another")
 		return
 	}
 	if err := s.compareAskRefusal(r.Context(), in); err != nil {

@@ -122,10 +122,10 @@ async function save() {
       <p v-if="again.words" class="text-xs text-muted" data-made-words>{{ again.words }}</p>
       <p v-else-if="made" class="text-xs text-muted" data-made-words>{{ madeWords(made) }}</p>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-draft-error />
-      <div class="flex items-center gap-2">
-        <UButton v-if="finishing" label="Finish saving it" icon="i-lucide-rotate-cw" size="sm" :loading="sending" data-draft-finish @click="save" />
-        <UButton v-else label="Save the crew" icon="i-lucide-save" size="sm" :loading="sending" :disabled="!name.trim() || !parsed.ok || made?.state === 'pending'" data-draft-create @click="save" />
-        <span class="text-xs text-muted">Saved, not launched: it opens in the crew editor.</span>
+      <div class="flex flex-wrap items-center gap-2" data-draft-foot>
+        <span class="min-w-0 flex-1 text-xs text-muted">Saved, not launched: it opens in the crew editor.</span>
+        <UButton v-if="finishing" label="Finish saving it" icon="i-lucide-rotate-cw" size="sm" class="ms-auto" :loading="sending" data-draft-finish @click="save" />
+        <UButton v-else label="Save the crew" icon="i-lucide-save" size="sm" class="ms-auto" :loading="sending" :disabled="!name.trim() || !parsed.ok || made?.state === 'pending'" data-draft-create @click="save" />
       </div>
     </template>
   </div>

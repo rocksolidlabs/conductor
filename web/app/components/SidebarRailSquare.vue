@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sessionOpen } from '~/utils/sidebar'
 import type { RailShape } from '~/utils/sidebar'
 
 /**
@@ -20,13 +21,16 @@ import type { RailShape } from '~/utils/sidebar'
  */
 const props = withDefaults(defineProps<{ shape: RailShape; member?: boolean; needsDot?: boolean }>(), { member: false, needsDot: true })
 const route = useRoute()
-const current = computed(() => route.path === props.shape.to || (props.shape.kind !== 'session' && route.path.startsWith(props.shape.to)))
+// A session's square opens its place; the member already open is the page's own address (UX3 R72).
+const placeOf = useSessionPlace()
+// A session's square is current at its own page and, for a crew's member, at its place inside its crew (UX3 R72).
+const current = computed(() => (props.shape.kind === 'session' ? sessionOpen(route.path, props.shape.id, route.query) : route.path === props.shape.to || route.path.startsWith(props.shape.to)))
 </script>
 
 <template>
   <UTooltip :text="shape.label" :content="{ side: 'right' }">
     <NuxtLink
-      :to="shape.to"
+      :to="shape.kind === 'session' ? placeOf(shape.id) : shape.to"
       class="relative grid place-items-center rounded-md p-0.5 transition-colors"
       :class="current ? 'bg-default ring-1 ring-default shadow-xs' : 'hover:bg-canvas-hover'"
       :aria-label="shape.label"

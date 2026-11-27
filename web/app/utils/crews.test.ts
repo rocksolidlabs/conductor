@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, CREW_NAME_MAX, crewNameProblem, memberSaveProblem, moreOptionsLine, permissionItems, SETUP_WORDS, viewLinkHoursWords, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, messageToast, MESSAGE_ALL_TIP, recipientState, togglePick, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
+import { argsFrom, CREW_NAME_MAX, crewNameProblem, memberSaveProblem, moreOptionsLine, permissionItems, SETUP_WORDS, viewLinkHoursWords, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, alonePick, messageCount, messageToast, MESSAGE_ALL_TIP, recipientState, sendOutcome, sentWords, togglePick, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
 import { changedFields, startSentence, startWords } from './crewWords'
 
@@ -85,7 +85,7 @@ describe("a comparison's crew in the editor", () => {
 
   it('names the comparison in what changed when only it differs', () => {
     const other = { ...comparison, compare: { ...comparison.compare!, criteria: [{ id: 'speed', text: 'The benchmark runs twice as fast' }] } }
-    expect(changedFields(other, comparison)).toEqual(['Comparison'])
+    expect(changedFields(other, comparison)).toEqual(['Agent trial'])
     expect(crewKey(other)).not.toBe(crewKey(comparison))
   })
 })
@@ -616,7 +616,7 @@ describe('broadcastSelection', () => {
     expect(s.chips.map(({ label, on, tip }) => ({ label, on, tip }))).toEqual([
       { label: 'lead', on: true, tip: '' },
       { label: 'core', on: true, tip: '' },
-      { label: 'review · answer it first', on: false, tip: 'review waits on your answer.' },
+      { label: 'review · answer it first', on: false, tip: 'review waits on your answer. Press to see its question.' },
       { label: 'web · ended', on: false, tip: 'web has ended. Resume it on its tile.' },
       { label: 'docs · starting', on: false, tip: 'docs is starting.' },
       { label: 'tests · not started', on: false, tip: 'tests has not started yet.' },
@@ -632,6 +632,25 @@ describe('broadcastSelection', () => {
     expect(broadcastSelection(crew(), []).placeholder).toBe('Pick who gets it')
     expect(broadcastSelection([m('lead', 'starting'), m('core', 'not_started')], null)).toMatchObject({ to: [], placeholder: 'Nobody can get a line yet: the members are starting', button: 'Send to 0' })
     expect(broadcastSelection([m('lead', 'waiting'), m('core', 'ended')], null).placeholder).toBe('Nobody can get a line now')
+  })
+})
+
+describe('alonePick', () => {
+  const m = (name: string, state: 'ready' | 'waiting' = 'ready') => ({ name, state })
+  const crew = [m('lead'), m('core'), m('review', 'waiting'), m('tests')]
+
+  it('leaves one member alone, and All puts everyone back after it', () => {
+    const alone = alonePick(crew, null, 'core')
+    expect(alone).toEqual(['core'])
+    expect(broadcastSelection(crew, alone)).toMatchObject({ all: false, to: ['core'], placeholder: 'Write a line for core', button: 'Send to 1' })
+    expect(broadcastSelection(crew, null).to).toEqual(['lead', 'core', 'tests'])
+    // From a pick of the person's own, too.
+    expect(alonePick(crew, ['lead', 'tests'], 'tests')).toEqual(['tests'])
+  })
+
+  it('is All when the member is the only one who can get a line, and changes nothing for one that cannot', () => {
+    expect(alonePick([m('lead'), m('review', 'waiting')], ['lead'], 'lead')).toBeNull()
+    expect(alonePick(crew, ['lead'], 'review')).toEqual(['lead'])
   })
 })
 
@@ -658,6 +677,25 @@ describe('recipientState', () => {
   it('reads a session the run has not listed yet by its own status', () => {
     expect(recipientState(undefined, session('running'))).toBe('ready')
     expect(recipientState(undefined, session('starting'))).toBe('starting')
+  })
+})
+
+describe('sendOutcome', () => {
+  it('says the bar alone when everyone named got the line, and toasts when some or nobody did', () => {
+    expect(sendOutcome({ sent: ['lead', 'core'], skipped: [] }, ['lead', 'core'])).toBe('all')
+    expect(sendOutcome({ sent: ['lead'], skipped: [{ member: 'core', reason: 'needs_input' }] }, ['lead', 'core'])).toBe('some')
+    // A name the server left out of both lists is not a full send.
+    expect(sendOutcome({ sent: ['lead'], skipped: [] }, ['lead', 'core'])).toBe('some')
+    expect(sendOutcome({ sent: [], skipped: [{ member: 'core', reason: 'not_running' }] }, ['core'])).toBe('none')
+    expect(sentWords(['lead', 'core'])).toBe('Sent to lead and core.')
+    expect(sentWords(['a', 'b', 'c', 'd', 'e'])).toBe('Sent to 5 members.')
+  })
+
+  it('counts the bytes from 3,072, against the bound of 4,096', () => {
+    expect(messageCount(3071)).toBe('')
+    expect(messageCount(3072)).toBe('3,072 / 4,096')
+    expect(messageCount(3100)).toBe('3,100 / 4,096')
+    expect(messageCount(5000)).toBe('5,000 / 4,096')
   })
 })
 

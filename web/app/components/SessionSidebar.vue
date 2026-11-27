@@ -2,7 +2,7 @@
 import { remotePins } from '~/utils/remote'
 import { cutNotice, staleNotice } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
-import { choiceKey, newlyNeedingInput } from '~/utils/attention'
+import { answerDigit, choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
 import { filterSessions } from '~/utils/sessions'
 import { joinedPath } from '~/utils/joined'
@@ -29,6 +29,8 @@ const attention = useAttention()
 const events = useEvents()
 const route = useRoute()
 const router = useRouter()
+// A row opens its session's place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 const launch = useLaunchModal()
 const joined = useJoined()
 const foldState = useSidebarFolds()
@@ -285,7 +287,7 @@ watch(rows, async () => {
 function openRow(id: string) {
   const f = rows.value.find((r) => r.id === id)
   if (!f) return
-  if (f.kind === 'session') router.push(`/sessions/${f.sessionId}`)
+  if (f.kind === 'session') router.push(placeOf(f.sessionId))
   else if (f.kind === 'run') router.push(`/runs/${encodeURIComponent(f.runId)}`)
   else if (f.kind === 'decision') decisionModal.open(f.decision)
   else if (f.kind === 'item') router.push(`/decisions?item=${encodeURIComponent(f.ref)}`)
@@ -316,12 +318,13 @@ function onKey(e: KeyboardEvent) {
       if (id) focusRow(id)
       return
     }
-    const n = Number(e.key)
-    if (target.closest('input, textarea') || !id || e.metaKey || e.ctrlKey || e.altKey || !(Number.isInteger(n) && n >= 1 && n <= 9)) return
+    if (target.closest('input, textarea') || !id || e.metaKey || e.ctrlKey || e.altKey || !/^[1-9]$/.test(e.key)) return
     e.preventDefault()
     e.stopPropagation()
+    // A held key's repeats are taken and answer nothing (answerDigit).
+    const n = answerDigit(e)
     const row = byId.value.get(id)
-    const o = row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
+    const o = n && row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
     if (row?.kind === 'session' && o && choiceKey(o, n - 1) === n) answer(row, n - 1, row.prompt?.question)
     return
   }
@@ -396,11 +399,12 @@ function onKey(e: KeyboardEvent) {
       }
       return
   }
-  const n = Number(e.key)
-  if (Number.isInteger(n) && n >= 1 && n <= 9) {
+  if (/^[1-9]$/.test(e.key)) {
     own()
-    // The digit names the question the focused row shows as it is pressed; a choice that changes the permission mode has none.
-    const o = row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
+    // The digit names the question the focused row shows as it is pressed; a choice that changes the permission mode has none, and
+    // a held key's repeats answer nothing (answerDigit).
+    const n = answerDigit(e)
+    const o = n && row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
     if (row?.kind === 'session' && o && choiceKey(o, n - 1) === n) answer(row, n - 1, row.prompt?.question)
   }
 }
@@ -428,7 +432,7 @@ const sheet = computed(() => {
     meta: rowMeta(s, !!s.crew, now.value).join(' · '),
     items: rowMenuItems(
       sessionTarget(s, sessionLive(s.status)),
-      { open: () => router.push(`/sessions/${s.id}`), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), rename: () => renameModal.show(s), clone: () => cloneModal.show(s), cloneWithOptions: () => void cloneModal.withOptions(s), stop: () => askStop(`s:${s.id}`) },
+      { open: () => router.push(placeOf(s.id, {}, s)), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), rename: () => renameModal.show(s), clone: () => cloneModal.show(s), cloneWithOptions: () => void cloneModal.withOptions(s), stop: () => askStop(`s:${s.id}`) },
     ),
   }
 })
@@ -522,7 +526,7 @@ const otherPins = computed(() => remotePins(otherRemote.records.value))
 
     <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" :data-list-width="listWidth" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
       <!-- The phone's Sessions page draws the welcome in this line's place (the UX review's P17). -->
-      <slot v-if="empty" name="empty"><p class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>No sessions yet.</p></slot>
+      <slot v-if="empty" name="empty"><p class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>Nothing is running.</p></slot>
 
       <SidebarSection v-if="(pinned.rows.length || otherPins.length) && !query" id="pinned" :title="SECTION_TITLES.pinned" :count="pinned.rows.length + otherPins.length" :folded="folds.pinned" @update:folded="foldState.fold('pinned', $event)">
         <SidebarPinnedList :rows="pinned.rows" :now="now" :others="otherPins" />

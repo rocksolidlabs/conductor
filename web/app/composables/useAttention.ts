@@ -1,3 +1,4 @@
+import { sessionPlace } from '~/utils/memberStrip'
 import type { Ref } from 'vue'
 import type { RunInfo, SessionInfo } from './useSessions'
 import { ApiError } from './useApi'
@@ -221,7 +222,7 @@ export function useAttention() {
     if (!import.meta.client) return
     const fresh = alerting(newlyNeedingInput(prev, next))
     if (!fresh.length || !events.routes.value.needs_input.browser) return
-    for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, () => notificationTarget(window.innerWidth, s.id, s.attention?.id))
+    for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, () => notificationTarget(window.innerWidth, s.id, s.attention?.id, sessionPlace(s, s.id)))
     chime()
   }
 
@@ -244,7 +245,7 @@ export function useAttention() {
   function reactToEvent(e: RoutedEvent) {
     const alert = eventAlert(e, events.routes.value)
     if (!alert) return
-    notify(alert.title, alert.body, alert.tag, () => notificationTarget(window.innerWidth, e.sessionId))
+    notify(alert.title, alert.body, alert.tag, () => notificationTarget(window.innerWidth, e.sessionId, undefined, sessionPlace(store.value.sessions.get(e.sessionId), e.sessionId)))
     chime()
   }
 
