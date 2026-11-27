@@ -1343,16 +1343,16 @@ export const SETUP_WORDS = {
     { label: 'Stay on this page', value: 'stay' },
     { label: 'Open the run', value: 'open' },
   ],
-  permissions: 'Permission prompts',
+  permissions: 'Yolo',
   viewLink: 'View link',
 } as const
 
-/** The Permission prompts choice: the server's default (named with what it is now), ask, or skip; each the crew's `yolo` as it stores it (yoloChoice). */
+/** The Yolo choice: the server's default (named with what it is now), off, or on; each the crew's `yolo` as it stores it (yoloChoice). */
 export function permissionItems(serverDefault: boolean): Array<{ label: string; value: 'default' | 'off' | 'on' }> {
   return [
-    { label: `The server's default (now ${serverDefault ? 'skip' : 'ask'})`, value: 'default' },
-    { label: 'Ask before acting', value: 'off' },
-    { label: 'Skip: members act without asking', value: 'on' },
+    { label: `The server's default (now ${serverDefault ? 'on' : 'off'})`, value: 'default' },
+    { label: 'Off: members ask before acting', value: 'off' },
+    { label: 'On: members act without asking', value: 'on' },
   ]
 }
 
@@ -1363,10 +1363,9 @@ export function viewLinkHoursWords(ttlSeconds: number | undefined): string {
 
 /**
  * The line beside "More options" while they are folded: what each folded choice is now, so nothing set there is hidden. "Stays on this
- * page · Permission prompts: the server's default (ask) · No view link".
+ * page · No view link". Yolo is in view beside it, never folded.
  */
-export function moreOptionsLine(c: Pick<CrewInput, 'openAfterLaunch' | 'viewLinkTtlSeconds' | 'yolo'>, serverDefault: boolean): string {
-  const prompts = c.yolo === undefined || c.yolo === null ? `the server's default (${serverDefault ? 'skip' : 'ask'})` : c.yolo ? 'skip' : 'ask'
+export function moreOptionsLine(c: Pick<CrewInput, 'openAfterLaunch' | 'viewLinkTtlSeconds'>): string {
   const link = c.viewLinkTtlSeconds ? `a view link for ${viewLinkHoursWords(c.viewLinkTtlSeconds)}` : 'no view link'
-  return `${c.openAfterLaunch ? 'Opens the run' : 'Stays on this page'} · Permission prompts: ${prompts} · ${link.charAt(0).toUpperCase()}${link.slice(1)}`
+  return `${c.openAfterLaunch ? 'Opens the run' : 'Stays on this page'} · ${link.charAt(0).toUpperCase()}${link.slice(1)}`
 }

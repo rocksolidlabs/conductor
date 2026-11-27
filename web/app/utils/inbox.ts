@@ -246,7 +246,7 @@ export function reconcileDelivery(prev: readonly DeliveryStep[] | undefined, nex
 
 /** The step a reply's word gives, or null when it says nothing (an older owner). */
 function replyStep(reply: ReplyWord): Omit<DeliveryStep, 'step'> | null {
-  if (reply === 'accepted') return { state: 'done', words: "taken: the owner's reply to this browser's request said so" }
+  if (reply === 'accepted') return { state: 'done', words: "taken: the owner's reply to this device's request said so" }
   if (reply.startsWith('refused:')) return { state: 'refused', words: reply.slice('refused:'.length).trim() || 'refused' }
   return null
 }

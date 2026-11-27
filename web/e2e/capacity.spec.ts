@@ -2,7 +2,7 @@ import { randomBytes, randomInt } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, test, type Api, type Session } from './fixtures'
+import { expect, openMore, test, type Api, type Session } from './fixtures'
 import type { Locator, Page, Response, Route } from '@playwright/test'
 
 // Accounts and the capacity panel (docs/plans/capacity.md, Program item AC1, PR-5). Every account is a folder of this spec's own
@@ -92,13 +92,21 @@ function agentSessionOf(s: Session): string {
   return at >= 0 ? (s.command?.[at + 1] ?? '') : ''
 }
 
-/** Opens the launch dialog and picks an agent; the dialog's own radio group is drawn before the pick. */
+/**
+ * Opens the launch dialog and picks an agent; the dialog's own radio group is drawn before the pick. The usage under the Account row
+ * is one line on the dialog's face; its Details is pressed once, so that the full panel this file reads is in view.
+ */
 async function launchDialog(page: Page, agentName: string): Promise<Locator> {
   await page.getByRole('button', { name: 'Launch agent' }).first().click()
   const dialog = page.getByRole('dialog')
   const agent = dialog.getByRole('radiogroup', { name: 'Agent' }).getByRole('radio', { name: agentName })
   await agent.click()
   await expect(agent).toHaveAttribute('aria-checked', 'true')
+  const details = dialog.locator('[data-capacity-unfold]')
+  await expect(details).toBeVisible()
+  if ((await details.getAttribute('aria-expanded')) !== 'true') await details.click()
+  await expect(details).toHaveAttribute('aria-expanded', 'true')
+  await expect(dialog.locator('[data-capacity-body]')).toBeVisible()
   return dialog
 }
 
@@ -146,6 +154,9 @@ test('an account added in Settings and made the default launches a session that 
   await page.goto('/')
   const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
   await expect(dialog.locator('[data-account-select]')).toContainText(`${work} (default)`)
+  // Model is folded under More options; its closed line names nothing while nothing is set there.
+  await expect(dialog.locator('[data-more-line]')).toHaveCount(0)
+  await openMore(dialog)
   await expect(dialog.locator('[data-launch-model-input]')).toHaveValue('')
   // The empty Model field says what the panel says: no model named, never the agent's default (the Arguments field can name one).
   await expect(dialog.locator('[data-launch-model-input]')).toHaveAttribute('placeholder', 'no model named')
@@ -397,6 +408,7 @@ test.describe('the account a launch is sent with', () => {
     await page.goto('/')
     const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
     await pickAccount(page, dialog, work)
+    await openMore(dialog)
     const model = dialog.locator('[data-launch-model-input]')
     await model.fill('claude-e2e-model')
     await expect(model).toHaveValue('claude-e2e-model')

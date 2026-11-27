@@ -49,6 +49,59 @@ export function lastItemSpan(n: number, layout: GridLayout): number {
   return Math.min(layout.cols, Math.max(1, layout.cols * layout.rows - n + 1))
 }
 
+/** The ways a run's member tiles are laid out on its Members view, in the order its switch draws them. */
+export type RunLayout = 'grid' | 'large'
+export const RUN_LAYOUTS: readonly RunLayout[] = ['grid', 'large']
+/** Each layout's name (the switch's tooltip, the palette's row) and icon. */
+export const RUN_LAYOUT_LOOK: Record<RunLayout, { label: string; icon: string }> = {
+  grid: { label: 'Grid', icon: 'i-lucide-layout-grid' },
+  large: { label: 'One large', icon: 'i-lucide-layout-panel-left' },
+}
+export function isRunLayout(v: unknown): v is RunLayout {
+  return typeof v === 'string' && (RUN_LAYOUTS as readonly string[]).includes(v)
+}
+/** A tile on a run's wall is never narrower or lower than these: past them the tiles scroll. */
+export const TILE_MIN_WIDTH = 260
+export const TILE_MIN_HEIGHT = 140
+/** The gap between two tiles, in px (gap-3). */
+export const TILE_GAP = 12
+
+/** A tile's cell on the wall (its grid-column and grid-row); empty where the grid places it. */
+export type WallCell = { gridColumn?: string; gridRow?: string }
+
+/** The wall's tracks and each tile's cell, in the run's order. */
+export interface WallTracks {
+  columns: string
+  rows: string
+  cells: WallCell[]
+  /** The tile drawn large (One large), which stays in view while the column beside it scrolls; -1 for none. */
+  large: number
+}
+
+/**
+ * The tracks of a run's wall of `n` tiles in a box `w` x `h`. Grid: the columns and rows that give the tiles the most room
+ * (bestGrid), no more columns than TILE_MIN_WIDTH allows, each row at least TILE_MIN_HEIGHT, the last tile taking the cells its row
+ * leaves. One large: the tile `large` (the first when it is out of range) in two thirds of the width and the whole height, the
+ * others in a column at the right, each at least TILE_MIN_HEIGHT tall, the column scrolling. The tiles keep their order on the page
+ * and only their cells change, so a change of layout never draws a tile again.
+ */
+export function wallTracks(layout: RunLayout, n: number, w: number, h: number, large = 0): WallTracks {
+  if (layout === 'large' && n > 1) {
+    const big = large >= 0 && large < n ? large : 0
+    const others = n - 1
+    let k = 0
+    const cells = Array.from({ length: n }, (_, i): WallCell => (i === big ? { gridColumn: '1', gridRow: `1 / span ${others}` } : { gridColumn: '2', gridRow: String(++k) }))
+    return { columns: 'minmax(0, 2fr) minmax(0, 1fr)', rows: `repeat(${others}, minmax(${TILE_MIN_HEIGHT}px, 1fr))`, cells, large: big }
+  }
+  const best = bestGrid(n, w, h, TILE_GAP, 1.4)
+  const most = w > 0 ? Math.max(1, Math.floor((w + TILE_GAP) / (TILE_MIN_WIDTH + TILE_GAP))) : best.cols
+  const cols = Math.min(best.cols, most)
+  const g = { cols, rows: Math.max(1, Math.ceil(n / cols)) }
+  const span = lastItemSpan(n, g)
+  const cells = Array.from({ length: n }, (_, i): WallCell => (i === n - 1 && span > 1 ? { gridColumn: `span ${span} / span ${span}` } : {}))
+  return { columns: `repeat(${g.cols}, minmax(0, 1fr))`, rows: `repeat(${g.rows}, minmax(${TILE_MIN_HEIGHT}px, 1fr))`, cells, large: -1 }
+}
+
 /**
  * The Yard's chips (the UX review's P10): All, and one chip for each live state of the status table, so a chip filters the grid by one
  * key of sessionStatus (Working is `working` alone, Finished `finished` alone, Running the agents that report no turns and the ones

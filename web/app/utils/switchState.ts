@@ -12,6 +12,8 @@ export const AFTER_FIRST_REPLY = "Moves to Chat after the agent's first reply."
 export const MOVING = 'The session is moving; try again in a moment.'
 /** A move to Chat at rest ends what the agent left running in its terminal (the move's notice says it was ended). */
 export const ENDS_TERMINAL_WORK = 'Moving to Chat ends what the agent left running in its terminal.'
+/** A crew's member runs in its terminal (UX3 R13): its Chat side is drawn dimmed, and says this on hover, on focus and at a press. */
+export const MEMBER_TERMINAL = 'Crew members run in their terminals.'
 
 /** What the switch is drawn from: the session's way and its noted move (the welcome, the `way` message), and the page's facts. */
 export interface SwitchFacts {
@@ -36,6 +38,8 @@ export interface SwitchFacts {
   moving: boolean
   /** The route's refusal of the last press (move_refused's words), while what it was judged on stands (`refusalStands`). */
   refused?: string
+  /** The session is a crew's member: it runs the way its crew runs it, and its other side cannot be taken. */
+  member?: boolean
 }
 
 export interface SwitchState {
@@ -48,6 +52,11 @@ export interface SwitchState {
   line: string
   /** The side a noted move goes to, '' for none. */
   noted: SessionWay | ''
+  /**
+   * Why the other side cannot be taken, '' for none: that side is drawn dimmed (aria-disabled, so that its tooltip still shows), its
+   * tooltip says this, and a press of it shows it for a moment as the line, sending nothing.
+   */
+  held: string
 }
 
 /** The words of a move to `to` pressed during a turn. */
@@ -65,16 +74,19 @@ export function notedWords(to: SessionWay, firstReply: boolean): string {
 
 /** The switch's state from its facts. */
 export function switchState(f: SwitchFacts): SwitchState {
-  const off: SwitchState = { shown: false, selected: f.way, pressable: false, line: '', noted: '' }
+  const off: SwitchState = { shown: false, selected: f.way, pressable: false, line: '', noted: '', held: '' }
   if (!f.hasProtocol) return off
-  const s: SwitchState = { shown: true, selected: f.way, pressable: f.canMove && !f.moving, line: '', noted: f.noted }
+  const s: SwitchState = { shown: true, selected: f.way, pressable: f.canMove && !f.moving, line: '', noted: f.noted, held: '' }
   if (!f.canMove) return { ...s, noted: '' }
+  // A crew's member: both sides drawn as on any agent, the other dimmed with why; no line stands, and no press is sent.
+  if (f.member) return { ...s, pressable: false, noted: '', held: f.way === 'terminal' ? MEMBER_TERMINAL : '' }
   const other: SessionWay = f.way === 'terminal' ? 'protocol' : 'terminal'
   if (f.moving) s.line = MOVING
   else if (f.refused) s.line = f.refused
   else if (f.noted) s.line = f.why || notedWords(f.noted, f.firstReply)
   else if (f.why) s.line = f.why
-  else if (other === 'protocol' && !f.firstReply) s.line = FIRST_REPLY
+  // Before the agent's first reply Chat cannot be taken: no line stands above the terminal; the dimmed Chat side says why (UX3 R15).
+  else if (other === 'protocol' && !f.firstReply) s.held = FIRST_REPLY
   else if (other === 'protocol' && !f.qualified) s.line = NOT_QUALIFIED
   // During a turn nothing is said until a move is pressed (its `way` message says it is noted, with its sentence); at rest, what a
   // move to Chat ends.

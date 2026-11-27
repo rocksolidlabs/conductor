@@ -531,7 +531,7 @@ export const ROUTE_GROUPS: ReadonlyArray<{ key: string; title: string; note: str
 /** The destinations a route row has, as the routing pills and the readout name them. */
 export const ROUTE_KEYS: ReadonlyArray<{ key: keyof RouteRow; label: string; icon: string; summary: string; hint: string }> = [
   { key: 'badge', label: 'Badge', icon: 'i-lucide-circle-dot', summary: 'Sidebar badge', hint: 'A badge on the session in the sidebar and on its Yard tile' },
-  { key: 'browser', label: 'Browser', icon: 'i-lucide-bell', summary: 'Browser notification', hint: 'A browser notification and the chime, as switched on under Alerts' },
+  { key: 'browser', label: 'This device', icon: 'i-lucide-bell', summary: 'Notification on this device', hint: 'A notification on this device and the chime, as switched on under Alerts' },
   { key: 'wall', label: 'Roundhouse jump', icon: 'i-lucide-gallery-horizontal', summary: 'Roundhouse jumps to it', hint: 'The Roundhouse jumps to the session while it follows routed events' },
   { key: 'feed', label: 'Feed', icon: 'i-lucide-list', summary: 'Feed', hint: 'A line in the live feed' },
 ]
