@@ -467,7 +467,9 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 		return map[string]any{}, nil
 	case "tools/list":
 		turn := s.getenv(envBrakeman) != ""
-		tools := mcpTools(turn, turn && s.granted(ctx), s.getenv(protocolEnv) != "")
+		// The permission tool, to Claude Code's chat alone (CONDUCTOR_PROTOCOL=1):
+		// another protocol's child asks in its own stream.
+		tools := mcpTools(turn, turn && s.granted(ctx), s.getenv(protocolEnv) == "1")
 		if s.getenv("CONDUCTOR_TASK") == "" {
 			tools = slices.DeleteFunc(tools, func(t mcpTool) bool { return taskOnly[t.Name] })
 		}

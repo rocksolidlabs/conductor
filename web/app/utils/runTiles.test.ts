@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIVITY_AT_FIRST, RUN_TILES_CREWS, RUN_TILES_KEY, choiceFor, choose, crewOfRun, largeOf, parseRunTiles, readRunTiles, withShares, writeRunTiles } from './runTiles'
+import { ACTIVITY_AT_FIRST, RUN_TILES_CREWS, RUN_TILES_KEY, choiceFor, choose, crewOfRun, largeOf, parseRunTiles, readRunTiles, takeLast, withShares, writeRunTiles } from './runTiles'
 
 describe('the run tiles record', () => {
+  it("takes the server's last choice up, and a crew with a choice of its own keeps it", () => {
+    const own = choose(parseRunTiles(null), 'refunds', { layout: 'large', activity: false })
+    const lost = { ...own, last: { layout: 'grid' as const, activity: false } }
+    const back = takeLast(lost, { layout: 'large', activity: true })
+    expect(back.last).toEqual({ layout: 'large', activity: true })
+    expect(choiceFor(back, 'docs')).toEqual({ layout: 'large', activity: true })
+    expect(choiceFor(back, 'refunds')).toEqual({ layout: 'large', activity: false })
+    // A layout this page does not draw, or nothing kept, leaves the record as it was.
+    expect(takeLast(lost, { layout: 'mosaic' }).last).toEqual({ layout: 'grid', activity: false })
+    expect(takeLast(lost, undefined)).toBe(lost)
+    expect(takeLast(back, { layout: 'large', activity: true })).toBe(back)
+  })
+
   it('is empty with Activity as at first when nothing is kept or it does not read', () => {
     for (const raw of [null, '', 'not json', '[]', '7', '{"last":{"activity":"yes"},"crews":"x"}']) {
       const r = parseRunTiles(raw)
