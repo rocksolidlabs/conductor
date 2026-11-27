@@ -3047,6 +3047,94 @@ the question and answers its held reply), `TestACPVerbatimIsDeclared`
 starting with `/` may run as the agent's commands."), fixtures per agent,
 and the stub's third mode with its Playwright run. **18 h.**
 
+**As built, row 11, before the live looks** (#1176; `internal/agentproto/acp.go`,
+`acp_argv.go`, its fixtures in `testdata/acp`, `internal/api/chat_start.go`,
+`move.go`, `web/e2e/stub-protocol-acp.mjs`). No agent's catalog entry
+declares `acp-v1`, and `acpMoves` holds no agent, until each agent's look
+below.
+
+- One client, protocol 1, the baseline: `initialize` advertises `fs`
+  (`readTextFile`, `writeTextFile` false) and `terminal` false and names
+  `conductor`; every `fs/*`, `terminal/*` and other request the client did
+  not advertise is answered `-32601`. An answer of another protocol version
+  starts no chat.
+- The chat takes up the terminal's session through the protocol:
+  `session/resume` where the agent advertises
+  `sessionCapabilities.resume`, else `session/load` where it advertises
+  `loadSession` (the history a load replays is not shown), each with the
+  session's folder as `cwd` and no MCP server (`mcpServers: []`); an agent
+  that offers neither starts no chat. A refusal with `-32000` (the
+  protocol's auth required) goes back to the terminal ("This agent is not
+  signed in; sign in from its terminal.").
+- The argv is the catalog's command and the protocol recipe's arguments
+  (the agent's own start of its ACP server); a terminal launched with
+  arguments of its own or a model flag refuses the move ("This session's
+  arguments hold …, which a chat cannot take; it stays in its terminal."),
+  an added folder in its own words; a yolo launch's arguments are not
+  carried, so the chat's requests are asked.
+- A message is `session/prompt` with one text block, as written; the
+  agent's first update of the turn, or the prompt's answer, is the message
+  taken; `stopReason` `end_turn` is done, `cancelled` interrupted,
+  `max_tokens` and `max_turn_requests` a limit, `refusal` an error. Stop
+  sends `session/cancel` and answers every pending permission request
+  `cancelled`. `agent_message_chunk` is the agent's words, `tool_call` a
+  step (its `name`, else its `kind`; its `rawInput`, else `{}`; its title
+  the one line), `tool_call_update` its end with its content's text and its
+  diffs as file changes; thoughts, plans, the context's use and the rest
+  are no entry, and an update of another session, or between turns, is
+  dropped.
+- A permission request is handed to the session with its `toolCallId` as
+  the call and the step's name and input as announced (its own name and
+  `rawInput` where it gives them), so that the session's binding (design 7,
+  rule 1) takes only a request about a call the stream showed. An Allow
+  selects the `allow_once` option by its own `optionId`, a Deny the
+  `reject_once` option's or `cancelled`; an `allow_always` or
+  `reject_always` option is never selected. Built differently from design
+  4: a request that offers no `allow_once` is declined at once with a
+  notice ("The agent offered no way to allow this call once; Conductor
+  declined it."), not put to the operator with Deny only: the session's
+  question has no Deny-only form yet. An agent's `$/cancel_request` takes
+  its request back, answered `-32800` as the protocol asks.
+- `MovesFor(name, adapter)` is the move's word for an agent: for `acp-v1`
+  the agent's own (`acpMoves`), for every other protocol its driver's. A
+  version is qualified once the identity probe read one; the protocol's
+  version is the gate.
+- The stub's third mode (`stub-protocol-acp.mjs`, reached by `acp` or
+  `--acp`, and from the terminal stub by them with `CONDUCTOR_PROTOCOL=1`);
+  `TestStubACPSpeaksTheClient` holds it to the client, and
+  `chat-acp.spec.ts` walks an ACP chat (its `fixme` lifted with `ACP_MOVES`
+  by the first agent's declaration).
+
+The built-in agents, by their own pages:
+
+| Agent | Its ACP start | Its catalog's session recipe | Chat |
+|---|---|---|---|
+| GitHub Copilot CLI | `copilot --acp` ("public preview") | yes | after its look |
+| Cursor CLI | `agent acp` (the catalog's command is `cursor-agent`) | yes | after its look |
+| OpenCode | `opencode acp` | none | needs a session recipe first: no conversation id is known to take up |
+| Goose | `goose acp` | yes | after its look |
+| Antigravity | `agy acp` | yes | after its look |
+| oh-my-pi | `omp acp` | none | needs a session recipe first |
+| DeepSeek Harness | `dsh --profile acp` ("developer preview") | none | needs a session recipe first |
+| pi, aider, Amp | none of their own | | no Chat: no protocol start the client could speak to |
+
+**Row 11's live looks, one per agent before its declaration** (the real
+program at its current version, in a throwaway repository, a terminal
+session that had a first turn): the start runs its ACP server on stdio with
+those arguments; its `initialize` answer (protocol 1, `loadSession`,
+`sessionCapabilities.resume`, `authMethods`); that the terminal's own
+session id taken up by `session/resume` or `session/load` is that
+conversation (its earlier turns known to the agent), and that the terminal
+resumed after with the catalog's resume arguments sees the chat's turns
+(`acpMoves`); what its start loads from the folder (its settings, its
+instructions file, its MCP servers) against what its terminal loaded;
+what a message that starts with `/` (one of its `available_commands`) and
+one holding `@path` do; whether every permission request names a
+`toolCallId` the stream showed with the same input (else every request is
+denied); its options' ids and kinds; what a signed-out start answers; and
+whether a turn leaves work running after its answer. Then its fixtures are
+recorded there.
+
 ## Decision before any builder
 
 **Answered by a maintainer on 2026-11-24, for Claude Code: (a), any
