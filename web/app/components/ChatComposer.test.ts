@@ -74,4 +74,23 @@ describe("the agent's box", () => {
   it("bounds the agent's message by the submit's bound", () => {
     expect(src).toContain('const tooLong = computed(() => (props.agent ? bytes.value > MAX_SUBMIT : chatTooLong(bytes.value)))')
   })
+  it("listsFilesForAnAtWord (UX3 R6): the agent's box alone, where the connection may read files; a pick writes the path as text", () => {
+    // The agent's box draws the list; the people's chat has none.
+    expect(agentForm).toContain('<ChatBoxMenu v-if="menuOpen"')
+    expect(src.slice(src.indexOf('<form v-else'))).not.toContain('ChatBoxMenu')
+    expect(src).toContain('const mention = computed<Mention | null>(() => (props.agent && props.files ? mentionAt(draft.value, caret.value) : null))')
+    expect(view).toContain(':files="conn.fileView.value ? files : undefined"')
+    // Enter and Tab pick while it is open and never send; nothing while an input method composes.
+    expect(src).toMatch(/function onKeydown\(e: KeyboardEvent\) \{\s*if \(menuKey\(e\)\) return/)
+    expect(src).toContain("if (!menuOpen.value || e.isComposing) return false")
+    expect(src).toMatch(/if \(e\.key === 'Enter' \|\| e\.key === 'Tab'\) \{[\s\S]*?e\.preventDefault\(\)\s*pick\(active\.value\)\s*return true/)
+    // Escape closes the list and keeps the text: it is the list's, not the box's.
+    expect(src).toMatch(/if \(e\.key === 'Escape'\) \{\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)\s*dismissed\.value = mentionKey\.value\s*return true/)
+    // One read on its way at a time, and a late answer dropped.
+    expect(src).toContain('if (n !== asked || mention.value?.words !== words) return')
+    expect(src).toMatch(/if \(inFlight\) \{\s*pending = words\s*return/)
+    // A pick: only a row that may be picked, the @ word replaced by the path and a space.
+    expect(src).toContain('if (!m || !row?.pickable) return')
+    expect(src).toContain('const put = pickMention(draft.value, m, row.value)')
+  })
 })

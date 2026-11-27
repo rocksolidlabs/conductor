@@ -5,6 +5,7 @@ import { ReplyError, type ReplyTaken } from '~/utils/reply'
 import { answerOf, atChatEnd, chatBlocks, limitReads, OWN_ANSWER_LINE, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
 import { MAX_TRANSCRIPT_IN_FLIGHT } from '~/utils/protocol'
 import { plainWords } from '~/utils/permissionInput'
+import { fromFolder } from '~/utils/chatBoxMenu'
 
 /**
  * A session run as a chat (docs/plans/chat-or-terminal.md, design 11), where its terminal is drawn otherwise: quiet by design. What
@@ -144,6 +145,24 @@ async function stop() {
   }
 }
 const answer = (a: Omit<PermissionAnswer, 't' | 'reqId'>) => going(() => conn.permissionAnswer(a))
+
+/**
+ * The box's files for `@` (UX3 R6), read over this connection where it may read files: the files the agent touched, inside the
+ * folder and not deleted, for nothing typed; else the folder's files whose name holds the words (the `find` op). A refused read
+ * rejects, and the box says nothing of it.
+ */
+async function files(words: string): Promise<{ paths: string[]; more: boolean }> {
+  if (words === '') {
+    const r = await conn.requestFile('', false, { op: 'touched' })
+    if (r.header.kind !== 'touched') throw new Error('refused')
+    const folder = conn.welcome.value?.cwd || r.header.path
+    const paths = (r.header.touched ?? []).filter((t) => t.op !== 'delete').map((t) => fromFolder(folder, t.path)).filter((p): p is string => !!p)
+    return { paths, more: false }
+  }
+  const r = await conn.requestFile(words, false, { op: 'find' })
+  if (r.header.kind !== 'find') throw new Error('refused')
+  return { paths: r.header.matches ?? [], more: !!r.header.truncated }
+}
 
 // The newest entry in view while the person is at the bottom: a turn's words follow as they come; one who scrolled up stays. Where the
 // person is, is measured as each change arrives, before it is drawn (`flush: 'pre'`): an input opened at the chat's end grows below it
@@ -309,6 +328,7 @@ watch(
       <ChatComposer
         v-if="controls"
         ref="composer"
+        :files="conn.fileView.value ? files : undefined"
         :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said, name: agentName, draftKey, asked }"
         data-chat-box
         @send="(text) => send(text)"
