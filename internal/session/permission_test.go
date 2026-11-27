@@ -1245,3 +1245,35 @@ func replyTo(t *testing.T, f *sessiontest.FakeProtocol, ref string) *Verdict {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// A path longer than the system opens as written is judged where a writer
+// that cleans it first would open it: into the list, floored. One whose
+// cleaned letters are longer still is opened by nobody: judged as words
+// alone, and asked.
+func TestAPathLongerThanTheSystemOpensIsJudgedCleaned(t *testing.T) {
+	data := realDir(t, t.TempDir())
+	s, _, f := protocolSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	f.TurnStarted("")
+	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	into := filepath.Dir(data) + "/" + strings.Repeat("a/../", maxWalkPath/5+1) + filepath.Base(data) + "/x"
+	nowhere := "/" + strings.Repeat("a/", maxLinkSteps) + "x"
+	for i, tc := range []struct {
+		path    string
+		floored bool
+	}{{into, true}, {nowhere, false}} {
+		if len(tc.path) <= maxWalkPath {
+			t.Fatalf("a path of %d bytes", len(tc.path))
+		}
+		in := j(map[string]any{"kind": "read", "title": "x", "locations": []any{map[string]any{"path": tc.path}}})
+		call := fmt.Sprintf("c-%d", i)
+		f.ToolStarted(ToolStep{Ref: call, Name: "read", Input: []byte(in)})
+		e, v := inStreamAsked(t, s, f, "req-"+call, call, "read", in)
+		if tc.floored {
+			deniedWith(t, s, e, v, FloorWords)
+			continue
+		}
+		if v != nil || e.State != PermissionOpen {
+			t.Fatalf("a path nobody opens: %+v, replied %+v", e, v)
+		}
+	}
+}

@@ -826,8 +826,9 @@ var callFolderKeys = []string{"cwd", "workdir", "directory", "dir", "working_dir
 const (
 	// maxWalkStrings is the most strings a call's walk judges.
 	maxWalkStrings = 4096
-	// maxWalkPath is the longest string judged as a path: a longer one is no
-	// path the system opens (PATH_MAX), and is judged as words alone.
+	// maxWalkPath is the longest string judged as a path as written (the
+	// system opens no longer one, PATH_MAX): a longer one is judged by its
+	// cleaned letters when they are within it, else as words alone.
 	maxWalkPath = 4096
 	// maxLinkSteps is the most parts linksFirst walks, its links' own parts
 	// counted.
@@ -919,6 +920,11 @@ func (s *Local) streamFloored(input []byte) string {
 			}
 			if p, ok := strings.CutPrefix(t, "file://"); ok {
 				t = p
+			}
+			if looksLikePath(t) && len(t) > maxWalkPath {
+				// Longer than the system opens as written: judged where a
+				// writer that cleans it first opens it.
+				t = filepath.Clean(t)
 			}
 			if len(t) <= maxWalkPath && looksLikePath(t) {
 				if denied, bounded := s.pathJudged(t, deny); bounded {
