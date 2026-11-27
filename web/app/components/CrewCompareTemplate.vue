@@ -275,7 +275,7 @@ function onKey(e: KeyboardEvent) {
             </UFormField>
             <UFormField label="Folder" name="folder" :error="allowBlocked || folderLine || marked('folder')">
               <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" data-compare-cwd @update:model-value="patch({ folder: $event })" />
-              <FolderAllowLine ref="allowLine" :path="draft.folder" :off="!draft.folder.trim()" @use="(p: string) => patch({ folder: p })" @allowed="checkFolder(draft.folder.trim())" />
+              <FolderAllowLine ref="allowLine" :path="draft.folder" :off="!draft.folder.trim()" @use="(p: string) => patch({ folder: p })" @allowed="checkFolder(draft.folder.trim())" @leave="open = false" />
             </UFormField>
           </div>
 

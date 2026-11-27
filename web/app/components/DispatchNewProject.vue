@@ -111,7 +111,7 @@ async function submit() {
         </div>
         <UFormField label="Repository folder" name="cwd" hint="optional">
           <DirInput v-model="cwd" placeholder="none" name="cwd" picker-title="The project's repository" />
-          <FolderAllowLine :path="cwd" :off="!cwd.trim()" @use="(p: string) => (cwd = p)" />
+          <FolderAllowLine :path="cwd" :off="!cwd.trim()" @use="(p: string) => (cwd = p)" @leave="open = false" />
         </UFormField>
         <UFormField label="Tracker" name="tracker">
           <URadioGroup v-model="tracker" :items="trackerItems" variant="card" size="sm" :ui="{ fieldset: 'grid grid-cols-1 gap-2 sm:grid-cols-2' }" data-new-project-tracker />

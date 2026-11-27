@@ -61,7 +61,9 @@ const note = computed(() => moreNote({ truncated: truncated.value, ...more.value
 const loading = ref(false)
 // A listing is due after the pause.
 const pending = ref(false)
-const problem = ref('')
+// The listing refused the text (a place outside the folders agents may use, or another error of the route): no list is shown at all,
+// and the line under the field, where there is one (FolderAllowLine), says it in plain words.
+const unlisted = ref(false)
 let timer: number | undefined
 // Replies may come back out of order, or after the text changed again: only the reply to the latest text counts.
 let seq = 0
@@ -89,7 +91,7 @@ async function fetchNow() {
     entries.value = r.entries
     truncated.value = r.truncated
     more.value = { more: r.more, moreUnknown: r.moreUnknown }
-    problem.value = ''
+    unlisted.value = false
     listedFor = query
     // The listing changed under the highlight: an arrow pressed while it was on its way no longer counts.
     moved = false
@@ -98,7 +100,7 @@ async function fetchNow() {
     listedFor = undefined
     entries.value = []
     truncated.value = false
-    problem.value = (e as Error).message
+    unlisted.value = true
   } finally {
     if (n === seq) {
       // A pick closes the list: it opens again on the picked directory's children, the focus back in the field
@@ -216,7 +218,8 @@ onBeforeUnmount(() => {
     <UInputMenu
       ref="menu"
       :model-value="model"
-      v-model:open="open"
+      :open="open && !unlisted"
+      @update:open="(v: boolean) => (open = v)"
       mode="autocomplete"
       :items="entries"
       value-key="path"
@@ -244,7 +247,7 @@ onBeforeUnmount(() => {
         <UBadge v-if="gitMark(item.git).label" :label="gitMark(item.git).label" :color="gitMark(item.git).tone" variant="subtle" size="sm" />
       </template>
       <template #empty>
-        <span aria-live="polite" :class="{ 'text-warning': problem && !pending && !loading }">{{ pending || loading ? 'Looking…' : problem || 'No directory here.' }}</span>
+        <span aria-live="polite">{{ pending || loading ? 'Looking…' : 'No directory here.' }}</span>
       </template>
       <template #content-bottom>
         <div aria-live="polite">

@@ -352,10 +352,10 @@ const cwdRefused = ref<(LaunchRefusal & { cwd: string }) | null>(null)
 const folderRefusal = computed(() => (cwdRefused.value && cwdRefused.value.cwd === state.cwd ? cwdRefused.value : null))
 // The line under Folder (FolderAllowLine, R30): what the server's check says of the folder, and in the desktop app Allow this folder.
 // It is checked again before every launch, and a folder it says cannot be used is not sent.
-const folderLine = useTemplateRef<{ check: () => Promise<boolean>; focusAction: () => boolean; blocks: boolean }>('folderLine')
+const folderLine = useTemplateRef<{ check: () => Promise<boolean>; blocks: boolean }>('folderLine')
 const folderFocused = ref(false)
-/** A clone's blank folder is its source's: nothing to check. */
-const folderUnchecked = computed(() => !open.value || (!!cloning.value && !state.cwd.trim()))
+/** A blank folder is the agent's own, the server's default or a clone's source's: nothing is checked until one is typed. */
+const folderUnchecked = computed(() => !open.value || !state.cwd)
 const lineBlocks = computed(() => !!folderLine.value?.blocks)
 function onFolderBlur(e: FocusEvent) {
   const to = e.relatedTarget as Node | null
@@ -366,12 +366,15 @@ function onFolderAllowed() {
   cwdRefused.value = null
   void nextTick(() => form.value?.closest('[role="dialog"]')?.querySelector<HTMLElement>('[data-launch-submit], [data-launch-clone-submit]')?.focus())
 }
-/** Whether the folder may be launched in, checked now; a folder that cannot be is not sent, and the focus goes to the way on. */
+/**
+ * Whether the folder may be launched in, checked now; a folder that cannot be is not sent, and the focus goes to Folder, never to the
+ * line's button: allowing a folder is a press of its own.
+ */
 async function folderReady(): Promise<boolean> {
   const line = folderLine.value
   if (!line || folderUnchecked.value) return true
   if (await line.check()) return true
-  if (!line.focusAction()) focusFolder()
+  focusFolder()
   return false
 }
 function focusFolder() {
@@ -599,7 +602,7 @@ async function submit() {
         <template v-if="state.runsOn === 'server'">
           <UFormField label="Folder" name="cwd" :error="(folderRefusal && !lineBlocks ? folderRefusal.words : lineBlocks) || undefined" data-launch-folder @focusin="folderFocused = true" @focusout="onFolderBlur">
             <DirInput v-model="state.cwd" :placeholder="folderPlaceholder" name="cwd" picker-title="Where the session runs" />
-            <FolderAllowLine ref="folderLine" :path="state.cwd" :focused="folderFocused" :off="folderUnchecked" @use="(p: string) => (state.cwd = p)" @allowed="onFolderAllowed" />
+            <FolderAllowLine ref="folderLine" :path="state.cwd" :focused="folderFocused" :off="folderUnchecked" @use="(p: string) => (state.cwd = p)" @allowed="onFolderAllowed" @leave="open = false" />
             <template v-if="folderRefusal && !lineBlocks" #error>
               <span data-launch-folder-refused>{{ folderRefusal.words }}<template v-if="folderRefusal.outside && isDesktop"> <NuxtLink to="/settings?section=folders" class="underline" data-launch-folder-settings @click="open = false">Add it in Settings</NuxtLink></template></span>
             </template>
