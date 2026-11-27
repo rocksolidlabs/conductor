@@ -151,6 +151,65 @@ test('a send that failed says Not sent with the server’s words, and the line s
   await page.unroute('**/api/runs/*/broadcast')
 })
 
+test('a line everyone it named got is said in the bar for a while, with no toast', async ({ page, state }) => {
+  await page.setViewportSize({ width: 2000, height: 810 })
+  await openRun(page)
+  const input = field(page)
+  const line = `to the crew ${Date.now().toString(36)}`
+  await input.fill(line)
+  const answered = page.waitForResponse((r) => r.url().endsWith('/broadcast') && r.request().method() === 'POST')
+  await input.press('Enter')
+  expect(await (await answered).json()).toEqual({ sent: ['lead', 'core'], skipped: [] })
+  await expect(input).toHaveValue('')
+  await expect(input).toHaveAttribute('placeholder', 'Sent to lead and core.')
+  await expect(bar(page).locator('[data-message-said]')).toHaveText('Sent to lead and core.')
+  await expect(page.locator('li').filter({ hasText: /Sent to \d+ of \d+/ })).toHaveCount(0)
+  for (const name of ['lead', 'core']) await expect.poll(() => transcript(state.home, name), { timeout: 20_000, message: `${name} got the line` }).toContain(line)
+  // Then the field names who gets the next line again (the bar says it for four seconds; the bound is above that).
+  await expect(input).toHaveAttribute('placeholder', 'Write a line for lead and core', { timeout: 15_000 })
+  await expect(bar(page).locator('[data-message-said]')).toHaveText('')
+})
+
+test('a line only some got toasts who was skipped and why', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRun(page)
+  await page.route('**/api/runs/*/broadcast', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sent: ['lead'], skipped: [{ member: 'core', reason: 'needs_input' }] }) }),
+  )
+  const input = field(page)
+  await input.fill('only some get this')
+  await bar(page).locator('[data-broadcast-send]').click()
+  const toast = page.locator('li').filter({ hasText: 'Sent to 1 of 2' }).last()
+  await expect(toast).toBeVisible()
+  await expect(toast).toContainText('Skipped core (waiting on a prompt).')
+  await expect(input).toHaveValue('')
+  await expect(input).not.toHaveAttribute('placeholder', /^Sent to/)
+  await page.unroute('**/api/runs/*/broadcast')
+})
+
+test('a long line shows its count from 3,072 bytes, red past 4,096 with Send off', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRun(page)
+  const input = field(page)
+  const count = bar(page).locator('[data-message-count]')
+  const send = bar(page).locator('[data-broadcast-send]')
+  await input.fill('x'.repeat(3071))
+  await expect(count).toHaveCount(0)
+  await input.fill('x'.repeat(3100))
+  await expect(count).toHaveText('3,100 / 4,096')
+  await expect(count).toHaveAttribute('data-message-count', 'under')
+  await expect(send).toBeEnabled()
+  // A letter of two bytes counts as two.
+  await input.fill('é'.repeat(2050))
+  await expect(count).toHaveText('4,100 / 4,096')
+  await expect(count).toHaveAttribute('data-message-count', 'over')
+  await expect(input).toHaveAttribute('aria-invalid', 'true')
+  await expect(send).toBeDisabled()
+  await input.fill('short')
+  await expect(count).toHaveCount(0)
+  await expect(send).toBeEnabled()
+})
+
 test('an answered member comes back ticked only while All is on', async ({ page, api }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await openRun(page)

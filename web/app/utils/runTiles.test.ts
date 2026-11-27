@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIVITY_AT_FIRST, RUN_TILES_CREWS, RUN_TILES_KEY, choiceFor, choose, crewOfRun, largeOf, parseRunTiles, readRunTiles, takeLast, writeRunTiles } from './runTiles'
+import { ACTIVITY_AT_FIRST, RUN_TILES_CREWS, RUN_TILES_KEY, choiceFor, choose, crewOfRun, largeOf, parseRunTiles, readRunTiles, takeLast, withShares, writeRunTiles } from './runTiles'
 
 describe('the run tiles record', () => {
   it("takes the server's last choice up, and a crew with a choice of its own keeps it", () => {
@@ -110,5 +110,18 @@ describe('the run tiles record', () => {
     expect(largeOf({ layout: 'large', activity: false, large: 'gone' }, ['lead', 'core'])).toBe('lead')
     expect(largeOf({ layout: 'large', activity: false }, ['lead', 'core'])).toBe('lead')
     expect(largeOf({ layout: 'large', activity: false }, [])).toBe('')
+  })
+
+  it("keeps the sizes of each layout's tracks for the crew, and leaves out a size that does not read", () => {
+    let r = parseRunTiles(null)
+    r = choose(r, 'refunds', withShares(choiceFor(r, 'refunds'), 'grid', 'cols', [0.123456, 0.876544]))
+    r = choose(r, 'refunds', withShares(choiceFor(r, 'refunds'), 'grid', 'rows', [0.5, 0.5]))
+    r = choose(r, 'refunds', withShares(choiceFor(r, 'refunds'), 'large', 'cols', [0.6, 0.4]))
+    expect(choiceFor(r, 'refunds').sizes).toEqual({ grid: { cols: [0.1235, 0.8765], rows: [0.5, 0.5] }, large: { cols: [0.6, 0.4] } })
+    expect(choiceFor(parseRunTiles(JSON.stringify(r)), 'refunds').sizes).toEqual(choiceFor(r, 'refunds').sizes)
+    const odd = parseRunTiles(
+      JSON.stringify({ last: { activity: false, sizes: { grid: { cols: [1], rows: [0.5, -1] }, spiral: { cols: [1, 1] }, rows: { rows: Array(13).fill(1) }, large: { cols: [1, 2] } } }, crews: [] }),
+    )
+    expect(odd.last.sizes).toEqual({ large: { cols: [1, 2] } })
   })
 })
