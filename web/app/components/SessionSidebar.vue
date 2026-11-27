@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { sessionPlace } from '~/utils/memberStrip'
 import { remotePins } from '~/utils/remote'
 import { cutNotice, staleNotice } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -433,7 +432,7 @@ const sheet = computed(() => {
     meta: rowMeta(s, !!s.crew, now.value).join(' · '),
     items: rowMenuItems(
       sessionTarget(s, sessionLive(s.status)),
-      { open: () => router.push(sessionPlace(s, s.id)), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), rename: () => renameModal.show(s), clone: () => cloneModal.show(s), cloneWithOptions: () => void cloneModal.withOptions(s), stop: () => askStop(`s:${s.id}`) },
+      { open: () => router.push(placeOf(s.id, {}, s)), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), rename: () => renameModal.show(s), clone: () => cloneModal.show(s), cloneWithOptions: () => void cloneModal.withOptions(s), stop: () => askStop(`s:${s.id}`) },
     ),
   }
 })

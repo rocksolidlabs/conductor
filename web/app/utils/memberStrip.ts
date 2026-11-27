@@ -57,6 +57,30 @@ export function sessionPlace(s: Pick<SessionInfo, 'crew'> | null | undefined, id
 }
 
 /**
+ * A session's address as the server builds it (`/sessions/<id>`, its `tab`, `open` and `line` with it) mapped to the session's place;
+ * any other address as it is. `find` gives the session as the page knows it.
+ */
+export function placeOfAddress(url: string, find: (id: string) => Pick<SessionInfo, 'crew'> | undefined): string {
+  const m = /^\/sessions\/([^/?#]+)(\?[^#]*)?$/.exec(url)
+  if (!m) return url
+  const id = decodeURIComponent(m[1]!)
+  const q = new URLSearchParams(m[2] ?? '')
+  return sessionPlace(find(id), id, { tab: q.get('tab') ?? undefined, open: q.get('open') ?? undefined, line: q.get('line') ?? undefined })
+}
+
+/**
+ * The address to go to for `to` from `here`: the page's own address when `to` is the place it is already at (the same path and the same
+ * `session`, whatever the session's own `tab`, `open` or `line`), so that a press on the member already open moves nothing and adds no
+ * history.
+ */
+export function keepIfHere(to: string, here: { path: string; query: LocationQuery; fullPath: string }): string {
+  const [path, query = ''] = to.split('?')
+  const session = new URLSearchParams(query).get('session')
+  if (!session || typeof here.query.session !== 'string') return to
+  return decodeURIComponent(path!) === decodeURIComponent(here.path) && session === here.query.session ? here.fullPath : to
+}
+
+/**
  * The history state's mark of a move a session's read made (SessionView's goAway): the page it landed on is the read's word, and that
  * page waits for its own read of the session rather than judging by the live list, which can disagree with the read for a while (a
  * crew formed while this app's events were away). Without it, the two would send the page back and forth.

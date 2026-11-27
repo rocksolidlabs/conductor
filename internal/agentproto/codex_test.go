@@ -645,9 +645,9 @@ func TestCodexVerbatimIsDeclared(t *testing.T) {
 }
 
 // The gate: a version below CodexMinVersion in the initialize answer is
-// ErrCodexNotQualified; an answer without a userAgent, no answer, and a
-// thread the server will not resume are ErrCodexNotStarted, well inside the
-// session's bound; a user agent that names no version passes (the probe
+// ErrCodexNotQualified; an answer without a userAgent, no answer (well
+// inside the session's bound, the case's own InitWait), and a thread the
+// server will not resume are ErrCodexNotStarted; a user agent that names no version passes (the probe
 // checked it); the probed version is qualified at CodexMinVersion and not
 // below it. A first turn that says the agent is not signed in ends Read with
 // ErrCodexNotSignedIn, which goes back to the terminal.
@@ -666,7 +666,13 @@ func TestCodexGate(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rec := &recorder{}
-			d, s, _ := newCodexServer(t, rec, CodexOptions{InitWait: 300 * time.Millisecond})
+			opts := CodexOptions{}
+			if c.name == "no answer" {
+				// The client's own bound is what this case is about; the
+				// others wait by the product's, which only bounds a hang.
+				opts.InitWait = 300 * time.Millisecond
+			}
+			d, s, _ := newCodexServer(t, rec, opts)
 			c.edit(s)
 			start := time.Now()
 			err := d.Begin(context.Background())
@@ -679,7 +685,7 @@ func TestCodexGate(t *testing.T) {
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Begin: %v, want %v", err, c.want)
 			}
-			if time.Since(start) > 30*time.Second {
+			if c.name == "no answer" && time.Since(start) > 30*time.Second {
 				t.Fatalf("Begin took %v", time.Since(start))
 			}
 			if StartWords(err) == "" {

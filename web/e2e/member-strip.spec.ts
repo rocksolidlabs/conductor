@@ -405,14 +405,26 @@ test("a press on the member already open does nothing: its sidebar row and a pal
     await expect(palette).toBeHidden()
     expect(await depth()).toBe(before)
     await expect(tab).toBeVisible()
+    // Its History row, whose address the server builds as the session's own page: the same place too.
+    await page.locator('body').press('Alt+/')
+    await expect(palette).toBeVisible()
+    await page.keyboard.type(name)
+    const historyRow = palette.locator('[data-palette-row^="history:"]').filter({ hasText: name }).first()
+    await expect(historyRow).toBeVisible({ timeout: LONG_MS })
+    await historyRow.click()
+    await expect(palette).toBeHidden()
+    expect(page.url()).toBe(url)
+    expect(await depth()).toBe(before)
+    await expect(tab).toBeVisible()
     expect(sockets, 'no new socket to the member').toEqual([])
   } finally {
     await page.context().close()
   }
 })
 
-test("what a person typed in a member's file is there again after another member and back, its tab and its unsaved mark too", async ({ browser }) => {
+test("what a person typed in a member's files is there again after another member and back: both tabs unsaved, the one behind asks", async ({ browser }) => {
   writeFileSync(join(cwd, 'draft.txt'), 'first line\n')
+  writeFileSync(join(cwd, 'second.txt'), 'second file\n')
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
   try {
     const lead = idOf('lead')
@@ -427,20 +439,41 @@ test("what a person typed in a member's file is there again after another member
     await page.keyboard.press('Control+End')
     await page.keyboard.type('typed and not saved')
     await expect(tab.locator('[data-editor-dirty]')).toBeVisible()
+    // A second file, opened in the same place, typed into too: it is the one in front, draft.txt behind it.
+    await inApp(page, `${placeOf('lead')}&open=second.txt`)
+    const second = page.locator('[data-editor-tab]').filter({ hasText: 'second.txt' })
+    await expect(second).toHaveAttribute('data-editor-tab-active', '', { timeout: LONG_MS })
+    await expect(page.locator('[data-editor-area] .monaco-editor .view-lines').first()).toContainText('second file', { timeout: LONG_MS })
+    await page.locator('[data-editor-area] .monaco-editor').first().click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type('also typed')
+    await expect(second.locator('[data-editor-dirty]')).toBeVisible()
     await page.locator(`[data-member-strip] [data-member-tab="core"]`).click()
     await expect.poll(() => where(page)).toBe(placeOf('core'))
     await expect(page.locator('[data-editor-tab]').filter({ hasText: 'draft.txt' })).toHaveCount(0)
     await page.locator(`[data-member-strip] [data-member-tab="lead"]`).click()
     await expect.poll(() => where(page)).toBe(placeOf('lead'))
-    await expect(tab).toBeVisible({ timeout: LONG_MS })
-    await expect(tab.locator('[data-editor-dirty]')).toBeVisible({ timeout: LONG_MS })
+    // Both back, both unsaved: the one in front, and the one behind whose editor is not drawn.
+    await expect(second).toBeVisible({ timeout: LONG_MS })
+    await expect(second.locator('[data-editor-dirty]')).toBeVisible({ timeout: LONG_MS })
+    await expect(tab.locator('[data-editor-dirty]')).toBeVisible()
+    await expect(page.locator('[data-editor-area] .monaco-editor .view-lines').first()).toContainText('also typed', { timeout: LONG_MS })
+    // Closing the one behind asks first, in the editor's own words.
+    const id = await tab.getAttribute('data-editor-tab')
+    await page.locator(`[data-editor-close="${id}"]`).click({ force: true })
+    await expect(page.getByText('Save draft.txt?')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByText('Save draft.txt?')).toHaveCount(0)
+    await expect(tab).toBeVisible()
+    // Its text is there when it is in front again.
+    await tab.locator('button').first().click()
     await expect(page.locator('[data-editor-area] .monaco-editor .view-lines').first()).toContainText('typed and not saved', { timeout: LONG_MS })
   } finally {
     await page.context().close()
   }
 })
 
-test('a read that answers after the person has gone elsewhere moves nothing', async ({ browser }) => {
+test('a read that answers while the person is already on the way elsewhere moves nothing', async ({ browser }) => {
   const lead = idOf('lead')
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
   try {
@@ -456,13 +489,26 @@ test('a read that answers after the person has gone elsewhere moves nothing', as
     const asked = page.waitForRequest(sessionRead(lead))
     await page.goto(`/sessions/${lead}`)
     await asked
-    await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: /Crews/ }).first().click()
-    await expect.poll(() => pagePath(page)).toBe('/crews')
+    // The person's move, held on its way: the page it goes to is still loading its code when the read answers.
+    let releaseCode: () => void = () => {}
+    const code = new Promise<void>((r) => (releaseCode = r))
+    const heldCode: string[] = []
+    await page.route((u) => u.pathname.startsWith('/_nuxt/') && u.pathname.endsWith('.js'), async (route) => {
+      heldCode.push(route.request().url())
+      await code
+      await route.fallback()
+    })
+    const going = inApp(page, '/carousel').catch(() => undefined)
+    await expect.poll(() => heldCode.length, { message: "the next page's code is on its way, held" }).toBeGreaterThan(0)
     const answered = page.waitForResponse((r) => sessionRead(lead)(r.request()))
     release()
     await answered
-    await page.evaluate(() => new Promise((r) => setTimeout(r, 0)))
-    expect(pagePath(page), 'the address stays where the person went').toBe('/crews')
+    releaseCode()
+    await going
+    // Where the person went, once that page has loaded: the read's answer sent the page nowhere.
+    // (The carousel's address is the Roundhouse's old one: it lands there.)
+    await expect.poll(() => pagePath(page), { timeout: LONG_MS }).toBe('/roundhouse')
+    await expect(page.locator('[data-member-strip]')).toHaveCount(0)
   } finally {
     await page.context().close()
   }
@@ -501,9 +547,10 @@ test("from the run's page a tile opens its member in place; Back to the crew, th
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
   try {
     budget(2 * LONG_MS)
-    await inApp(page, runPath())
+    await inApp(page, `${runPath()}?view=grid&task=none`)
     await page.locator('[data-member="core"] [data-tile-open]').click()
-    await expect.poll(() => where(page)).toBe(placeOf('core'))
+    // The member's address holds the member alone (the run's own query comes back through history).
+    await expect.poll(() => new URL(page.url()).search).toBe(`?session=${idOf('core')}`)
     await expect(page.locator('[data-run-grid]')).toHaveCount(0)
     await expect(page.locator(`[data-member-strip] [data-member-tab="core"]`)).toHaveAttribute('aria-current', 'page')
     // Back to the crew is the browser's Back here: the run's page, and one more Back leaves it for the page before.
@@ -571,5 +618,113 @@ test("only the run's own member is drawn on its address: a session of its own, o
     await api.stopSession(alone.id)
     await api.stopRun(other.id)
     await api.call('DELETE', `/api/crews/${encodeURIComponent(otherCrew)}`)
+  }
+})
+
+test("a member with its switch, Yolo, a long name and three here keeps its name readable and its buttons in the row, at 1500, 1700 and 2000", async ({ browser }) => {
+  const api = own.api
+  // A member's name at the most a crew allows (forty characters).
+  const LONG = 'reviewer-of-the-refund-split-and-its-run'
+  const members = [
+    { name: LONG, agentId: 'claude-proto', prompt: 'say hello', start: { when: 'immediately' } },
+    ...Array.from({ length: 11 }, (_, i) => ({ name: `member-${String(i + 1).padStart(2, '0')}`, agentId: 'shell', prompt: '', start: { when: 'immediately' } })),
+  ]
+  const crew = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name: `${CREW} wide`, goal: '', cwd, where: 'server', isolation: 'none', openAfterLaunch: false, yolo: true, members })).crew.id
+  let wide = await api.launchCrew(crew)
+  const pages: Page[] = []
+  try {
+    budget(4 * LONG_MS)
+    await expect.poll(async () => member(await api.run(wide.id), LONG).sessionId ?? '', { timeout: 2 * LONG_MS }).not.toBe('')
+    await expect.poll(async () => member(await api.run(wide.id), 'member-11').sessionId ?? '', { timeout: 2 * LONG_MS }).not.toBe('')
+    wide = await api.run(wide.id)
+    const id = member(wide, LONG).sessionId!
+    // Two others here: three viewers with the page that measures.
+    for (let i = 0; i < 2; i++) {
+      const other = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: `/sessions/${id}` })
+      pages.push(other)
+      await expect(other.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: LONG_MS })
+    }
+    for (const width of [1500, 1700, 2000]) {
+      budget(3 * STEP_MS + LONG_MS)
+      const page = await dayPage(browser, { server: own.started, width, height: 810, path: '/crews' })
+      pages.push(page)
+      await page.goto(`/sessions/${id}`)
+      await expect.poll(() => where(page)).toBe(`/runs/${encodeURIComponent(wide.id)}?session=${id}`)
+      await expect(page.locator('[data-way-switch]')).toBeVisible({ timeout: LONG_MS })
+      await expect(page.locator('[data-session-bar] [data-yolo-badge]').first()).toBeVisible()
+      // Three here, as the avatars at the right say (their title names everyone).
+      await expect.poll(async () => ((await page.locator('[data-session-bar] [data-slot="right"] [title*=","]').first().getAttribute('title').catch(() => '')) ?? '').split(',').length, { timeout: LONG_MS }).toBeGreaterThanOrEqual(3)
+      const strip = page.locator(`[data-member-strip][data-run="${wide.id}"]`)
+      await expect(strip.locator('[data-member-tab]')).toHaveCount(12, { timeout: LONG_MS })
+      const bar = page.locator('[data-session-bar]')
+      await atRest(bar)
+      // The name keeps a readable width, clear of the buttons at the right, which stay inside the row. (The switch's two sides share a
+      // border by design, so the bar is judged by its parts rather than by noOverlap.)
+      const [name, line, right, row] = [await page.locator('[data-session-title]').boundingBox(), await page.locator('[data-session-name-line]').boundingBox(), await bar.locator('[data-slot="right"]').boundingBox(), await bar.boundingBox()]
+      expect(name!.width, `the name at ${width}`).toBeGreaterThanOrEqual(150)
+      expect(line!.x + line!.width, `the name line clear of the buttons at ${width}`).toBeLessThanOrEqual(right!.x + 0.5)
+      expect(right!.x + right!.width, `the buttons inside the row at ${width}`).toBeLessThanOrEqual(row!.x + row!.width + 0.5)
+      // The open tab whole; a tab reached by the keyboard is scrolled clear of the fade.
+      const tabs = strip.locator('[data-member-tabs]')
+      await uncut(tabs.locator(`[data-member-tab="${LONG}"]`))
+      const last = tabs.locator('[data-member-tab="member-11"]')
+      await last.focus()
+      // Clear of an edge's fade where that edge fades (an edge the tabs end at does not).
+      const clear = async (t: typeof last) => {
+        const [l, b, more] = [await tabs.boundingBox(), await t.boundingBox(), (await tabs.getAttribute('data-tabs-more')) ?? '']
+        if (!l || !b) return false
+        const left = /left|both/.test(more) ? 20 : 0
+        const right = /right|both/.test(more) ? 20 : 0
+        return b.x >= l.x + left - 0.5 && b.x + b.width <= l.x + l.width - right + 0.5
+      }
+      await expect.poll(() => clear(last), { message: `the focused tab clear of the fade at ${width}` }).toBe(true)
+      await uncut(last)
+      const middle = tabs.locator('[data-member-tab="member-05"]')
+      await middle.focus()
+      await expect.poll(() => clear(middle), { message: `a middle tab, focused, clear of the fade at ${width}` }).toBe(true)
+      await uncut(middle)
+    }
+  } finally {
+    for (const p of pages) await p.context().close()
+    await api.stopRun(wide.id)
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(crew)}`)
+  }
+})
+
+test('Alt+Q goes to Crews while the run is missing; the rail marks the open member, not its run', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
+  try {
+    budget(3 * LONG_MS)
+    const lead = idOf('lead')
+    // The rail: the open member's square is the page, its run's capsule is not; then the sidebar back as it was.
+    await memberPage(page, 'lead')
+    await page.locator('[data-header-account]').first().click()
+    await page.getByRole('menuitem', { name: /Collapse to the rail/ }).click()
+    await expect(page.locator('[data-rail]')).toBeVisible()
+    await expect(page.locator(`[data-rail-session="${lead}"]`)).toHaveAttribute('aria-current', 'page', { timeout: LONG_MS })
+    // The capsule's own link (its play mark, its first), not the member's square inside it.
+    await expect(page.locator(`[data-rail-run="${run.id}"] > a`).first()).not.toHaveAttribute('aria-current', 'page')
+    await page.locator('[data-rail-expand]').click()
+    await expect(page.locator('[data-rail]')).toHaveCount(0)
+    await page.context().close()
+
+    // A run the server no longer holds (its reads answer so): the strip's way back is Crews, and Alt+Q in the terminal goes there.
+    const cold = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
+    await cold.route((u) => u.pathname === '/api/runs', async (route) => {
+      const res = await route.fetch()
+      const body = (await res.json()) as { runs: Array<{ id: string }> }
+      await route.fulfill({ response: res, json: { ...body, runs: body.runs.filter((r) => r.id !== run.id) } })
+    })
+    await cold.route((u) => u.pathname === `/api/runs/${run.id}`, (route) => route.fulfill({ status: 404, json: { error: { code: 'not_found', message: 'no such run' } } }))
+    await cold.goto(`${runPath()}?session=${lead}`)
+    await expect(cold.locator('[data-member-strip] [data-back-to-crews]')).toBeVisible({ timeout: LONG_MS })
+    await expect(cold.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: LONG_MS })
+    await cold.locator('.terminal-host .xterm-screen').first().click()
+    await expect(cold.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused()
+    await cold.keyboard.press('Alt+KeyQ')
+    await expect.poll(() => pagePath(cold)).toBe('/crews')
+    await cold.context().close()
+  } finally {
+    await page.context().close().catch(() => undefined)
   }
 })

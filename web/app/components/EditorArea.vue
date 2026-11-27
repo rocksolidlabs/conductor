@@ -6,7 +6,7 @@ import { lostWords } from '~/utils/nvimLost'
 import type { EditorPaletteState } from '~/utils/editorRows'
 import { heldChanges } from '~/utils/nvimHold'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
-import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
+import { closeWords, conflictWords, forgetModel, savedAt, unsavedNow } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
 import { activateTab, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeFocus, takeLine, tabsToClose, toggleCollapse, toggleFold, togglePreview, writeKeymap, type CloseScope, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
 import { dirOf, isMarkdownPath } from '~/utils/markdown'
@@ -425,6 +425,15 @@ onBeforeUnmount(() => stopListening?.())
 // edits through Neovim instead); Save and Ctrl+S write it on the session's machine, refused when the file changed on disk since it
 // was read (Compare, Reload, Save anyway); a tab with unsaved changes wears a dot and asks before it closes.
 const dirty = reactive(new Set<string>())
+// A tab whose model already holds unsaved edits (kept from an earlier showing of this view) is unsaved from the start, though no
+// editor of it is mounted yet (UX3 R72).
+watch(
+  () => tabs.value.tabs.map((t) => `${t.id}\u0000${t.kind}\u0000${t.path}`).join('\u0001'),
+  () => {
+    for (const t of tabs.value.tabs) if (t.kind === 'file' && !dirty.has(t.id) && unsavedNow(t.path)) dirty.add(t.id)
+  },
+  { immediate: true },
+)
 const saving = ref(false)
 // A save with no answer after 20 s goes on waiting (the transport never gives one up while its connection lives): the bar says so.
 const saveSlow = ref(false)

@@ -1,5 +1,5 @@
 import { shallowRef, ref, type Ref, type ShallowRef } from 'vue'
-import { validWay, type ChatPost, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimEvent, type NvimSwapChoice, type PermissionAnswer, type Role, type SessionWay, type TranscriptMessage, type TranscriptReply, type TranscriptRequest, type Welcome } from '~/utils/protocol'
+import { validWay, type AgentCommand, type ChatPost, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimEvent, type NvimSwapChoice, type PermissionAnswer, type Role, type SessionWay, type TranscriptMessage, type TranscriptReply, type TranscriptRequest, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
 import type { LaneWire } from '~/utils/transport/decide'
 import { ReplyError, type QuestionReply } from '~/utils/reply'
@@ -22,6 +22,17 @@ export interface SessionConnection {
   readonly way: Ref<SessionWay>
   readonly noted: Ref<SessionWay | ''>
   readonly why: Ref<string>
+  /**
+   * Whether this connection may send a line for the agent to expand (I19, UX3 R10): the welcome's `expand`, then each `way`
+   * message's (one without it withdraws it). The server's word alone: false at every new connection until its welcome says so.
+   */
+  readonly expand: Ref<boolean>
+  /**
+   * The agent's own commands as the owner sent them to this connection (UX3 R11: the TRANSCRIPT message `commands`, the operator's
+   * own chat connection alone): the whole list, a higher `rev` replacing it, an empty one meaning none. Null until one comes, and
+   * again at every welcome and at a move to the terminal: the page keeps no list of its own.
+   */
+  readonly commands: ShallowRef<{ rev: number; list: AgentCommand[]; more: boolean } | null>
   /**
    * A chat's transcript as this page holds it (utils/transcript.ts), across the connections made again: the highest mark it holds is
    * the next hello's `transcriptAfter`, so a connection made again is sent only what changed after it. `transcriptVersion` rises with
@@ -49,7 +60,7 @@ export interface SessionConnection {
   sendInput(data: Uint8Array): boolean
   submit(text: string): boolean
   /** A message with the owner's word on it (a chat's: `submit_ok` once the agent took it, or the owner's refusal in its words). */
-  submitAcked(text: string): Promise<boolean>
+  submitAcked(text: string, opts?: { expand?: boolean }): Promise<boolean>
   answer(reply: QuestionReply, opts?: { sent?: () => void }): Promise<boolean>
   chat(post: ChatPost): boolean
   chatSend(send: ChatSend): boolean
@@ -72,6 +83,8 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
   const way = ref<SessionWay>('terminal')
   const noted = ref<SessionWay | ''>('')
   const why = ref('')
+  const expand = ref(false)
+  const commands = shallowRef<{ rev: number; list: AgentCommand[]; more: boolean } | null>(null)
   const transcript = new Transcript()
   const transcriptVersion = ref(0)
   const outputs = new Set<(data: Uint8Array, replay: boolean) => void>()
@@ -92,6 +105,8 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       way.value = msg.way === 'protocol' ? 'protocol' : 'terminal'
       noted.value = msg.noted === 'terminal' || msg.noted === 'protocol' ? msg.noted : ''
       why.value = ''
+      expand.value = msg.expand === true
+      commands.value = null
       transcript.welcome(msg)
       transcriptVersion.value = transcript.version
     } else if (msg.t === 'way') {
@@ -100,9 +115,13 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       way.value = msg.way
       noted.value = msg.noted ?? ''
       why.value = msg.why ?? ''
+      expand.value = msg.expand === true
       // The owner sends no entry while the session runs in its terminal: what it added meanwhile (the move's notice) is read back as
       // it comes back to the chat on this connection.
-      if (msg.way === 'terminal') transcript.leave()
+      if (msg.way === 'terminal') {
+        transcript.leave()
+        commands.value = null
+      }
       else if (transcript.rejoin()) readBack(t)
     }
     for (const cb of controls) cb(msg)
@@ -128,6 +147,8 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
     transport.value = t
     role.value = ''
     welcome.value = undefined
+    expand.value = false
+    commands.value = null
     t.onOutput((data, replay) => {
       if (transport.value !== t) return
       for (const cb of outputs) cb(data, replay)
@@ -140,6 +161,8 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
         // A replay that left changes out is read back before its mark is held (see Chat sessions: `more`).
         if (msg.t === 'page' && msg.more && transcript.gap !== null) readBack(t)
       }
+      // The agent's commands: the whole list each time, a higher rev replacing the one held.
+      if (msg.t === 'commands' && (!commands.value || msg.rev > commands.value.rev)) commands.value = { rev: msg.rev, list: msg.commands, more: !!msg.more }
       for (const cb of transcripts) cb(msg)
     })
     // The resume point the page holds goes with the hello of the connection made now.
@@ -160,6 +183,8 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
     way,
     noted,
     why,
+    expand,
+    commands,
     transcript,
     transcriptVersion,
     connect,
@@ -181,7 +206,7 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       return true
     },
     submit: (text) => open() && transport.value!.submit(text),
-    submitAcked: (text) => (open() ? transport.value!.submitAcked(text) : Promise.reject(new ReplyError('not_connected', 'not connected'))),
+    submitAcked: (text, opts = {}) => (open() ? transport.value!.submitAcked(text, opts.expand ? { expand: true } : {}) : Promise.reject(new ReplyError('not_connected', 'not connected'))),
     answer(reply, opts = {}) {
       if (!open()) return Promise.reject(new ReplyError('not_connected', 'not connected'))
       return transport.value!.answer(reply, opts)
