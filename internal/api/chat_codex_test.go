@@ -302,3 +302,24 @@ func TestCodexMoveWaitsForItsObservation(t *testing.T) {
 		t.Fatal("the session left its terminal")
 	}
 }
+
+// A launch as a chat of Codex is refused, before anything starts, in the
+// switch's words while Codex's driver does not move yet; its launch in its
+// terminal is unchanged.
+func TestCodexLaunchAsChatWaitsForItsMove(t *testing.T) {
+	if agentproto.Moves(agentproto.CodexAppServer) {
+		t.Fatal("Codex moves before its by-hand observation is recorded (row 10)")
+	}
+	c, _ := newCodexChatEnv(t, nil, nil)
+	resp, out := c.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "codex", "way": "protocol"})
+	if got, words := refusalOf(out); resp.StatusCode != http.StatusConflict || got != proto.ErrCodeMoveRefused || words != session.CannotMoveWords {
+		t.Fatalf("a launch as a chat: %d %v", resp.StatusCode, out)
+	}
+	if n := len(c.rt.Asked("StartTerminal")); n != 0 || len(c.srv.registry.List()) != 0 {
+		t.Fatalf("a refused launch started %d terminals", n)
+	}
+	l := c.launchCodex(t)
+	if l.Way() != session.WayTerminal || len(c.pipeSpecs()) != 0 {
+		t.Fatal("a launch in its terminal started a chat")
+	}
+}

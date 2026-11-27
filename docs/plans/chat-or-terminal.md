@@ -1424,6 +1424,7 @@ Every string is one short sentence.
 | a message during a turn | "Sends when the turn ends." |
 | a full queue (`too_many_requests` on `submit`) | "Too many messages are waiting." |
 | a move pressed during a turn | "Moves to Chat when this turn ends." / "Moves to the terminal when this turn ends." |
+| a move to Chat noted at the launch, before the first reply (#1174) | "Moves to Chat after the agent's first reply." |
 | a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." / "Sessions launched with an added folder stay in their terminal." / "This session's arguments hold <flag>, which a chat sets itself; it stays in its terminal." |
 | the session moving (`moving`) | "The session is moving; try again in a moment." |
 | a permission answer from a non-answerer (`not_answerer`) | "Only the person who runs this server can answer." |
@@ -2808,6 +2809,38 @@ and `chat-layout`, each on a server of its own with `claude-proto` and
 - **Not built:** Settings' line for an older switchyard (the server's
   switchyard status says nothing of `transcript`); the Share dialog shows
   the server's own words for it, as the link's rendezvous note.
+
+**As built, the launch as a chat** (#1174; `internal/api/launch_way.go`,
+`Local.NoteWay` in `internal/session/move.go`, `components/RunAsChoice.vue`,
+`utils/launchWay.ts`, `web/e2e/launch-chat.spec.ts`):
+
+- The Launch agent dialog offers **Run as: Terminal | Chat** for an agent
+  whose catalog entry has a protocol, on this server, never for a clone:
+  the header switch's two sides in its order, one press, the arrow keys
+  moving between them, and nothing else: the dialog shows the choice
+  alone, and no line says how a launch as a chat is carried out (a
+  maintainer's word: only what is needed is shown; the session's switch
+  says it while the move waits). It comes back as that agent was last
+  launched in this browser (its storage, a per-viewer convenience: the
+  dialog kept nothing per agent before), written at Launch alone; the
+  first time it is Terminal.
+- `POST /api/sessions` takes `way` (`terminal`, the default and what a
+  launch without it means, or `protocol`: the move route's words, not
+  "chat"). A launch as a chat is judged before anything starts by the
+  move's own conditions on the agent and its arguments (`chatRefusal`,
+  shared with the move's `moveStarts`) and refused `409 move_refused` in
+  the switch's words. I21 holds: the session starts in its terminal, and
+  the launch notes the move before its reply (the first welcome's
+  `noted`); the noted move's own path makes it.
+- The conditions a noted move is made on are judged at the moment of the
+  move (`atRestLocked`): the first reply ended and the launch's first
+  message typed ("Moves to Chat after the agent's first reply.", which the
+  page also says for a welcome's `noted` with no `why`), not a crew
+  member, the conversation known and resumable. A conversation's report
+  and a first message's state try the noted move again.
+- The note on the vendor's terms is shown when a move to Chat noted
+  elsewhere is made by itself, as for a press of Chat: choosing Chat in
+  the dialog is that press.
 
 ### Row 8: the declaration on the Agents page, the digest, and step 2's trust design
 
