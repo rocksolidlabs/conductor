@@ -74,7 +74,7 @@ func codexSessionDriver(t *testing.T) (*session.Local, *codexServer, *Codex) {
 // entriesNow is the session's transcript, waited for until ok holds.
 func entriesNow(t *testing.T, s *session.Local, what string, ok func([]session.TranscriptEntry) bool) []session.TranscriptEntry {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := testDeadline(t)
 	for {
 		es, _ := s.Transcript(0, session.MaxTranscriptPage)
 		if ok(es) {

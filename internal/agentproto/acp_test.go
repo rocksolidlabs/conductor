@@ -144,7 +144,7 @@ func (s *acpServer) written() []string {
 
 func (s *acpServer) await(want string) string {
 	s.t.Helper()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(time.Until(testDeadline(s.t)))
 	for {
 		for _, l := range s.written() {
 			if strings.Contains(l, want) {

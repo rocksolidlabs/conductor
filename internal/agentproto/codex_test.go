@@ -367,7 +367,7 @@ func (s *codexServer) written() []string {
 // await waits for a line the driver wrote that holds want, and returns it.
 func (s *codexServer) await(want string) string {
 	s.t.Helper()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(time.Until(testDeadline(s.t)))
 	for {
 		for _, l := range s.written() {
 			if strings.Contains(l, want) {
@@ -386,7 +386,7 @@ func (s *codexServer) await(want string) string {
 // them all.
 func waitEvent(t *testing.T, rec *recorder, kind string, n int) []event {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := testDeadline(t)
 	for {
 		if evs := rec.kinds(kind); len(evs) >= n {
 			return evs
@@ -968,4 +968,15 @@ func TestCodexAReusedRequestIDClosesTheOldCard(t *testing.T) {
 	if got := s.await(`"id":50,`); got != `{"id":50,"result":{"decision":"accept"}}` {
 		t.Fatalf("answered %s", got)
 	}
+}
+
+// testDeadline is how long a test's wait for a step may run: until shortly
+// before the test binary's own timeout, which bounds a hang; the steps
+// themselves are waited on by what ends them. Without a timeout, ten
+// minutes.
+func testDeadline(t *testing.T) time.Time {
+	if d, ok := t.Deadline(); ok {
+		return d.Add(-5 * time.Second)
+	}
+	return time.Now().Add(10 * time.Minute)
 }
