@@ -819,10 +819,10 @@ const (
 )
 
 // streamFloored is the floor's walk of a call that came in an agent's
-// stream: a call whose input holds its raw input, its locations or its
-// content (an ACP agent's tool call: rawInput, locations, content's diffs)
-// names a place of the deny list anywhere in them or in its title, whatever
-// the call's kind. Every string they hold is judged as a command line's
+// stream: a call whose input holds its raw input, its locations, its
+// content or its title (an ACP agent's tool call: rawInput, locations,
+// content's diffs, title) names a place of the deny list anywhere in them,
+// whatever the call's kind. Every string they hold is judged as a command line's
 // words, from the session's folder and from each folder the raw input says
 // the call runs in (each folder judged once, before the walk: under the
 // list, as it is spelled, and as its links lead), and, where it looks like a
@@ -842,7 +842,8 @@ func (s *Local) streamFloored(input []byte) bool {
 	_, hasRaw := fields["rawInput"]
 	_, hasLoc := fields["locations"]
 	_, hasContent := fields["content"]
-	if !hasRaw && !hasLoc && !hasContent {
+	_, hasTitle := fields["title"]
+	if !hasRaw && !hasLoc && !hasContent && !hasTitle {
 		return false
 	}
 	// The folders the words are read from: the session's, and each the raw
