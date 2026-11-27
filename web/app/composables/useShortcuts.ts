@@ -140,6 +140,7 @@ export const SESSION_SHORTCUTS: ShortcutGroup = {
   rows: [
     { keys: ['S'], label: 'Share this session' },
     { keys: ['X'], label: 'Stop this session: the palette asks; Enter stops, Escape cancels', terminal: ['alt', 'X'] },
+    { keys: ['alt', 'Q'], label: "Back to the crew, on a crew member's page", terminal: ['alt', 'Q'] },
     ...EDITOR_SHORTCUTS.rows,
   ],
 }

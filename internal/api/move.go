@@ -129,7 +129,7 @@ func (s *Server) moveStarts(ctx context.Context, local *session.Local, to string
 // (moveStarts), and a launch as a chat its agent before anything starts
 // (launchWayRefusal).
 func (s *Server) chatRefusal(ctx context.Context, l *chatLaunch, toChat bool) string {
-	if l.where != ext.WhereNative || l.agent.Protocol.Off() || agentproto.Check(l.agent.Protocol) != nil || !s.moves(l.agent.Protocol.Name) || l.agent.Session.Empty() || len(l.agent.Session.ResumeArgs) == 0 {
+	if l.where != ext.WhereNative || l.agent.Protocol.Off() || agentproto.Check(l.agent.Protocol) != nil || !s.moves(l.agent) || l.agent.Session.Empty() || len(l.agent.Session.ResumeArgs) == 0 {
 		return session.CannotMoveWords
 	}
 	if rt, ok := s.runtimeAt(l.where); !ok {
@@ -162,6 +162,7 @@ func (s *Server) chatRefusal(ctx context.Context, l *chatLaunch, toChat bool) st
 func chatArgsWords(err error) string {
 	var own *agentproto.OwnFlagError
 	var codexArg *agentproto.CodexArgError
+	var acpArg *agentproto.ACPArgError
 	switch {
 	case errors.Is(err, agentproto.ErrAddedFolder):
 		return agentproto.AddedFolderWords
@@ -169,12 +170,16 @@ func chatArgsWords(err error) string {
 		return agentproto.OwnFlagWords(own.Flag)
 	case errors.As(err, &codexArg):
 		return agentproto.CodexArgWords(codexArg.Flag)
+	case errors.As(err, &acpArg):
+		return agentproto.ACPArgWords(acpArg.Flag)
 	}
 	return session.CannotMoveWords
 }
 
-// moves is the driver's Moves for the protocol name.
-func (s *Server) moves(name string) bool { return agentproto.Moves(name) }
+// moves is whether a session of the agent a moves between its ways: its
+// driver's word (agentproto.MovesFor; for the Agent Client Protocol, the
+// agent's own).
+func (s *Server) moves(a catalog.Agent) bool { return agentproto.MovesFor(a.Protocol.Name, a.Adapter) }
 
 // terminalStart starts the session's terminal again on a conversation, as
 // a resume starts it: the agent's command, its recipe's resume arguments on

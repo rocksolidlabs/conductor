@@ -106,7 +106,9 @@ describe("the palette's reach (#303)", () => {
   it("lists S and X on the session page's group, with Alt+X in its terminal, ahead of the editor's keys", () => {
     expect(SESSION_SHORTCUTS.rows[0]).toEqual({ keys: ['S'], label: 'Share this session' })
     expect(SESSION_SHORTCUTS.rows[1]).toEqual({ keys: ['X'], label: 'Stop this session: the palette asks; Enter stops, Escape cancels', terminal: ['alt', 'X'] })
-    expect(SESSION_SHORTCUTS.rows.slice(2)).toEqual(EDITOR_SHORTCUTS.rows)
+    // A crew member's page goes back to its crew with Alt+Q, the terminal included (UX3 R12): its strip hands KeyQ back.
+    expect(SESSION_SHORTCUTS.rows[2]).toEqual({ keys: ['alt', 'Q'], label: "Back to the crew, on a crew member's page", terminal: ['alt', 'Q'] })
+    expect(SESSION_SHORTCUTS.rows.slice(3)).toEqual(EDITOR_SHORTCUTS.rows)
   })
 })
 
