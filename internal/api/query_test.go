@@ -120,6 +120,24 @@ func TestGitCheckChecksAFolderWithASemicolonAsItself(t *testing.T) {
 	}
 }
 
+// The roots check of a;b is of a;b itself, sent with the ';' as it is or
+// escaped; a query that cannot be read is 400.
+func TestRootCheckChecksAFolderWithASemicolonAsItself(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	semi := filepath.Join(root, "a;b")
+	mkdirs(t, root, "a;b")
+	for _, path := range semicolonForms(semi) {
+		resp, out := e.do("GET", "/api/roots/check?path="+path, adminToken, nil)
+		if resp.StatusCode != http.StatusOK || out["state"] != "allowed" || out["real"] != semi {
+			t.Errorf("path %s: %d %v", path, resp.StatusCode, out)
+		}
+	}
+	if resp, out := e.do("GET", "/api/roots/check?path="+url.QueryEscape(semi)+"&x=%zz", adminToken, nil); resp.StatusCode != http.StatusBadRequest || errorCode(out) != "invalid_request" {
+		t.Errorf("a query that cannot be read: %d %v", resp.StatusCode, out)
+	}
+}
+
 // A session's folder a;b is read as itself, its path sent with the ';' as
 // it is or escaped, relative or absolute; a file in it is read raw with
 // the token in the query, as the web app links one.
