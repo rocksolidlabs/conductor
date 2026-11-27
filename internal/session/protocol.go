@@ -765,6 +765,12 @@ func (s *Local) submitProtocol(p *protocolWay, sub Submission) (SubmitResult, er
 		return res, ErrTooManyQueued
 	}
 	q := &queuedMessage{sub: sub, msg: Message{Ref: NewID(), Text: text}, by: "conductor", byName: CleanName(sub.ByName), state: PromptQueued}
+	// I19: the one place a message is sent without the as-written mark.
+	// Only the operator's own chat connection's typed line, naming no
+	// question or decision and relaying nobody, on a driver that has a mark.
+	if sub.Expand && sub.Question == "" && sub.Decision == "" && sub.From == nil && p.verbatim && s.operatorChatLocked(sub.By) {
+		q.msg.Expand = true
+	}
 	shownName := oneLine(sub.ByName, maxPromptName)
 	if from := submissionFrom(sub); from != nil {
 		q.by = "person"
@@ -781,7 +787,7 @@ func (s *Local) submitProtocol(p *protocolWay, sub Submission) (SubmitResult, er
 		}
 		q.claim = token
 	}
-	e := TranscriptEntry{Kind: EntryPrompt, Turn: p.turns + 1, By: q.by, ByName: shownName, State: PromptQueued}
+	e := TranscriptEntry{Kind: EntryPrompt, Turn: p.turns + 1, By: q.by, ByName: shownName, State: PromptQueued, Expanded: q.msg.Expand}
 	if sub.Question != "" {
 		// An answer carries the question it answers and never its text:
 		// its sender's own page shows it (the people's chat's rule).

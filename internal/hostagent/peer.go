@@ -413,6 +413,10 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 			// Off the frame loop, which also carries the relay's other
 			// viewers: the submission pauses before its Enter.
 			p.typeIn(sub, m.ReqID, func(ctx context.Context) error {
+				// m.Expand is never passed on: a line through the host link or
+				// a switchyard always goes to a chat's agent as written (I19,
+				// docs/plans/chat-or-terminal.md); only the server's own viewer
+				// socket may ask otherwise (TestAPeersSubmitIsNeverExpanded).
 				res, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub, UnlessWaiting: m.UnlessWaiting, Finished: word})
 				if !errors.Is(err, session.ErrSubmitPending) {
 					// Accepted while the program takes it slowly: entered as

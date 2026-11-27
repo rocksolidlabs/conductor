@@ -247,6 +247,15 @@ type Submission struct {
 	// reads otherwise. Else the Enter is left out (SubmitResult.NotAtPrompt).
 	// A launch's first message.
 	PromptHoldsText bool
+	// Expand asks that a chat send the line without the as-written mark,
+	// for the agent's own program to expand (docs/plans/chat-or-terminal.md,
+	// I19): the submit's expand from the server's own viewer socket alone
+	// (internal/api/ws_viewer.go). The session honours it only where By is
+	// the operator's own chat connection (operatorChatLocked), the line
+	// names no question and no decision and relays nobody, and the driver
+	// has a mark; everywhere else, and on a terminal session, it changes
+	// nothing. Read only in submitProtocol (expand_walk_test.go).
+	Expand bool
 }
 
 // promptOnly reports whether sub is typed only at the agent's prompt: its

@@ -42,6 +42,18 @@ func operatorAnswers(by *Subscription) bool {
 	return by != nil && by.owner && by.LinkID == "" && by.Role == RoleControl
 }
 
+// operatorChatLocked says by is the operator's own chat connection
+// (docs/plans/chat-or-terminal.md, I19): the operator's own connection
+// (operatorAnswers), attached by the server's own viewer socket
+// (AttachOptions.ViewerSocket), not quiet, on a session that is no crew
+// member's. Only such a connection's typed line goes without the
+// as-written mark, and only it is told so (Welcome.Expands, Way.Expands).
+// A peer over the host link or a switchyard, a link of any role, a run's
+// chat and Conductor itself never pass it. The caller holds s.mu.
+func (s *Local) operatorChatLocked(by *Subscription) bool {
+	return operatorAnswers(by) && by.viewerSocket && !by.quiet && s.info.Crew == nil
+}
+
 // AnswerPermission is the operator's answer to an open permission request
 // (permission_answer): by must be the operator's own connection (the
 // workbench's, or an identity provider's principal holding admin), every

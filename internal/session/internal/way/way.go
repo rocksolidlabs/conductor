@@ -59,7 +59,7 @@ type Protocol interface {
 	// a first message has arrived.
 	Begin(ctx context.Context) error
 	// Send writes one message as a new user turn, with the protocol's
-	// as-written mark where Verbatim is true, and returns once its bytes
+	// as-written mark where Verbatim is true unless m.Expand, and returns once its bytes
 	// are written to the agent's input, or the write failed. A written
 	// message is not a taken one: the agent's acknowledgement arrives as
 	// ProtocolEvents.Accepted with m.Ref.
@@ -127,6 +127,13 @@ type Message struct {
 	Ref string
 	// Text is the message as written.
 	Text string
+	// Expand sends it without the as-written mark, for the agent's own
+	// program to expand its @path and run its /command: the operator's own
+	// typed line alone (docs/plans/chat-or-terminal.md, I19). The zero value
+	// is the mark. Set only where the session builds the message it queues
+	// (submitProtocol), read only by a driver's Send; a source walk holds
+	// both (expand_walk_test.go).
+	Expand bool
 }
 
 // ToolStep is a tool call the agent announced.
