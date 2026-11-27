@@ -737,17 +737,8 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 		// Its line's relative words are judged from that folder too (made
 		// absolute against the session's when it is relative).
 		text := commandText(fields)
-		if cwd, ok := fields["cwd"].(string); ok && cwd != "" {
-			if s.pathDenied(cwd, deny) {
-				return true
-			}
-			from := filepath.Clean(cwd)
-			if !filepath.IsAbs(from) && s.info.Cwd != "" {
-				from = filepath.Join(s.info.Cwd, from)
-			}
-			if filepath.IsAbs(from) && commandNamesDenied(text, deny, from) {
-				return true
-			}
+		if cwd, ok := fields["cwd"].(string); ok && cwd != "" && s.runsInDenied(text, cwd, deny) {
+			return true
 		}
 		return commandNamesDenied(text, deny, s.info.Cwd)
 	case "file", "read":
@@ -783,18 +774,55 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 	return false
 }
 
+// runsInDenied says a command run in the folder cwd reaches the deny list:
+// the folder is under it, or the command line's relative words name a place
+// of it from that folder (made absolute against the session's when it is
+// relative), as the folder is spelled and as its links lead. One judgement
+// for every driver whose call names the folder it runs in. The caller holds
+// s.mu.
+func (s *Local) runsInDenied(text, cwd string, deny []string) bool {
+	if s.pathDenied(cwd, deny) {
+		return true
+	}
+	from := filepath.Clean(cwd)
+	if !filepath.IsAbs(from) {
+		if s.info.Cwd == "" {
+			return false
+		}
+		from = filepath.Join(s.info.Cwd, from)
+	}
+	if commandNamesDenied(text, deny, from) {
+		return true
+	}
+	if real, err := evalExisting(linksFirst(from)); err == nil && real != from && commandNamesDenied(text, deny, real) {
+		return true
+	}
+	return false
+}
+
+// callFolderKeys are the names under which an agent's call names the folder
+// it runs in.
+var callFolderKeys = []string{"cwd", "workdir", "directory", "dir", "working_directory", "workingDirectory", "working_dir"}
+
 // nestedDenied says a call whose input holds its raw input, its locations
 // and its content beside each other (an ACP agent's tool call: rawInput,
 // locations, content's diffs) names a place of the deny list in any of
 // them, whatever the call's kind: the raw input judged as a command's and a
-// file tool's input are, each location's and each diff's path. The caller
-// holds s.mu.
+// file tool's input are (its line from the session's folder and from each
+// folder it says the call runs in, as runsInDenied judges it), each
+// location's and each diff's path. The caller holds s.mu.
 func (s *Local) nestedDenied(fields map[string]any, deny []string) bool {
 	if raw, ok := fields["rawInput"].(map[string]any); ok {
-		if commandNamesDenied(commandText(raw), deny, s.info.Cwd) {
+		text := commandText(raw)
+		if commandNamesDenied(text, deny, s.info.Cwd) {
 			return true
 		}
-		for _, k := range []string{"file_path", "filePath", "notebook_path", "path", "abs_path", "cwd"} {
+		for _, k := range callFolderKeys {
+			if v, ok := raw[k].(string); ok && v != "" && s.runsInDenied(text, v, deny) {
+				return true
+			}
+		}
+		for _, k := range []string{"file_path", "filePath", "notebook_path", "path", "abs_path"} {
 			if v, ok := raw[k].(string); ok && v != "" && s.pathDenied(v, deny) {
 				return true
 			}

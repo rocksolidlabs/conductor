@@ -1010,6 +1010,9 @@ func TestAnACPCallIsFlooredByEveryPlaceItNames(t *testing.T) {
 		{"a path in its raw input", "other", j(map[string]any{"kind": "other", "title": "x", "rawInput": map[string]any{"path": secret}}), true},
 		{"a location", "read", j(map[string]any{"kind": "read", "title": "x", "locations": []any{map[string]any{"path": secret}}}), true},
 		{"a diff's path", "edit", j(map[string]any{"kind": "edit", "title": "x", "content": []any{map[string]any{"type": "diff", "path": secret, "newText": "x"}}}), true},
+		{"a relative line from the folder its raw input names", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "cwd": filepath.Dir(data)}}), true},
+		{"a folder under another key", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "directory": filepath.Dir(data)}}), true},
+		{"a folder that is a link", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "workdir": linkTo(t, filepath.Dir(data))}}), true},
 		{"nothing of the list", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "make test"}}), false},
 	} {
 		call := fmt.Sprintf("c-%d", i)
@@ -1063,5 +1066,10 @@ func TestTheFloorFollowsAPathsLinksBeforeItsDotDot(t *testing.T) {
 	in := `{"changes":[{"path":"` + through + `","kind":{"type":"update"},"diff":""}]}`
 	f.ToolStarted(ToolStep{Ref: "c-change", Name: "fileChange", Input: []byte(in)})
 	e, v := inStreamAsked(t, s, f, "req-change", "c-change", "fileChange", in)
+	deniedWith(t, s, e, v, FloorWords)
+	// A command run in a folder that is a link above the denied place.
+	cmd := `{"command":"cat conductor/config.json","cwd":"` + linkTo(t, base) + `"}`
+	f.ToolStarted(ToolStep{Ref: "c-cmd", Name: "commandExecution", Input: []byte(cmd)})
+	e, v = inStreamAsked(t, s, f, "req-cmd", "c-cmd", "commandExecution", cmd)
 	deniedWith(t, s, e, v, FloorWords)
 }
