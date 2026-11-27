@@ -51,7 +51,16 @@ func codexSession(t *testing.T) (*session.Local, *codexServer) {
 	if _, err := s.Submit(context.Background(), session.Submission{Text: "go"}); err != nil && !errors.Is(err, session.ErrSubmitPending) {
 		t.Fatal(err)
 	}
-	srv.await(`"turn/start"`)
+	// The turn under way once the session applied its start: what the test
+	// writes after goes behind the fake's own answers on the one pipe.
+	entriesNow(t, s, "the turn's start", func(es []session.TranscriptEntry) bool {
+		for _, e := range es {
+			if e.Kind == session.EntryTurn && e.Phase == "start" {
+				return true
+			}
+		}
+		return false
+	})
 	return s, srv
 }
 
