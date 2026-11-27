@@ -64,9 +64,15 @@ test("a terminal session's switch moves it to its chat, whose turn shows its wor
     await expect(page.locator('[data-chat-view] [data-chat-notice]').first()).toBeVisible()
     await expect(page.locator('[data-chat-terms]')).toHaveCount(0)
 
-    // The box's help line by the session's verbatim.
+    // The box's help line by the session's verbatim, only while the line begins with /; none at rest (UX3 R4).
     const info = await api.session(s.id)
+    const field = chat.locator('[data-chat-box] textarea')
+    await expect(chat.locator('[data-chat-help]')).toHaveCount(0)
+    await field.fill('/compact')
     await expect(chat.locator('[data-chat-help]')).toHaveAttribute('data-chat-help', info.verbatim ? 'verbatim' : 'commands')
+    if (info.verbatim) await expect(chat.locator('[data-chat-help]')).toHaveText('Sent as plain text. To run a command, use the Terminal.')
+    await field.fill('')
+    await expect(chat.locator('[data-chat-help]')).toHaveCount(0)
 
     // A turn: the message, the agent's words, its steps folded into one line, the file it changed, the turn's end.
     await say(page, 'steps edit please')

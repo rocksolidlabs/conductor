@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, SessionInfo, ShareLink } from '~/composables/useSessions'
-import { answersInChat, liveAttention } from '~/utils/attention'
+import { answersInChat, liveAttention, offeredChoices, takesReply } from '~/utils/attention'
 import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge, ChatQuote } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
@@ -9,7 +9,7 @@ import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts
 import { firstMessageLine } from '~/utils/launch'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
 import { sessionStatus, statusOfKey } from '~/utils/status'
-import { choiceReply, listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
+import { choiceReply, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
 import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
 import { revokeQuestion, stopQuestion } from '~/utils/actions'
 import { resolveTyped } from '~/utils/fileTree'
@@ -360,6 +360,15 @@ function openChange(e: TranscriptEntry) {
  * while the editor folds the pane under it (EditorColumn's terminalFolded), in the column's foot under the pane or its bar.
  */
 const askInChat = computed(() => way.value === 'protocol' && !(tabs.value.tabs.length > 0 && !tabs.value.folded && (phone.value || !!tabs.value.collapsed)))
+/**
+ * The question the chat's box knows of (UX3 R4, R5): while one waits in Chat, its id, whether choices show and whether it takes a
+ * typed reply (takesReply: not a permission request, a decision's mirror, a held turn or a startup question).
+ */
+const chatAsked = computed(() =>
+  way.value === 'protocol' && attention.value.state === 'needs_input'
+    ? { id: questionOf(attention.value), choices: offeredChoices(attention.value).length > 0, reply: takesReply(attention.value, 'control') }
+    : null,
+)
 /** The reply bar's "Answer it in the chat.": the question in view. */
 function showQuestion() {
   terminal.value?.showQuestion()
@@ -823,6 +832,10 @@ palette.registerPage(() => {
                 operator
                 opens-changes
                 :chat-note="chatNote"
+                :agent-name="agentLabel"
+                :draft-key="id"
+                :asked="chatAsked"
+                @reply="reply"
                 @dismiss-note="chatNote = null"
                 :verbatim="current?.way === 'protocol' ? !!current.verbatim : undefined"
                 @nvim="editor.onNvim"
@@ -843,7 +856,7 @@ palette.registerPage(() => {
               >
                 <!-- In Chat the question's card sits just above the chat's box (UX3 R3), unless the editor folds the pane away. -->
                 <template v-if="askInChat" #ask>
-                  <QuickReplyBar v-if="!answersInChat(attention)" :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+                  <QuickReplyBar v-if="!answersInChat(attention)" :attention="attention" :agent-name="agentLabel" role="control" answers pastes :field="false" @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
                 </template>
               </TerminalView>
             </div>

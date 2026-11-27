@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SessionConnection } from '~/composables/useSessionConnection'
 import type { PermissionAnswer, TranscriptEntry, TranscriptPartName, TranscriptRequest } from '~/utils/protocol'
-import { ReplyError } from '~/utils/reply'
+import { ReplyError, type ReplyTaken } from '~/utils/reply'
 import { answerOf, atChatEnd, chatBlocks, limitReads, OWN_ANSWER_LINE, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
 import { MAX_TRANSCRIPT_IN_FLIGHT } from '~/utils/protocol'
 
@@ -31,10 +31,20 @@ const props = withDefaults(
      * notice, where it covers nothing, until dismissed (`dismissNote`). `site` is the agent's site from its catalog entry.
      */
     note?: { site?: string } | null
+    /** The agent's name, for the box's placeholder and Stop's tooltip; `draftKey` the session whose line the app keeps (useBoxDrafts). */
+    agentName?: string
+    draftKey?: string
+    /**
+     * The question the session's page shows for this chat, while one waits (the session page alone). One that takes a typed reply
+     * (`reply`) is answered from the box (UX3 R5). With choices, or one the box does not answer, the box leaves the cursor where it is,
+     * so that 1 to 9 still answer; otherwise it takes the cursor as the chat is drawn, when nothing else holds it.
+     */
+    asked?: { id?: string; choices: boolean; reply: boolean } | null
   }>(),
-  { readOnly: false, operator: false, verbatim: undefined, opensChanges: false, note: null },
+  { readOnly: false, operator: false, verbatim: undefined, opensChanges: false, note: null, agentName: undefined, draftKey: undefined, asked: null },
 )
-const emit = defineEmits<{ openDiff: [entry: TranscriptEntry]; dismissNote: [] }>()
+/** `reply`: a line typed in the box as the answer to the question the page shows (`asked`), for the page's answer. */
+const emit = defineEmits<{ openDiff: [entry: TranscriptEntry]; dismissNote: []; reply: [text: string, question: string | undefined, taken: ReplyTaken] }>()
 
 const conn = props.connection
 /** A message that answers a question as the chat draws it: this browser's own answer, from the tab's store of them, or the words for one. */
@@ -153,6 +163,25 @@ function showQuestion() {
   q?.querySelector<HTMLElement>('button:not([disabled])')?.focus({ preventScroll: true })
 }
 defineExpose({ showQuestion })
+
+/**
+ * The box takes the cursor as the chat is drawn and once a question is answered, when nothing else holds it (UX3 R4), unless choices
+ * show (their number keys answer) or the question is one the box does not answer (a permission request's own buttons do).
+ */
+const composer = useTemplateRef<{ focus: () => void }>('composer')
+const keysAnswer = computed(() => !!props.asked && (props.asked.choices || !props.asked.reply))
+function takeCursor() {
+  if (!controls.value || keysAnswer.value || typeof document === 'undefined') return
+  const el = document.activeElement
+  if (!el || el === document.body) composer.value?.focus()
+}
+onMounted(() => void nextTick(takeCursor))
+watch(
+  keysAnswer,
+  (now, was) => {
+    if (was && !now) void nextTick(takeCursor)
+  },
+)
 </script>
 
 <template>
@@ -211,11 +240,12 @@ defineExpose({ showQuestion })
       <div v-if="$slots.ask" class="px-3 [&_[data-quick-reply]]:mt-2.5" data-chat-ask><slot name="ask" /></div>
       <ChatComposer
         v-if="controls"
-        placeholder="Write to the agent"
-        :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said }"
+        ref="composer"
+        :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said, name: agentName, draftKey, asked }"
         data-chat-box
         @send="(text) => send(text)"
         @stop="stop"
+        @answer="(text, question, taken) => emit('reply', text, question, taken)"
       />
     </div>
   </div>

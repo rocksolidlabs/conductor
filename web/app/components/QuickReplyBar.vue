@@ -8,7 +8,11 @@ import { questionOf, replyLine, type ReplyTaken } from '~/utils/reply'
  * decision as the decision: Answer opens its card. Without it (a shared session's viewer, whose link no decision route takes) the bar
  * says where the decision is answered, and emits nothing for it.
  */
-const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean; answers?: boolean; pastes?: boolean }>()
+/**
+ * `field` false: the card draws no reply field of its own, for the chat's box answers the question (the session page in Chat, UX3 R5);
+ * its choices, plan and other forms stay.
+ */
+const props = withDefaults(defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean; answers?: boolean; pastes?: boolean; field?: boolean }>(), { busy: false, answers: false, pastes: false, field: true })
 /**
  * Each reply names the question the bar showed as it was clicked, typed or keyed (its id; none from an older owner). `openPlan` is
  * the plan a plan approval is about (#289), to open in the editor; `previewPlan` the same plan, to open rendered (#432); `answer` the
@@ -131,7 +135,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <UButton v-if="pastes && role === 'control'" label="Paste into the terminal" icon="i-lucide-clipboard-paste" size="sm" color="neutral" variant="soft" class="max-w-full" data-quick-reply-paste @click="emit('paste')" />
         </div>
         <!-- The form shrinks with its pane (the terminal's, beside the editor: Codex's round on #309) rather than overflowing it. -->
-        <form v-else class="ml-auto flex min-w-0 max-w-full flex-1 basis-64 items-center gap-2 sm:flex-none" @submit.prevent="send">
+        <form v-else-if="field" class="ml-auto flex min-w-0 max-w-full flex-1 basis-64 items-center gap-2 sm:flex-none" @submit.prevent="send">
           <UInput v-model="text" size="sm" class="w-64 min-w-0 max-w-full flex-1 sm:flex-none" :placeholder="placeholder" :disabled="!canReply" />
           <UButton type="submit" size="sm" label="Send" trailing-icon="i-lucide-corner-down-left" :disabled="!canReply || !text.trim()" />
         </form>
