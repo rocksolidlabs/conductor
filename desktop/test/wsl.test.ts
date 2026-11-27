@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, readFileSync as readFile, writeFileSync, chmodSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
 import { chooseDistro, decode, INSTALL_SCRIPT, parseList, parseWslconfigNetworking, windowsPathToWsl } from '../src/wsl'
 import { SHELL_PATH_WAIT, wslAvailable, WslLauncher } from '../src/launcher-wsl'
 
@@ -138,5 +141,31 @@ describe('WebRTC from inside WSL', () => {
     expect(nsh).toContain('protocol=UDP localport=7877')
     expect(nsh).toContain('customUnInstall')
     expect(nsh).toContain('delete rule name="Conductor WebRTC (UDP 7877)"')
+  })
+})
+
+describe('Allow this folder inside WSL', () => {
+  const KEY = 'key-' + 'e'.repeat(60)
+  it('keeps a folder added in the roots, and the key crosses with the other CONDUCTOR_ variables', () => {
+    const l = new WslLauncher({ source: 'C:\\x\\conductor-linux', distro: 'Ubuntu', version: 'v1', windowsHome: false, log: () => {}, run: async () => ({ ok: true, out: '' }) })
+    const env = l.linuxEnv({ CONDUCTOR_WORKBENCH_TOKEN: 't', CONDUCTOR_DESKTOP_KEY: KEY, CONDUCTOR_ALLOWED_ROOTS: '/home/me,/srv/added' }, false, '')
+    expect(env.CONDUCTOR_DESKTOP_KEY).toBe(KEY)
+    expect(env.CONDUCTOR_ALLOWED_ROOTS).toBe('/home/me,/srv/added')
+  })
+  it.skipIf(process.platform === 'win32')("hands the key to wsl.exe's environment by WSLENV, never to the app's own", async () => {
+    // A stand-in for wsl.exe that writes the environment it was given.
+    const dir = mkdtempSync(join(tmpdir(), 'wslenv-'))
+    const out = join(dir, 'env.txt')
+    const exe = join(dir, 'wsl.sh')
+    writeFileSync(exe, `#!/bin/sh\nenv > '${out}'\n`)
+    chmodSync(exe, 0o755)
+    const l = new WslLauncher({ source: 'C:\\x\\conductor-linux', distro: 'Ubuntu', version: 'v1', windowsHome: false, log: () => {}, run: async () => ({ ok: true, out: '' }), exe })
+    const child = l.spawn(['serve'], { CONDUCTOR_WORKBENCH_TOKEN: 't', CONDUCTOR_DESKTOP_KEY: KEY })
+    await new Promise((r) => child.once('exit', r))
+    await vi.waitFor(() => expect(existsSync(out)).toBe(true))
+    const lines = readFile(out, 'utf8').split('\n')
+    expect(lines).toContain(`CONDUCTOR_DESKTOP_KEY=${KEY}`)
+    expect(lines.find((x) => x.startsWith('WSLENV='))?.split('=')[1]?.split(':')).toContain('CONDUCTOR_DESKTOP_KEY')
+    expect(process.env.CONDUCTOR_DESKTOP_KEY).toBeUndefined()
   })
 })

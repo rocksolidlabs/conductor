@@ -2,6 +2,7 @@ import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent, type 
 import { external } from './window'
 import type { DesktopSettings } from './settings'
 import { SettingsSaver } from './save'
+import type { FolderAllow } from './allow'
 import type { ServerSupervisor, ServerStatus } from './server'
 import type { IceStatus } from './firewall'
 import { zoomStatus, type ZoomStatus } from './zoom'
@@ -47,6 +48,11 @@ export interface IpcDeps {
   previewFetch?: BridgeDeps['fetch']
   /** The size of a window's content (preview.ts capturePreview); without it the shell takes no screenshot. */
   contentSize?: CaptureDeps['contentSize']
+  /**
+   * Allow this folder (allow.ts): the press, one at a time, never beside a Settings save or a restart from the page. Without it
+   * (the app on Windows until its switch is on) the call is refused and nothing is asked.
+   */
+  folders?: FolderAllow
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -134,16 +140,26 @@ export function registerIpc(d: IpcDeps): void {
   )
   ipcMain.handle('conductor:notice', guard(() => d.notice()))
   ipcMain.handle('conductor:zoom', guard(() => d.zoom?.() ?? { ...zoomStatus(0), announce: false }))
+  // A save, and a restart asked from the page, wait for a press of Allow this folder under way, and a press meanwhile is busy.
+  const serial = <T>(f: () => Promise<T>): Promise<T> => (d.folders ? d.folders.save(f) : f())
   ipcMain.handle(
     'conductor:settings:set',
-    guard((_e, patch) => saver.save({ get: d.settings.get, set: d.settings.set, restart: () => d.supervisor.restart(), posix: !!d.wsl?.() }, patch as Partial<DesktopSettings>)),
+    guard((_e, patch) => serial(() => saver.save({ get: d.settings.get, set: d.settings.set, restart: () => d.supervisor.restart(), posix: !!d.wsl?.() }, patch as Partial<DesktopSettings>))),
+  )
+  // Allow this folder: it changes where agents may work, so it answers the workbench's main frame alone, as Settings' own page.
+  ipcMain.handle(
+    'conductor:allowFolder',
+    mainFrameOnly(async (_e, path, confirmed) => {
+      if (!d.folders) return { ok: false, code: 'not_supported', message: 'this app cannot allow a folder while Conductor runs' }
+      return d.folders.allow(path, confirmed ?? '')
+    }),
   )
   // What became of the last save, once: the page that followed a restarted server to its fresh port asks (SettingsSaver).
   ipcMain.handle('conductor:settings:outcome', guard(() => saver.take()))
   ipcMain.handle(
     'conductor:restartServer',
     guard(async () => {
-      await d.supervisor.restart()
+      await serial(() => d.supervisor.restart())
     }),
   )
   ipcMain.handle(

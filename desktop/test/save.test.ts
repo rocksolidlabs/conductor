@@ -104,4 +104,15 @@ describe('SettingsSaver', () => {
     expect(a.stored().updateDownloaded).toBe('0.7.0-rc.12')
     expect(a.stored().updateFailedNoticed).toBe('0.7.0-rc.11')
   })
+
+  it('a save made after Allow this folder holds the folder and does not restart for it', async () => {
+    const s = new SettingsSaver()
+    const a = app()
+    // The press kept /srv/proj (allow.ts), with no restart: the Settings page then saves its form, which holds it (onSettings).
+    a.d.set({ ...a.stored(), allowedRoots: [...a.stored().allowedRoots, '/srv/proj'] })
+    await s.save(a.d, { closeToTray: false, allowedRoots: ['/home/me', '/srv/proj'] })
+    expect(a.restarts).toHaveLength(0)
+    expect(a.stored().allowedRoots).toEqual(['/home/me', '/srv/proj'])
+    expect(s.take()).toBe('saved')
+  })
 })

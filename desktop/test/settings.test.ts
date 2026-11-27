@@ -67,6 +67,12 @@ describe('server environment', () => {
     // None known: none named, and none the app itself was started with comes through.
     expect(serverEnv({ CONDUCTOR_DESKTOP_DIR: '/elsewhere' }, defaults, 'tok', '/usr/bin', '')).not.toHaveProperty('CONDUCTOR_DESKTOP_DIR')
   })
+  it("carries the run's key it is given (Allow this folder), and none from the app's own environment", () => {
+    const defaults = defaultSettings('/home/me', '/ud')
+    expect(serverEnv({}, defaults, 'tok', '/usr/bin', '/ud', 'k'.repeat(64)).CONDUCTOR_DESKTOP_KEY).toBe('k'.repeat(64))
+    expect(serverEnv({ CONDUCTOR_DESKTOP_KEY: 'leaked' }, defaults, 'tok', '/usr/bin', '/ud')).not.toHaveProperty('CONDUCTOR_DESKTOP_KEY')
+    expect(serverEnv({ CONDUCTOR_DESKTOP_KEY: 'leaked' }, defaults, 'tok', '/usr/bin', '/ud', 'mine').CONDUCTOR_DESKTOP_KEY).toBe('mine')
+  })
 })
 
 describe('switchyard settings', () => {

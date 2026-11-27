@@ -15,7 +15,8 @@ and shows its log.
 | `src/server.ts` | `ServerSupervisor`: spawn, the handshake line, health polling, restart with backoff, stop by closing stdin |
 | `src/handshake.ts` | the `--print-listen` line, read out of chunked output past a shell's noise |
 | `src/launcher.ts`, `src/launcher-wsl.ts`, `src/wsl.ts` | where the binary runs: on this machine, or inside a WSL 2 distribution on Windows |
-| `src/env.ts`, `src/shellPath.ts` | the server's environment: the login shell's PATH, the settings as `CONDUCTOR_*`, the token, and the app's own directory (`CONDUCTOR_DESKTOP_DIR`, under `/mnt` inside WSL), which the server's sessions never read |
+| `src/env.ts`, `src/shellPath.ts` | the server's environment: the login shell's PATH, the settings as `CONDUCTOR_*`, the token, the run's key (`CONDUCTOR_DESKTOP_KEY`, the server's alone), and the app's own directory (`CONDUCTOR_DESKTOP_DIR`, under `/mnt` inside WSL), which the server's sessions never read |
+| `src/allow.ts` | Allow this folder: the server asked with the token and the key (`POST /api/roots`), the folder kept in the settings with no restart, one press at a time and never beside a Settings save; off on Windows until its switch is on |
 | `src/settings.ts` | `userData/settings.json`: data directory, allowed roots, default directory, yolo, reach, close to tray, the WSL distribution |
 | `src/install.ts` | the stable copy of the binary the server runs from (the hook assets name it) |
 | `src/window.ts`, `src/ipc.ts`, `src/preload.ts` | the window's fences, the bridge the workbench calls (`window.conductorDesktop`), the sender checks |

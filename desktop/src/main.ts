@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { serverEnv, SERVE_ARGS } from './env'
 import { ensureStableBinary, stableBinaryPath } from './install'
 import { registerIpc } from './ipc'
+import { allowOffered, FolderAllow } from './allow'
 import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
@@ -108,6 +109,9 @@ async function run() {
   let updater: StartedUpdater | null = null
   let trayUpdate: ((version: string) => void) | null = null
   const token = randomBytes(32).toString('hex')
+  // The second secret of the run: with it the app alone may allow a folder while the server runs (allow.ts). It is handed to the
+  // server's environment alone (serverEnv), never to the app's own, a page, a log line or a file.
+  const desktopKey = randomBytes(32).toString('hex')
   process.env.CONDUCTOR_DESKTOP_VERSION = app.getVersion()
 
   const source = sourceBinary()
@@ -171,7 +175,7 @@ async function run() {
     args: SERVE_ARGS,
     beforeStart,
     env: () => {
-      const env = serverEnv(process.env, settings, token, shellPath(), userData)
+      const env = serverEnv(process.env, settings, token, shellPath(), userData, desktopKey)
       // Inside a WSL distribution the paths are its own: the server's data
       // beside its binary, the Linux home as the root (and the Windows
       // profile under /mnt when asked).
@@ -278,16 +282,34 @@ async function run() {
 
   // A zoom level kept from before is said once per start, to the first workbench page that asks (ZoomStart).
   const zoomStart = new ZoomStart()
+  const keepSettings = (s: DesktopSettings) => {
+    settings = s
+    saveSettings(settingsFile, s)
+  }
+  // Allow this folder, where the app offers it (on Windows once its switch is on): the server asked over loopback with the token
+  // and the key, following no redirect; the settings kept with no restart; every workbench window told.
+  const folders = allowOffered(process.platform)
+    ? new FolderAllow({
+        get: () => settings,
+        set: keepSettings,
+        server: () => ({ url: supervisor.status.url, pid: supervisor.status.pid, running: supervisor.status.state === 'running' }),
+        token: () => token,
+        key: () => desktopKey,
+        fetch: (url, init) => fetch(url, init),
+        posix: !!wsl,
+        told: () => {
+          for (const w of workbenchWindows(BrowserWindow.getAllWindows(), origin())) w.webContents.send('conductor:settings')
+        },
+      })
+    : undefined
   registerIpc({
     origin,
     token: () => token,
     supervisor,
+    folders,
     settings: {
       get: () => settings,
-      set: (s: DesktopSettings) => {
-        settings = s
-        saveSettings(settingsFile, s)
-      },
+      set: keepSettings,
     },
     showLog,
     notice: takeNotice,
