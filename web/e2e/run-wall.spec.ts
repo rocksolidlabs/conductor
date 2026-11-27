@@ -145,6 +145,11 @@ async function marksKept(grid: Locator): Promise<number[]> {
   return grid.locator('[data-session-tile] .terminal-host').evaluateAll((els) => els.map((el) => (el as unknown as { e2eMark?: number }).e2eMark ?? 0))
 }
 
+/** The members whose terminal the server has welcomed. */
+function welcomedNames(grid: Locator): Promise<string[]> {
+  return grid.locator(':scope > [data-member]').evaluateAll((els) => els.filter((e) => e.querySelector('[data-welcomed]')).map((e) => e.getAttribute('data-member') ?? ''))
+}
+
 /** Every tile is inside the wall or reached by its scroll, and no two overlap. */
 async function tilesLaidOut(grid: Locator, n: number, scroll: 'x' | 'y' = 'y'): Promise<void> {
   const tiles = grid.locator(':scope > [data-member]')
@@ -195,8 +200,10 @@ for (const size of [DAILY, { width: 1440, height: 900 }]) {
       await expect(sw.locator('[data-run-layout-choice="large"]')).toHaveAccessibleName('One large')
       await expect(grid).toHaveAttribute('data-run-layout', 'grid')
       await tilesLaidOut(grid, names.length)
-      await expect(grid.locator('[data-session-tile] [data-welcomed]')).toHaveCount(names.length, { timeout: 30_000 })
+      // Every terminal drawn, and marked: a tile drawn again would be a new element without the mark, its connection a new one.
+      await expect(grid.locator('[data-session-tile] .terminal-host')).toHaveCount(names.length)
       await markTerminals(grid)
+      const was = await welcomedNames(grid)
 
       await sw.locator('[data-run-layout-choice="large"]').click()
       await expect(sw.locator('[data-run-layout-choice="large"]')).toHaveAttribute('aria-pressed', 'true')
@@ -211,7 +218,8 @@ for (const size of [DAILY, { width: 1440, height: 900 }]) {
       await expect(grid.locator('[data-tile-show-large]')).toHaveCount(names.length - 1)
       // Moved, never drawn again: the same terminal elements, still welcomed.
       expect(await marksKept(grid)).toEqual(names.map((_, i) => i + 1))
-      await expect(grid.locator('[data-session-tile] [data-welcomed]')).toHaveCount(names.length)
+      // Every connection welcomed before the change is welcomed still: none was made again.
+      expect(await welcomedNames(grid)).toEqual(expect.arrayContaining(was))
 
       // Show large: the last member takes the large cell.
       const last = names[names.length - 1]!
@@ -310,8 +318,10 @@ for (const size of [DAILY, { width: 1440, height: 900 }]) {
       const sw = page.locator('[data-run-layout-switch]')
       await expect(sw.locator('[data-run-layout-choice]')).toHaveCount(4)
       expect(await sw.locator('[data-run-layout-choice]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['Grid', 'Columns', 'Rows', 'One large'])
-      await expect(grid.locator('[data-session-tile] [data-welcomed]')).toHaveCount(names.length, { timeout: 30_000 })
+      // Every terminal drawn, and marked: a tile drawn again would be a new element without the mark, its connection a new one.
+      await expect(grid.locator('[data-session-tile] .terminal-host')).toHaveCount(names.length)
       await markTerminals(grid)
+      const was = await welcomedNames(grid)
       await sw.locator('[data-run-layout-choice="columns"]').click()
       await expect(grid).toHaveAttribute('data-run-layout', 'columns')
       await tilesLaidOut(grid, names.length, 'x')
@@ -324,7 +334,8 @@ for (const size of [DAILY, { width: 1440, height: 900 }]) {
       const lefts = await grid.locator(':scope > [data-member]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)))
       expect(new Set(lefts).size, 'one column').toBe(1)
       expect(await marksKept(grid)).toEqual(names.map((_, i) => i + 1))
-      await expect(grid.locator('[data-session-tile] [data-welcomed]')).toHaveCount(names.length)
+      // Every connection welcomed before the change is welcomed still: none was made again.
+      expect(await welcomedNames(grid)).toEqual(expect.arrayContaining(was))
       await page.reload()
       await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'rows')
     })
