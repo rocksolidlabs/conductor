@@ -211,8 +211,12 @@ func TestCodexChatAsksThroughThePermissionPath(t *testing.T) {
 		}
 		return slices.Equal(states, []string{session.PermissionAllowed, session.PermissionDenied})
 	})
-	if !hasEntry(es, func(e session.TranscriptEntry) bool { return e.Kind == session.EntryTool && e.Status == session.ToolOK && e.Tool == "commandExecution" }) ||
-		!hasEntry(es, func(e session.TranscriptEntry) bool { return e.Kind == session.EntryTool && e.Status == session.ToolDenied }) {
+	if !hasEntry(es, func(e session.TranscriptEntry) bool {
+		return e.Kind == session.EntryTool && e.Status == session.ToolOK && e.Tool == "commandExecution"
+	}) ||
+		!hasEntry(es, func(e session.TranscriptEntry) bool {
+			return e.Kind == session.EntryTool && e.Status == session.ToolDenied
+		}) {
 		t.Fatal("the steps did not end as answered")
 	}
 	// Each answer went to its own request's id, once.
