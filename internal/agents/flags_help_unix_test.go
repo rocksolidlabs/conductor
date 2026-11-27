@@ -70,28 +70,72 @@ func TestHelpBound(t *testing.T) {
 	}
 }
 
-// A program that does not answer is ended at the run's bound (the Timeout
-// field: the bound is the test's, not a clock it races), with the helper it
-// left in its group, and nothing it printed is read.
+// A program that does not answer is ended at the run's bound (its
+// context's deadline, the path the Timeout takes too), with the helper it
+// left in its group, and nothing it printed is read. The bound comes only
+// once the helper's pid is known (the test ends the context then), so the
+// group's end is proved every run; the FIFO the helper waits on is then
+// read by nothing, which would not hold for a helper still there.
 func TestHelpEndsAHangAtItsBound(t *testing.T) {
-	_, late, wait := heldHelper(t)
+	fifo, late, wait := heldHelper(t)
 	helper := filepath.Join(t.TempDir(), "helper")
 	p := script(t, "echo partial\nsh -c "+quote(wait)+" </dev/null >/dev/null 2>&1 &\n"+
 		"echo $! > "+quote(helper+".new")+" && mv "+quote(helper+".new")+" "+quote(helper)+"\n"+wait)
-	text, res := (&ProbeProcess{Timeout: 200 * time.Millisecond}).Help(context.Background(), []string{p}, []string{"--help"}, nil)
-	if res.Ran || !strings.HasPrefix(res.Error, "timeout") || text != "" {
-		t.Fatalf("%+v %q", res, text)
+	ctx, bound := context.WithCancel(context.Background())
+	defer bound()
+	type answer struct {
+		text string
+		res  ProbeResult
 	}
-	if b, err := os.ReadFile(helper); err == nil {
-		// The helper started before the bound: it is ended with the group.
-		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-		if err != nil || pid <= 0 {
-			t.Fatalf("pid file %q", b)
+	ran := make(chan answer, 1)
+	go func() {
+		text, res := (&ProbeProcess{Timeout: time.Hour}).Help(ctx, []string{p}, []string{"--help"}, nil)
+		ran <- answer{text, res}
+	}()
+	pid := pidIn(t, helper)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	bound()
+	var a answer
+	select {
+	case a = <-ran:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the bound did not end the help read")
+	}
+	if a.res.Ran || !strings.HasPrefix(a.res.Error, "timeout") || a.text != "" {
+		t.Fatalf("%+v %q", a.res, a.text)
+	}
+	waitGone(t, pid)
+	if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); !errors.Is(err, syscall.ENXIO) {
+		if err == nil {
+			_, _ = w.WriteString("go\n")
+			w.Close()
 		}
-		waitGone(t, pid)
+		t.Fatalf("something still reads the helper's FIFO: open for writing said %v", err)
 	}
 	if _, err := os.Stat(late); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the helper went on: %v", err)
+	}
+}
+
+// A help that goes on growing is ended once it passes MaxHelp bytes, long
+// before the run's bound (an hour here): the read is too long, and none of
+// it is returned.
+func TestHelpEndsAHelpPastItsBoundInBytes(t *testing.T) {
+	p := script(t, "while :; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done")
+	ran := make(chan ProbeResult, 1)
+	var text string
+	go func() {
+		var res ProbeResult
+		text, res = (&ProbeProcess{Timeout: time.Hour}).Help(context.Background(), []string{p}, []string{"--help"}, nil)
+		ran <- res
+	}()
+	select {
+	case res := <-ran:
+		if !res.TooLong || res.Error != ErrHelpTooLong.Error() || text != "" {
+			t.Fatalf("%+v, %d bytes", res, len(text))
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("a help that kept growing was not ended")
 	}
 }
 
