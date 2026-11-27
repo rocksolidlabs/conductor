@@ -132,7 +132,11 @@ test('a rename made elsewhere reaches an open page, and a resume starts under th
   await expect(title).toHaveText('e2e resumed under it')
   await api.stopSession(s.id)
   await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
-  await page.locator('[data-resume][data-resume-kind="label"]').first().click()
+  // Ended while the page is open: its foot says so (UX3 R16), and no amber badge is drawn over the terminal's last screen (the
+  // terminal had the status message before the foot could say it: both come from the session's end).
+  await expect(page.locator('[data-session-ended]')).toContainText('This session ended.')
+  await expect(page.getByText(/^(Process exited|Session stopped)/)).toHaveCount(0)
+  await page.locator('[data-session-ended] [data-resume][data-resume-kind="label"]').click()
   await page.waitForURL((u) => u.pathname.startsWith('/sessions/') && !u.pathname.endsWith(s.id), { timeout: 15_000 })
   const nextId = decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? '')
   sessions.push(nextId)

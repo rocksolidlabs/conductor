@@ -74,8 +74,11 @@ async function memberPage(page: Page, name: string): Promise<void> {
   await expect(page.locator(`[data-member-strip][data-run="${run.id}"] [data-member-strip-title]`)).toHaveText(CREW)
 }
 
-/** The header at rest: the strip and the session's bar each clear inside, the strip above the bar, the session's name whole. */
-async function headerWhole(page: Page): Promise<void> {
+/**
+ * The header at rest: the strip and the session's bar each clear inside, the session's name whole; the strip above the bar, or, on a
+ * very wide header, inside the bar's own row, left of the name (UX3 R12b).
+ */
+async function headerWhole(page: Page, inline = false): Promise<void> {
   const strip = page.locator('[data-member-strip]')
   const bar = page.locator('[data-session-bar]')
   await atRest(strip)
@@ -83,8 +86,15 @@ async function headerWhole(page: Page): Promise<void> {
   await noOverlap(strip)
   await noOverlap(bar)
   await uncut(page.locator('[data-session-title]'))
-  const [s, b] = [await strip.boundingBox(), await bar.boundingBox()]
-  expect(s && b && s.y + s.height <= b.y + 0.5, 'the strip sits above the bar').toBe(true)
+  const [s, b, name] = [await strip.boundingBox(), await bar.boundingBox(), await page.locator('[data-session-title]').boundingBox()]
+  if (inline) {
+    await expect(strip).toHaveAttribute('data-strip-inline', '')
+    expect(s && b && s.y >= b.y - 0.5 && s.y + s.height <= b.y + b.height + 0.5, 'the strip sits in the bar').toBe(true)
+    expect(s && name && s.x + s.width <= name.x + 0.5, 'left of the name').toBe(true)
+  } else {
+    await expect(strip).not.toHaveAttribute('data-strip-inline', '')
+    expect(s && b && s.y + s.height <= b.y + 0.5, 'the strip sits above the bar').toBe(true)
+  }
 }
 
 for (const size of [
@@ -99,7 +109,7 @@ for (const size of [
       await expect(back).toBeVisible()
       await expect(back).toHaveText('Back to the crew')
       await expect(page.locator('[data-back-to-list]')).toHaveCount(0)
-      await headerWhole(page)
+      await headerWhole(page, size.width === 2000)
       // The tooltip names the run it goes back to, with its key.
       await back.hover()
       // reka keeps the role on a copy of the words, hidden from the tree, for the button's description (tooltips.spec.ts).
@@ -219,5 +229,47 @@ test("on a phone the strip is a member's way back, in view; Back to the list is 
     await expect(item).toHaveAttribute('aria-disabled', 'true')
   } finally {
     await page.context().close()
+  }
+})
+
+test('on a very wide window the strip is in the header row and the terminal as tall as any session\'s; twelve members scroll in it', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 2000, height: 810, path: '/crews' })
+  const api = own.api
+  const alone = await api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'e2e wide alone', cwd })
+  let big: Run | undefined
+  let bigCrew = ''
+  try {
+    budget(4 * LONG_MS)
+    const tall = async () => {
+      await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: LONG_MS })
+      await atRest(page.locator('.terminal-host').first())
+      return (await page.locator('.terminal-host').first().boundingBox())!.height
+    }
+    await page.goto(`/sessions/${encodeURIComponent(alone.id)}`)
+    const aloneTall = await tall()
+    await memberPage(page, 'lead')
+    await headerWhole(page, true)
+    expect(Math.abs((await tall()) - aloneTall), `a member's terminal against ${aloneTall} px`).toBeLessThanOrEqual(2)
+
+    // Twelve members: the tabs scroll inside the strip, the open one in view, the name whole.
+    const members = Array.from({ length: 12 }, (_, i) => ({ name: `member-${String(i + 1).padStart(2, '0')}`, agentId: 'shell', prompt: '', start: { when: 'immediately' } }))
+    bigCrew = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name: `${CREW} twelve`, goal: '', cwd, where: 'server', isolation: 'none', openAfterLaunch: false, members })).crew.id
+    big = await api.launchCrew(bigCrew)
+    budget(2 * LONG_MS)
+    await expect.poll(async () => member(await api.run(big!.id), 'member-12').sessionId ?? '', { timeout: 2 * LONG_MS }).not.toBe('')
+    big = await api.run(big.id)
+    await page.goto(`/sessions/${encodeURIComponent(member(big, 'member-12').sessionId!)}`)
+    const tabs = page.locator(`[data-member-strip][data-run="${big.id}"] [data-member-tabs]`)
+    await expect(tabs.locator('[data-member-tab]')).toHaveCount(12, { timeout: LONG_MS })
+    await headerWhole(page, true)
+    expect(await tabs.evaluate((el) => el.scrollWidth > el.clientWidth), 'the tabs scroll').toBe(true)
+    await expect(tabs.locator('[data-member-tab="member-12"]')).toBeInViewport()
+    const [list, open] = [await tabs.boundingBox(), await tabs.locator('[data-member-tab="member-12"]').boundingBox()]
+    expect(list && open && open.x >= list.x - 0.5 && open.x + open.width <= list.x + list.width + 0.5, 'the open tab inside the strip').toBe(true)
+  } finally {
+    await page.context().close()
+    await api.stopSession(alone.id)
+    if (big) await api.stopRun(big.id)
+    if (bigCrew) await api.call('DELETE', `/api/crews/${encodeURIComponent(bigCrew)}`)
   }
 })

@@ -646,10 +646,8 @@ function handleControl(msg: ControlMessage) {
       break
     case 'status':
       emit('status', msg.status, msg.exitCode)
-      if (isEnded(msg.status)) {
-        notice.value = msg.status === 'exited' ? `Process exited${msg.exitCode !== undefined ? ` with code ${msg.exitCode}` : ''}` : 'Session stopped'
-        markEnded()
-      }
+      // The end is the page's to say (UX3 R16: the session page's foot, the header's mark): no badge over the terminal's last screen.
+      if (isEnded(msg.status)) markEnded()
       break
     case 'attention':
       // A question answered by keys in the terminal reads as none to offer (liveAttention, #258); the paste control keeps it as sent.
@@ -980,7 +978,7 @@ onBeforeUnmount(() => {
 
     <!-- A chat, over the terminal's pane: the whole view, or a tile's form (the end of the conversation, read-only). The page's `ask` (the card for a question) goes to the chat,
          which draws it just above its box. -->
-    <ChatView v-if="chatShown && !compact" ref="chatView" :connection="conn" :read-only="readOnly" :operator="operator" :verbatim="verbatim" :opens-changes="opensChanges" :note="chatNote" :agent-name="agentName" :draft-key="draftKey" :asked="asked" @dismiss-note="emit('dismissNote')" class="absolute inset-0 z-10" @open-diff="emit('openChange', $event)" @reply="(text, question, taken) => emit('reply', text, question, taken)">
+    <ChatView v-if="chatShown && !compact" ref="chatView" :connection="conn" :read-only="readOnly || ended" :operator="operator" :verbatim="verbatim" :opens-changes="opensChanges" :note="chatNote" :agent-name="agentName" :draft-key="draftKey" :asked="asked" @dismiss-note="emit('dismissNote')" class="absolute inset-0 z-10" @open-diff="emit('openChange', $event)" @reply="(text, question, taken) => emit('reply', text, question, taken)">
       <template v-if="$slots.ask" #ask><slot name="ask" /></template>
     </ChatView>
     <ChatView v-else-if="chatShown" tile :connection="conn" read-only class="absolute inset-0 z-10" />
