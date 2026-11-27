@@ -16,11 +16,13 @@ import {
   optionsLine,
   specCriteria,
   startingAgents,
+  trialCheckLine,
   trialFolderLine,
   withAgent,
   type DraftComparison,
   type TrialAgent,
 } from './compareTemplate'
+import { GIT_CAN_WORKTREE, GIT_FIRST_COMMIT } from './dirInput'
 
 const agents: TrialAgent[] = [
   { id: 'shell', name: 'Shell', allowArgs: true },
@@ -302,6 +304,16 @@ describe('what the form says of the folder as it is picked, and of a save the se
     expect(trialFolderLine({ code: 'invalid_cwd', message: '/etc is not under an allowed root' })).toBe('/etc is not under an allowed root.')
     expect(trialFolderLine({ code: 'git_failed', message: 'could not run git' })).toBe('')
     expect(trialFolderLine(null)).toBe('')
+  })
+
+  it('says the press\'s refusal of a folder the server looked at, and nothing of a folder with a commit or a new folder (#1179)', () => {
+    const refusal = 'This folder has no commit yet. Make its first commit yourself, then launch'
+    expect(trialCheckLine({ message: refusal })).toBe(`${refusal}.`)
+    expect(trialCheckLine({ message: 'git cannot use the working directory\'s repository: fatal: detected dubious ownership' })).toBe("Git cannot use the working directory's repository: fatal: detected dubious ownership.")
+    expect(trialCheckLine({ message: GIT_FIRST_COMMIT })).toBe('')
+    expect(trialCheckLine({ message: GIT_CAN_WORKTREE })).toBe('')
+    expect(trialCheckLine({ message: '' })).toBe('')
+    expect(trialCheckLine(null)).toBe('')
   })
 
   it("keeps the server's words and says what was kept", () => {

@@ -263,34 +263,49 @@ test('a press whose first problem is under More options opens it and puts the cu
   await dialog.locator('[data-compare-cancel]').click()
 })
 
-test("a folder agents may not use is marked as it is picked and holds the button; a new project's folder says nothing", async ({ page, state }) => {
+test("a folder agents may not use, and a repository with no commit, are marked as they are picked and hold the button; a new folder says nothing", async ({ page, state }) => {
   test.setTimeout(120_000)
-  // A folder outside the server's allowed root, and a new project inside it: a repository with no commit yet.
+  // A folder outside the server's allowed root; inside it a repository with no commit (refused: Conductor makes the first commit in a
+  // new folder alone) and a new folder.
   const outside = mkdtempSync(join(tmpdir(), 'e2e-trial-outside-'))
+  const started = mkdtempSync(join(state.root, 'e2e-trial-started-'))
+  git(started, 'init', '--quiet')
   const fresh = mkdtempSync(join(state.root, 'e2e-trial-new-'))
-  git(fresh, 'init', '--quiet')
   try {
     await page.setViewportSize(DAILY)
     await page.goto('/crews')
     const { dialog, form } = await openForm(page)
-    const folder = form.locator('[data-compare-cwd]').getByRole('combobox')
-    const checked = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === outside)
-    await folder.fill(outside)
-    await folder.press('Tab')
-    expect((await checked).status()).toBe(400)
+    const field = form.locator('[data-compare-cwd]')
+    const folder = field.getByRole('combobox')
+    const save = dialog.locator('[data-compare-create]')
+    /** Picks dir and waits for the server's answer and for the form to have applied it (its mark names the folder). */
+    const pick = async (dir: string, status: number) => {
+      const checked = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === dir)
+      await folder.fill(dir)
+      await folder.press('Tab')
+      expect((await checked).status()).toBe(status)
+      await expect(field).toHaveAttribute('data-folder-checked', dir)
+    }
+    await pick(outside, 400)
     await expect(folder).toHaveAttribute('aria-invalid', 'true')
-    await expect(dialog.locator('[data-compare-create]')).toBeDisabled()
-    // A new project: the server's answer comes and the form says nothing of it.
-    const again = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === fresh)
-    await folder.fill(fresh)
-    await folder.press('Tab')
-    expect((await again).status()).toBe(200)
+    await expect(save).toBeDisabled()
+    // A repository with no commit: the press would be refused, and the form says so under Folder in the server's sentence.
+    await pick(started, 200)
+    await expect(dialog).toContainText('This folder has no commit yet. Make its first commit yourself, then launch.')
+    await expect(folder).toHaveAttribute('aria-invalid', 'true')
+    await expect(save).toBeDisabled()
+    // A new folder: its first commit is the press's to make, and the form says nothing of it.
+    await pick(fresh, 200)
     await expect(folder).not.toHaveAttribute('aria-invalid', 'true')
-    await expect(dialog.locator('[data-compare-create]')).toBeEnabled()
-    for (const words of ['No commits', 'Not a git repository', 'first commit']) await expect(dialog).not.toContainText(words)
+    await expect(save).toBeEnabled()
+    for (const words of ['no commit', 'Not a git repository', 'first commit']) await expect(dialog).not.toContainText(words)
     await dialog.locator('[data-compare-cancel]').click()
+    // The checks made nothing in either.
+    expect(existsSync(join(fresh, '.git'))).toBe(false)
+    expect(git(started, 'rev-list', '--all', '--count').trim()).toBe('0')
   } finally {
     rmSync(outside, { recursive: true, force: true })
+    rmSync(started, { recursive: true, force: true })
     rmSync(fresh, { recursive: true, force: true })
   }
 })

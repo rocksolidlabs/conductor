@@ -8,6 +8,7 @@ import {
   draftOnOpen,
   FOLDER_CHECK_MS,
   notSavedWords,
+  trialCheckLine,
   trialFolderLine,
   inMore,
   optionsLine,
@@ -151,7 +152,7 @@ async function checkFolder(folder: string) {
   }
   let line = ''
   try {
-    await api.gitCheck(folder)
+    line = trialCheckLine(await api.gitCheck(folder))
   } catch (e) {
     line = trialFolderLine(e instanceof ApiError ? { code: e.code, message: e.message } : null)
   }
