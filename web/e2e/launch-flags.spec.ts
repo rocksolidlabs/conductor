@@ -297,3 +297,31 @@ test("a folder flag's value lists the folders beside the session's, a pick goes 
     await page.context().close()
   }
 })
+
+test("a crew member's Extra arguments and Model offer its agent's flags and names", async ({ browser }) => {
+  const { body } = await own.api.call<{ crew: { id: string } }>('POST', '/api/crews', { name: 'flags-crew', goal: '', cwd: '', where: 'server', isolation: 'none', openAfterLaunch: false, yolo: false, members: [{ name: 'lead', agentId: 'flags', prompt: '', start: { when: 'manual' } }] })
+  const page = await dayPage(browser, { server: own.started, path: `/crews/${body.crew.id}`, width: 1440, height: 900 })
+  try {
+    const row = page.locator('[data-crew-member]').first()
+    await expect(row).toBeVisible()
+    // The member's fields ask for its agent's flags as the page draws them; the list opens once the answer is in.
+    await row.locator('[data-member-menu]').click()
+    await page.getByRole('menuitem', { name: 'Extra arguments' }).click()
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    const args = row.locator('input[data-member-args]')
+    await args.click()
+    await args.pressSequentially('--')
+    // The member has a Model field: its model flag is the field's.
+    expect(await rows(page)).toEqual(['--add-dir', '--effort', '--permission-mode', '--tone', '--verbose'])
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    const model = row.locator('input[data-member-model]')
+    await model.click()
+    expect(await rowsOf(page, '[data-model-name]')).toEqual(['alpha', 'beta'])
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+  } finally {
+    await page.context().close()
+    await own.api.call('DELETE', `/api/crews/${encodeURIComponent(body.crew.id)}`)
+  }
+})

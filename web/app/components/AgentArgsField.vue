@@ -21,6 +21,8 @@ const props = defineProps<{
   /** The session's folder, '' for the server's default: a folder flag's value with nothing typed lists the folders beside it. */
   cwd?: string
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
+  /** More classes for the input itself (a table's smaller text and touch height). */
+  baseClass?: string
 }>()
 
 const { flags, reading } = useAgentFlags(() => (props.agent ? { id: props.agent.id, version: props.agent.version } : null))
@@ -205,7 +207,7 @@ function onBlur(e: FocusEvent) {
       autocapitalize="off"
       autocomplete="off"
       spellcheck="false"
-      :ui="{ base: 'font-mono', content: 'min-w-80' }"
+      :ui="{ base: ['font-mono', baseClass].filter(Boolean).join(' '), content: 'min-w-80' }"
       class="w-full"
       @update:model-value="onText"
       @update:open="onOpen"
