@@ -2841,8 +2841,9 @@ that matches neither an empty id nor one that begins with a dash.
 - Server sessions run with an allowlisted environment and a working directory
   under `allowedRoots`. Hosted sessions run as you, with your environment.
 - Yolo launches agents without their permission prompts, as the user running
-  `conductor serve`, and Codex's recipe turns its sandbox off too: turn it on
-  only on a server whose allowed roots you would let an agent change unasked.
+  `conductor serve`, and Codex's recipe turns its sandbox off too: it removes
+  the agent's own questions, so turn it on only where you would let an agent
+  act as you unasked.
   Recipes are catalog data, held to the catalog's limits, passed as arguments
   and through the filtered environment. An agent session id that Resume passes
   to an agent must match its agent's `idPattern` and begin with a letter or a
