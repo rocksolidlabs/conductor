@@ -231,6 +231,9 @@ type codexServer struct {
 	// wmu holds a write against the cleanup, closed says the test ended.
 	wmu    sync.Mutex
 	closed bool
+	// queue holds the fake's answers for its writer; done ends both.
+	queue chan string
+	done  chan struct{}
 }
 
 // newCodexServer is a driver on a fake app server, its Read running into
@@ -239,17 +242,19 @@ func newCodexServer(t *testing.T, rec *recorder, opts CodexOptions) (*Codex, *co
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
-	s := &codexServer{t: t, out: outW, got: make(chan struct{}, 1024),
+	s := &codexServer{t: t, out: outW, got: make(chan struct{}, 1024), queue: make(chan string, 1024), done: make(chan struct{}),
 		init: `{"userAgent":"codex_cli_rs/` + CodexMinVersion + ` (test)","codexHome":"/codex-home","platformFamily":"unix","platformOs":"linux"}`}
 	if opts.Resume.Thread == "" {
 		opts.Resume.Thread = fixtureThread
 	}
 	c := NewCodex(inW, outR, opts)
 	go s.serve(inR)
+	go s.writer()
 	read := make(chan error, 1)
 	go func() { read <- c.Read(context.Background(), rec) }()
 	t.Cleanup(func() {
 		_ = c.CloseInput()
+		close(s.done)
 		s.wmu.Lock()
 		s.closed = true
 		_ = outW.Close()
@@ -257,6 +262,30 @@ func newCodexServer(t *testing.T, rec *recorder, opts CodexOptions) (*Codex, *co
 		<-read
 	})
 	return c, s, read
+}
+
+// answer queues v for the fake's writer: the fake keeps reading what the
+// driver writes while its answers wait to be read, as a real server does.
+// Answering from its read loop, it waited for the driver's Read, which
+// waited for it to read a line the driver wrote from Read's own goroutine
+// (an MCP server's form declined).
+func (s *codexServer) answer(v string) {
+	select {
+	case s.queue <- v:
+	case <-s.done:
+	}
+}
+
+// writer writes the queued answers in order until the test ends.
+func (s *codexServer) writer() {
+	for {
+		select {
+		case v := <-s.queue:
+			s.write(v)
+		case <-s.done:
+			return
+		}
+	}
 }
 
 // write writes v as one line, unless the test has ended: its writes are
@@ -295,24 +324,24 @@ func (s *codexServer) serve(in io.Reader) {
 		switch m.Method {
 		case "initialize":
 			if !s.noAnswer {
-				s.write(`{"id":` + id + `,"result":` + s.init + `}`)
+				s.answer(`{"id":` + id + `,"result":` + s.init + `}`)
 			}
 		case "thread/resume":
 			if s.resume == "refuse" {
-				s.write(`{"id":` + id + `,"error":{"code":-32600,"message":"no rollout found for thread id"}}`)
+				s.answer(`{"id":` + id + `,"error":{"code":-32600,"message":"no rollout found for thread id"}}`)
 				continue
 			}
-			s.write(`{"id":` + id + `,"result":{"thread":{"id":"` + fixtureThread + `","status":{"type":"idle"},"turns":[]},"model":"gpt-test","cwd":"/work"}}`)
+			s.answer(`{"id":` + id + `,"result":{"thread":{"id":"` + fixtureThread + `","status":{"type":"idle"},"turns":[]},"model":"gpt-test","cwd":"/work"}}`)
 		case "turn/start":
 			s.mu.Lock()
 			s.turns++
 			turn := "turn-test-" + string(rune('0'+s.turns))
 			s.mu.Unlock()
-			s.write(`{"id":` + id + `,"result":{"turn":{"id":"` + turn + `","items":[],"status":"inProgress"}}}`)
-			s.write(`{"method":"turn/started","params":{"threadId":"` + fixtureThread + `","turn":{"id":"` + turn + `","items":[],"status":"inProgress"}}}`)
+			s.answer(`{"id":` + id + `,"result":{"turn":{"id":"` + turn + `","items":[],"status":"inProgress"}}}`)
+			s.answer(`{"method":"turn/started","params":{"threadId":"` + fixtureThread + `","turn":{"id":"` + turn + `","items":[],"status":"inProgress"}}}`)
 		case "turn/interrupt":
-			s.write(`{"id":` + id + `,"result":{}}`)
-			s.write(`{"method":"turn/completed","params":{"threadId":"` + fixtureThread + `","turn":{"id":"x","items":[],"status":"interrupted"}}}`)
+			s.answer(`{"id":` + id + `,"result":{}}`)
+			s.answer(`{"method":"turn/completed","params":{"threadId":"` + fixtureThread + `","turn":{"id":"x","items":[],"status":"interrupted"}}}`)
 		}
 	}
 }
