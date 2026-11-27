@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { PaletteItem } from '~/composables/usePalette'
 import type { Action } from '~/utils/actions'
-import { MODE_CHOICE, choiceKey } from '~/utils/attention'
+import { MODE_CHOICE, answerDigit, choiceKey } from '~/utils/attention'
 import { bindDraft } from '~/utils/reply'
 import { matchRange, noteUse, writeRecent, type PaletteMode } from '~/utils/palette'
 import type { TicketSummary } from '~/composables/useDispatch'
@@ -524,10 +524,11 @@ function onListKey(e: KeyboardEvent) {
     void runAction(row, a)
     return
   }
-  const n = Number(e.key)
-  if (Number.isInteger(n) && n >= 1 && n <= 9 && row.prompt) {
+  if (/^[1-9]$/.test(e.key) && row.prompt) {
     own()
-    const o = row.prompt.choices[n - 1]
+    // A held key's repeats are taken and answer nothing (answerDigit).
+    const n = answerDigit(e)
+    const o = n ? row.prompt.choices[n - 1] : undefined
     if (o && choiceKey(o, n - 1) === n) answerChoice(row, n - 1)
   }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ANSWER_IN_CHAT, ANSWER_IN_TERMINAL, answersInChat, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
+import { ANSWER_IN_CHAT, ANSWER_IN_TERMINAL, answerDigit, answersInChat, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
 import { questionOf, replyLine, type ReplyTaken } from '~/utils/reply'
 
@@ -68,8 +68,8 @@ function onKey(e: KeyboardEvent) {
   const target = e.target as HTMLElement | null
   // Nor while the sidebar's list has the focus: a digit there answers the focused row (SessionSidebar).
   if (target?.closest?.('input, textarea, select, [contenteditable], .terminal-host, [data-session-list]')) return
-  const n = Number(e.key)
-  if (Number.isInteger(n) && n >= 1 && n <= options.value.length && choiceKey(options.value[n - 1]!, n - 1) === n) {
+  const n = answerDigit(e)
+  if (n && n <= options.value.length && choiceKey(options.value[n - 1]!, n - 1) === n) {
     e.preventDefault()
     pick(n - 1)
   }
