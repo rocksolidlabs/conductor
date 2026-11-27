@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Browser, Page } from '@playwright/test'
 import { budget, DAILY, dayPage, expect, test, type Session } from './fixtures'
 import { inside, uncut } from './layout'
@@ -29,12 +31,36 @@ async function withTurn(browser: Browser, srv: OwnServer, name: string): Promise
   return { id: s.id, page }
 }
 
+/**
+ * What the server has written of a session's record to its file (the record the next start reads): the route answers from what the
+ * server holds, and the file is written after. Read by its id; a file not yet there reads as nothing.
+ */
+function onDisk(srv: OwnServer, id: string): { endedAt?: string; agent?: { session?: { resumable?: boolean } } } {
+  try {
+    return JSON.parse(readFileSync(join(srv.root, 'data', 'history', 'sessions', `${id}.json`), 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+/** Waits until the record's file holds the conversation to resume (and its end, with `end`): what a server started again will read. */
+async function written(srv: OwnServer, id: string, end: boolean) {
+  budget(LONG_MS)
+  await expect
+    .poll(() => {
+      const r = onDisk(srv, id)
+      return !!r.agent?.session?.resumable && (!end || !!r.endedAt)
+    }, { timeout: LONG_MS, message: `${id}'s record written` })
+    .toBe(true)
+}
+
 /** Stops the session and waits for its end in its record. */
 async function ended(srv: OwnServer, id: string) {
   budget(2 * STEP_MS)
   await srv.api.stopSession(id)
   await expect.poll(async () => (await srv.api.session(id)).status, { timeout: STEP_MS }).toMatch(/exited|stopped/)
   await expect.poll(async () => (await srv.api.ok<{ record: { endedAt?: string } }>('GET', `/api/history/sessions/${id}`)).record.endedAt ?? '', { timeout: STEP_MS }).not.toBe('')
+  await written(srv, id, true)
 }
 
 /** The server started again on its data: the sessions it had are no longer listed. */
@@ -109,6 +135,7 @@ test("a session whose end was not seen says Resume… and opens its record's pag
   const { id, page: first } = await withTurn(browser, srv, name)
   await first.context().close()
   // The server ended at once, the session still running: its record has no end, and the next start finds it lost.
+  await written(srv, id, false)
   await again(srv, [id])
   budget(6 * STEP_MS)
   const { page, card } = await home(browser, srv)
