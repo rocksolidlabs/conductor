@@ -54,13 +54,23 @@ interface Asked {
  * app), or none (`'tab'`). The press sends POST /api/roots from the test's side, with the token and the app's key, and answers as the
  * app's allow.ts does.
  */
-async function folderPage(browser: Parameters<typeof dayPage>[0], bridge: 'press' | 'old' | 'tab', size: { width: number; height: number } = { width: 1440, height: 900 }, touch = false): Promise<{ page: Page; asked: Asked[] }> {
+async function folderPage(
+  browser: Parameters<typeof dayPage>[0],
+  bridge: 'press' | 'old' | 'tab',
+  size: { width: number; height: number } = { width: 1440, height: 900 },
+  touch = false,
+): Promise<{ page: Page; asked: Asked[]; answer: (a: Record<string, unknown>) => void }> {
   const asked: Asked[] = []
+  /** Answers the stand-in gives in place of the server's, in order (busy, a folder missing, ...), as the app can. */
+  const queued: Array<Record<string, unknown>> = []
+  const answer = (a: Record<string, unknown>) => void queued.push(a)
   const page = await dayPage(browser, { server: own.started, ...size, touch, path: '/sessions', ready: touch || size.width < 1024 ? '[data-bottom-bar]' : '#dashboard-sidebar-main' })
-  if (bridge === 'tab') return { page, asked }
+  if (bridge === 'tab') return { page, asked, answer }
   const ctx: BrowserContext = page.context()
   await ctx.exposeFunction('e2eAllowFolder', async (path: string, confirmed: string) => {
     asked.push({ path, confirmed })
+    const next = queued.shift()
+    if (next) return next
     const r = await fetch(`${own.started.baseURL}/api/roots`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${own.started.token}`, 'X-Conductor-Desktop-Key': KEY, 'Content-Type': 'application/json' },
@@ -98,7 +108,17 @@ async function folderPage(browser: Parameters<typeof dayPage>[0], bridge: 'press
   // The bridge is read as the app starts: the page is loaded again with it in place.
   await page.reload()
   await expect(page.locator(touch || size.width < 1024 ? '[data-bottom-bar]' : '#dashboard-sidebar-main')).toBeVisible()
-  return { page, asked }
+  return { page, asked, answer }
+}
+
+/** The app as another window allows a folder: the real POST /api/roots with the token and the key, as the app sends it. */
+async function allowElsewhere(path: string) {
+  const r = await fetch(`${own.started.baseURL}/api/roots`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${own.started.token}`, 'X-Conductor-Desktop-Key': KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  expect(r.status).toBe(200)
 }
 
 /** The Launch dialog on the prompted stub, at rest. */
@@ -141,16 +161,25 @@ test('one press allows a folder agents cannot use yet, exactly the folder named,
   await expect(line(dialog)).toHaveAttribute('data-folder-state', 'outside')
   await expect(line(dialog)).toContainText("Agents can't use this folder yet.")
   await expect(dialog.getByLabel('Folder', { exact: true })).toHaveAttribute('aria-invalid', 'true')
-  // Launch pressed with the line showing: nothing is sent, and the focus goes to the button.
+  // Launch pressed with the line showing: nothing is sent, and the focus goes to Folder, never to the button.
   await dialog.locator('[data-launch-submit]').click()
-  const allow = dialog.locator('[data-launch-allow]')
-  await expect(allow).toBeFocused()
+  await expect(dialog.getByLabel('Folder', { exact: true })).toBeFocused()
+  expect(launches(), 'nothing was sent').toBe(0)
+  // Enter, Enter, Enter from the task: still nothing sent, and nothing allowed: the press is a person's own act.
+  const task = dialog.locator('[data-launch-message-input]')
+  await task.fill('say hello')
+  await task.focus()
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press('Enter')
+    await expect(dialog.getByLabel('Folder', { exact: true })).toBeFocused()
+  }
+  expect(asked, 'Enter allowed nothing').toEqual([])
   expect(launches(), 'nothing was sent').toBe(0)
   // One press: the app is asked once, for exactly the folder the line names.
-  await dialog.locator('[data-launch-message-input]').fill('say hello')
+  const allow = dialog.locator('[data-launch-allow]')
   await allow.click()
   await expect(line(dialog)).toHaveAttribute('data-folder-state', 'allowed_now')
-  await expect(line(dialog)).toHaveText('Agents can use this folder now. Saved in Settings.')
+  await expect(line(dialog)).toHaveText('Agents can use this folder now.')
   expect(asked).toEqual([{ path: folder, confirmed: '' }])
   // Nothing else of the dialog is lost, and the launch starts there.
   await expect(dialog.locator('[data-launch-message-input]')).toHaveValue('say hello')
@@ -208,7 +237,7 @@ test('a wide folder asks first: Cancel holds the focus and allows nothing, the s
   await expect(allow).toBeVisible()
   await allow.click()
   await expect(line(dialog)).toHaveAttribute('data-folder-state', 'wide')
-  await expect(line(dialog)).toContainText('Allow your whole home folder? Agents could read and change everything in it.')
+  await expect(line(dialog).locator('[data-folder-words]')).toHaveText(`Allow your whole home folder, ${folder}? Agents could read and change everything in it.`)
   const cancel = dialog.locator('[data-folder-cancel]')
   await expect(cancel).toBeFocused()
   // A double press lands on Cancel: nothing is asked.
@@ -250,7 +279,7 @@ test('only the app may allow: no button in a plain tab or an older app, nor for 
     (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ path: unknown, state: 'outside', refused: 'a_reason_to_come' }) }),
   )
   await typeFolder(dialog, unknown)
-  await expect(line(dialog)).toHaveText("Agents can't use this folder.")
+  await expect(line(dialog)).toHaveText("Agents can't use this folder. Pick another.")
   await expect(dialog.locator('[data-launch-allow]')).toHaveCount(0)
   expect(app.asked).toEqual([])
 })
@@ -293,3 +322,134 @@ for (const [size, touch] of [[DAILY, false], [{ width: 1440, height: 900 }, fals
     await noSideways(page, { root: dialog })
   })
 }
+
+test('an older check answered after a newer one changes nothing: the line and its button are the newer text\'s', async ({ browser }) => {
+  const { page } = await folderPage(browser, 'press')
+  const dialog = await openLaunch(page)
+  const first = outside('older')
+  const second = outside('newer')
+  // The first text's check held, then answered as a missing folder once the second text's answer is shown.
+  const held: Route[] = []
+  const match = (u: URL) => u.pathname === '/api/roots/check' && u.searchParams.get('path') === first
+  await page.route(match, (r) => void held.push(r))
+  await typeFolder(dialog, first)
+  await expect.poll(() => held.length).toBeGreaterThan(0)
+  await typeFolder(dialog, second)
+  await expect(line(dialog)).toHaveAttribute('data-folder-state', 'outside')
+  const done = page.waitForEvent('requestfinished', (r) => new URL(r.url()).pathname === '/api/roots/check' && new URL(r.url()).searchParams.get('path') === first)
+  for (const r of held.splice(0)) await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ path: first, state: 'missing' }) })
+  await done
+  await page.unroute(match)
+  // The page has taken the older answer and drawn after it (two frames): the second text still holds the line.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  await expect(line(dialog)).toHaveAttribute('data-folder-state', 'outside')
+  await expect(dialog.locator('[data-launch-allow]')).toBeVisible()
+  await expect(line(dialog)).not.toContainText('There is no folder at this path.')
+})
+
+test('the press allows the folder the check named, named on the line, never the text read again', async ({ browser }) => {
+  const { page, asked } = await folderPage(browser, 'press')
+  const dialog = await openLaunch(page)
+  const typed = join(outsideRoot, 'as-typed')
+  const named = outside('as-named')
+  // The server's check names another folder than the text (another spelling of the same place, as for `..`).
+  await page.route(
+    (u) => u.pathname === '/api/roots/check' && u.searchParams.get('path') === typed,
+    (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ path: named, state: 'outside' }) }),
+  )
+  await typeFolder(dialog, typed)
+  await expect(line(dialog).locator('[data-folder-words]')).toHaveText(`Agents can't use ${named} yet.`)
+  await expect(line(dialog).locator('[data-folder-named]')).toHaveText(named)
+  await dialog.locator('[data-launch-allow]').click()
+  await expect.poll(() => asked.length).toBe(1)
+  expect(asked[0]).toEqual({ path: named, confirmed: '' })
+})
+
+test('a text is checked as typed: a space at its end is no other folder, and an empty Folder shows no line', async ({ browser }) => {
+  const { page, asked } = await folderPage(browser, 'press')
+  const dialog = await openLaunch(page)
+  const folder = outside('padded')
+  await typeFolder(dialog, `${folder} `)
+  await expect(line(dialog)).toHaveText('There is no folder at this path.')
+  await expect(dialog.locator('[data-launch-allow]')).toHaveCount(0)
+  await dialog.getByLabel('Folder', { exact: true }).fill('')
+  await dialog.locator('[data-launch-message-input]').click()
+  await expect(line(dialog)).toHaveCount(0)
+  expect(asked).toEqual([])
+})
+
+test('a press refused keeps Folder and the task; a check after it decides, and the launch goes through once the cause is gone', async ({ browser }) => {
+  const { page, asked, answer } = await folderPage(browser, 'press')
+  const dialog = await openLaunch(page)
+  const folder = outside('refused-then-allowed')
+  await typeFolder(dialog, folder)
+  await dialog.locator('[data-launch-message-input]').fill('say hello')
+  // The app answers busy, then that the folder is missing.
+  answer({ ok: false, code: 'busy', message: 'the settings are being saved: try again' })
+  await dialog.locator('[data-launch-allow]').click()
+  await expect(line(dialog).locator('[data-folder-words]')).toHaveText('Conductor is busy. Press Allow this folder again in a moment.')
+  answer({ ok: false, code: 'folder_missing', message: 'no folder at this path' })
+  await dialog.locator('[data-launch-allow]').click()
+  await expect(line(dialog)).toHaveText('There is no folder at this path.')
+  await expect(dialog.getByLabel('Folder', { exact: true })).toHaveValue(folder)
+  await expect(dialog.locator('[data-launch-message-input]')).toHaveValue('say hello')
+  expect(asked).toHaveLength(2)
+  // The folder allowed from elsewhere: the check before the launch says so, and the launch is sent there.
+  await allowElsewhere(folder)
+  const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
+  await dialog.locator('[data-launch-submit]').click()
+  const reply = await answered
+  const s = (await reply.json()) as Session
+  if (s.id) made.push(s.id)
+  expect(reply.status()).toBe(201)
+  expect(s.cwd).toBe(folder)
+})
+
+test("the line's Settings link closes the dialog on its way there", async ({ browser }) => {
+  const { page } = await folderPage(browser, 'old')
+  const dialog = await openLaunch(page)
+  await typeFolder(dialog, outside('to-settings'))
+  await line(dialog).locator('[data-folder-settings]').click()
+  await expect(page).toHaveURL(/\/settings\?section=folders$/)
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+})
+
+for (const size of [DAILY, { width: 1440, height: 810 }]) {
+  test(`at ${size.width} x ${size.height} the dialog does not scroll with the line, nor with the wide question`, async ({ browser }) => {
+    const { page } = await folderPage(browser, 'press', size)
+    const dialog = await openLaunch(page)
+    const folder = outside(`no-scroll-${size.width}`)
+    await page.route(
+      (u) => u.pathname === '/api/roots/check' && u.searchParams.get('path') === folder,
+      (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ path: folder, real: folder, state: 'outside', wide: 'home' }) }),
+    )
+    await typeFolder(dialog, folder)
+    const body = dialog.locator('[data-slot="body"]')
+    const overflow = () => body.evaluate((el) => el.scrollHeight - el.clientHeight)
+    await expect(dialog.locator('[data-launch-allow]')).toBeVisible()
+    await atRest(dialog)
+    expect(await overflow(), 'with the line').toBeLessThanOrEqual(0.5)
+    await dialog.locator('[data-launch-allow]').click()
+    await expect(dialog.locator('[data-folder-cancel]')).toBeVisible()
+    await atRest(dialog)
+    expect(await overflow(), 'with the wide question').toBeLessThanOrEqual(0.5)
+  })
+}
+
+
+test('a folder outside the folders agents may use opens no list under the field, and the listing\'s own words are nowhere', async ({ browser }) => {
+  const { page } = await folderPage(browser, 'press')
+  const dialog = await openLaunch(page)
+  const field = dialog.getByLabel('Folder', { exact: true })
+  const folder = outside('no-list')
+  // Typed, the focus kept in the field: its listing is asked and refused; the line under the field says it.
+  await field.click()
+  const listed = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/paths' && new URL(r.url()).searchParams.get('prefix') === folder)
+  await field.fill(folder)
+  expect((await listed).status()).toBe(400)
+  await expect(line(dialog)).toHaveAttribute('data-folder-state', 'outside')
+  await expect(field).toBeFocused()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(page.locator('body')).not.toContainText('no directory in the prefix')
+  await expect(page.locator('body')).not.toContainText('under the allowed roots')
+})

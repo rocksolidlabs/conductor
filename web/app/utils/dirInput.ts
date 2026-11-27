@@ -44,6 +44,21 @@ export function homeExpanded(text: string, home: string): string {
   return `${home.replace(/\/+$/, '')}${text.slice(1)}`
 }
 
+/** The listing route's words for a prefix under none of the folders agents may use (internal/api/paths.go errNoAllowedDir). */
+const NO_ALLOWED_DIR = 'no directory in the prefix is under the allowed roots'
+
+/**
+ * What the folder picker says of a listing refused: for a place outside the folders agents may use, those folders in plain words
+ * (the route names them after its own words); any other refusal in the server's words.
+ */
+export function listingProblem(code: string, message: string): string {
+  if (code === 'invalid_cwd' && message.startsWith(NO_ALLOWED_DIR)) {
+    const roots = message.slice(NO_ALLOWED_DIR.length).replace(/^:\s*/, '').trim()
+    return roots ? `Agents can use only the folders inside ${roots}. Pick one there.` : "Agents can't use a folder here. Pick another."
+  }
+  return message
+}
+
 /** The prefix sent for what is typed: the text trimmed; empty means the server's default directory. */
 export function dirQuery(text: string): string {
   return text.trim()

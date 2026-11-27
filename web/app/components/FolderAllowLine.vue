@@ -8,8 +8,11 @@ import { allowWay, answerLine, checkLine, pressTarget, wideQuestion, type AllowA
  * The check (GET /api/roots/check) runs for the text the field holds: at once when the text jumps (a pick, a paste), CHECK_PAUSE_MS
  * after typing stops, and again before a launch (check()); only the answer for the text in the field now counts, and one that does not
  * come in CHECK_WAIT_MS says nothing. The press asks the desktop app's bridge alone (the page never sends it), for exactly the folder
- * the check named for that text (pressTarget), one press at a time; a wide folder asks first. A text changed after the check hides the
- * button until the new answer comes.
+ * the check named for that text (pressTarget), named on the line whenever it is not the text as typed, one press at a time; a wide
+ * folder asks first. A text changed after the check hides the button until the new answer comes, and a check answered after a press
+ * decides over the press's answer. The text is checked as the field holds it, as a launch sends it; an empty field shows nothing (a
+ * launch there runs in the agent's or the server's own folder, and the server's refusal says it if that cannot be used). The line
+ * never takes the focus: the press is a person's own act.
  */
 const props = withDefaults(
   defineProps<{
@@ -27,6 +30,8 @@ const emit = defineEmits<{
   use: [path: string]
   /** The folder was allowed by the press: the form goes on as if it always had been. */
   allowed: [root: string]
+  /** The line's link to Settings was followed: a dialog around the field closes. */
+  leave: []
 }>()
 
 /** How long typing must stop before the folder is checked, and how long a check is waited for. */
@@ -41,10 +46,13 @@ onMounted(() => void host.load())
 
 const way = computed(() => allowWay({ desktop: isDesktop.value, bridgePress: typeof bridge.value?.allowFolder === 'function', folders: host.folders.value }))
 
-/** The last answer, with the text it was asked for. */
-const checked = ref<{ text: string; reply: RootCheck } | null>(null)
-/** What the press made of the line, for the text it was pressed for. */
-const pressed = ref<{ text: string; line: FolderLine } | null>(null)
+/** The last answer, with the text it was asked for and its place in the order of asks. */
+const checked = ref<{ text: string; reply: RootCheck; n: number } | null>(null)
+/**
+ * What the press made of the line, for the text it was pressed for, with its place in the same order: it holds until a check asked
+ * after it answers for that text, which then decides (the folder made again, or allowed in Settings, since).
+ */
+const pressed = ref<{ text: string; line: FolderLine; n: number } | null>(null)
 /** The wide folder's question, shown in place of the line after the first press. */
 const asking = ref<{ text: string; kind: NonNullable<FolderLine['wide']> } | null>(null)
 const pressing = ref(false)
@@ -58,9 +66,10 @@ async function checkNow(text: string): Promise<RootCheck | null> {
   const ctl = new AbortController()
   const t = setTimeout(() => ctl.abort(), CHECK_WAIT_MS)
   try {
-    const reply = await api.checkRoot(text.trim(), ctl.signal)
+    // The text as the field holds it, as the launch sends it: no trimming on one side only.
+    const reply = await api.checkRoot(text, ctl.signal)
     if (n !== seq || text !== props.path) return null
-    checked.value = { text, reply }
+    checked.value = { text, reply, n }
     return reply
   } catch {
     if (n === seq && text === props.path) checked.value = null
@@ -74,7 +83,7 @@ watch(
   () => [props.path, props.off] as const,
   ([text, off], old) => {
     clearTimeout(timer)
-    if (off) return
+    if (off || !text) return
     const before = old?.[0] ?? ''
     // A jump (a pick, a paste, Use that folder, the dialog opening) is checked at once; typing, once it stops.
     const jump = !old || Math.abs(text.length - before.length) > 1 || !(text.startsWith(before) || before.startsWith(text))
@@ -89,14 +98,15 @@ onBeforeUnmount(() => clearTimeout(timer))
 const current = computed(() => (checked.value && checked.value.text === props.path ? checked.value.reply : null))
 
 const line = computed<FolderLine | null>(() => {
-  if (props.off) return null
-  if (pressed.value && pressed.value.text === props.path) return pressed.value.line
+  if (props.off || !props.path) return null
+  const p = pressed.value
+  if (p && p.text === props.path && !(checked.value && checked.value.text === props.path && checked.value.n > p.n)) return p.line
   const c = current.value
   if (!c) return null
   if (asking.value && asking.value.text === props.path) {
     return { state: 'wide', ...wideQuestion(asking.value.kind, pressTarget(c)), tone: 'warning', button: 'wide', wide: asking.value.kind, blocks: true }
   }
-  return checkLine(c, way.value, props.focused)
+  return checkLine(c, way.value, props.focused, props.path)
 })
 
 /** Whether the folder as it stands may be launched in: false only for a line that blocks it. */
@@ -128,9 +138,9 @@ async function allow(confirmed = '') {
   asking.value = null
   if (text !== props.path) return
   const l = answerLine(a, c)
-  pressed.value = { text, line: l }
+  // After every ask before it: a check still on its way says nothing over the press's answer.
+  pressed.value = { text, line: l, n: ++seq }
   if (a.ok) {
-    checked.value = { text, reply: { ...c, state: 'allowed', real: a.root } }
     emit('allowed', a.root)
   } else if (l.button === 'wide') {
     asking.value = { text, kind: l.wide! }
@@ -151,19 +161,12 @@ function use(folder: string) {
 /** Checks the folder now (before a launch): whether it may be launched in, as far as the check can tell. */
 async function check(): Promise<boolean> {
   clearTimeout(timer)
-  if (props.off) return true
+  if (props.off || !props.path) return true
   await checkNow(props.path)
   return !blocks.value
 }
 
-/** Puts the focus on the line's button, when it has one: true when it did. */
-function focusAction(): boolean {
-  const b = root.value?.querySelector<HTMLElement>('[data-folder-cancel], [data-launch-allow], [data-folder-use]')
-  b?.focus()
-  return !!b
-}
-
-defineExpose({ check, focusAction, blocks })
+defineExpose({ check, blocks })
 </script>
 
 <template>
@@ -175,7 +178,7 @@ defineExpose({ check, focusAction, blocks })
         <template v-if="line.folder">
           {{ ' ' }}<code class="font-mono [overflow-wrap:anywhere]" data-mono="path" data-folder-named>{{ line.folder }}</code>
         </template>
-        <template v-if="line.settings">{{ ' ' }}<NuxtLink to="/settings?section=folders" class="underline" data-folder-settings>Settings</NuxtLink></template>
+        <template v-if="line.settings">{{ ' ' }}<NuxtLink to="/settings?section=folders" class="underline" data-folder-settings @click="emit('leave')">Settings</NuxtLink></template>
         <span v-if="line.after">{{ line.after }}</span>
       </p>
       <UButton

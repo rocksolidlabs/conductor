@@ -67,6 +67,8 @@ export interface FolderLine {
 }
 
 const CANT = "Agents can't use this folder."
+/** The way on from a refusal this page does not know: never taken as allowed. */
+const CANT_PICK = `${CANT} Pick another.`
 
 /** The words of the way on for a folder under no folder agents may use, where this app cannot press. */
 function noPress(way: AllowWay): Pick<FolderLine, 'words' | 'settings' | 'after'> {
@@ -86,21 +88,21 @@ export function refusedWords(reason: string | undefined): string {
     case 'whole_disk':
       return "Agents can't use the whole disk. Pick a folder inside it."
     case 'conductor_data':
-      return "Agents can't use this folder: Conductor keeps it out of agents' reach."
+      return "Agents can't use this folder: it holds Conductor's own data. Pick another."
     case 'name':
-      return "Agents can't use this folder: its name holds a comma or a hidden character."
+      return "Agents can't use this folder: its name has a comma, a hidden character or a space at an end. Rename it, or pick another."
     case 'owner':
       return "Agents can't use this folder: another user owns it. Pick one of yours."
     default:
-      return CANT
+      return CANT_PICK
   }
 }
 
-/** The wide folder's question, in the app's words for its kind, before the second press confirms it. */
+/** The wide folder's question, in the app's words for its kind, naming the folder, before the second press confirms it. */
 export function wideQuestion(kind: WideKind, real: string): Pick<FolderLine, 'words' | 'after' | 'folder'> {
   switch (kind) {
     case 'home':
-      return { words: 'Allow your whole home folder? Agents could read and change everything in it.' }
+      return { words: 'Allow your whole home folder,', folder: real, after: '? Agents could read and change everything in it.' }
     case 'above_home':
       return { words: 'Allow all of', folder: real, after: '? Your home folder is inside it, and agents could read and change everything there.' }
     case 'holds_data':
@@ -110,11 +112,17 @@ export function wideQuestion(kind: WideKind, real: string): Pick<FolderLine, 'wo
 
 const isWide = (k: string | undefined): k is WideKind => !!k && (WIDE_KINDS as readonly string[]).includes(k)
 
+/** The folder a press allows: the one the server named at the check, its real path where it gave one, never the text read again. */
+export function pressTarget(c: RootCheck): string {
+  return c.real || c.path
+}
+
 /**
- * The line for a check's answer, with nothing pressed yet: null when the folder can be used (nothing to say), or while the field has
- * the focus and the folder does not exist yet (a path still being typed).
+ * The line for a check's answer of `typed` (the text as the field holds it): null when the folder can be used (nothing to say), or
+ * while the field has the focus and the folder does not exist yet (a path still being typed). The press's line names the folder it
+ * allows whenever that is not, letter for letter, what was typed (a relative text, a `..`, another spelling).
  */
-export function checkLine(c: RootCheck, way: AllowWay, focused = false): FolderLine | null {
+export function checkLine(c: RootCheck, way: AllowWay, focused = false, typed = c.path): FolderLine | null {
   const blocked = (words: string, extra: Partial<FolderLine> = {}): FolderLine => ({ state: c.state, words, tone: 'error', button: '', blocks: true, ...extra })
   switch (c.state) {
     case 'allowed':
@@ -124,40 +132,38 @@ export function checkLine(c: RootCheck, way: AllowWay, focused = false): FolderL
     case 'not_directory':
       return blocked('This is a file, not a folder.')
     case 'unreadable':
-      return blocked("Conductor can't open this folder.")
+      return blocked("Conductor can't open this folder. Pick another.")
     case 'outside': {
       if (c.refused) return blocked(refusedWords(c.refused), { state: 'refused' })
       if (c.link && c.real && c.real !== c.path) {
         return blocked('This goes through a link to', { state: 'link', folder: c.real, after: ". Agents can't use that folder yet.", button: 'use' })
       }
-      if (c.wide && !isWide(c.wide)) return blocked(CANT, { state: 'refused' })
+      if (c.wide && !isWide(c.wide)) return blocked(CANT_PICK, { state: 'refused' })
       if (way !== 'press') return blocked('', { state: 'outside', ...noPress(way) })
-      return blocked("Agents can't use this folder yet.", { state: 'outside', button: 'allow', wide: isWide(c.wide) ? c.wide : undefined })
+      const target = pressTarget(c)
+      const wide = isWide(c.wide) ? c.wide : undefined
+      if (target !== typed) return blocked("Agents can't use", { state: 'outside', folder: target, after: ' yet.', button: 'allow', wide })
+      return blocked("Agents can't use this folder yet.", { state: 'outside', button: 'allow', wide })
     }
     default:
       // A state this page does not know is never taken as allowed.
-      return blocked(CANT, { state: 'unknown' })
+      return blocked(CANT_PICK, { state: 'unknown' })
   }
-}
-
-/** The folder a press allows: the one the server named at the check, its real path where it gave one, never the text read again. */
-export function pressTarget(c: RootCheck): string {
-  return c.real || c.path
 }
 
 /** The line once the press answered: what it became of the folder, and the way on from a refusal. */
 export function answerLine(a: AllowAnswer, c: RootCheck): FolderLine {
   const blocked = (state: string, words: string, extra: Partial<FolderLine> = {}): FolderLine => ({ state, words, tone: 'error', button: '', blocks: true, ...extra })
   if (a.ok) {
-    if (!a.saved) return { state: 'allowed_unsaved', words: `Agents can use this folder until Conductor restarts. The setting was not saved: ${trimmed(a.error)}.`, tone: 'warning', button: '', blocks: false }
-    if (a.error) return { state: 'allowed_restarted', words: `${upper(trimmed(a.error))}.`, tone: 'warning', button: '', blocks: false }
-    return { state: 'allowed_now', words: 'Agents can use this folder now. Saved in', after: '.', tone: 'success', button: '', blocks: false, settings: true }
+    if (!a.saved) return { state: 'allowed_unsaved', words: `Agents can use this folder until Conductor restarts. It was not kept: ${trimmed(a.error)}.`, tone: 'warning', button: '', blocks: false }
+    if (a.error) return { state: 'allowed_restarted', words: 'Restart Conductor to use this folder.', tone: 'warning', button: '', blocks: false }
+    return { state: 'allowed_now', words: 'Agents can use this folder now.', tone: 'success', button: '', blocks: false }
   }
   switch (a.code) {
     case 'folder_is_link':
-      return a.real ? blocked('link', 'This goes through a link to', { folder: a.real, after: ". Agents can't use that folder yet.", button: 'use' }) : blocked('refused', CANT)
+      return a.real ? blocked('link', 'This goes through a link to', { folder: a.real, after: ". Agents can't use that folder yet.", button: 'use' }) : blocked('refused', CANT_PICK)
     case 'folder_wide':
-      return isWide(a.wide) ? { state: 'wide', ...wideQuestion(a.wide, pressTarget(c)), tone: 'warning', button: 'wide', wide: a.wide, blocks: true } : blocked('refused', CANT)
+      return isWide(a.wide) ? { state: 'wide', ...wideQuestion(a.wide, pressTarget(c)), tone: 'warning', button: 'wide', wide: a.wide, blocks: true } : blocked('refused', CANT_PICK)
     case 'folder_refused':
       return blocked('refused', refusedWords(a.reason))
     case 'folder_missing':
@@ -165,28 +171,27 @@ export function answerLine(a: AllowAnswer, c: RootCheck): FolderLine {
     case 'folder_not_directory':
       return blocked('not_directory', 'This is a file, not a folder.')
     case 'folder_unreadable':
-      return blocked('unreadable', "Conductor can't open this folder.")
+      return blocked('unreadable', "Conductor can't open this folder. Pick another.")
     case 'busy':
+      // A Settings save or a restart under way: the dialog keeps what was typed, and the press can be made again.
+      return blocked('outside', 'Conductor is busy. Press Allow this folder again in a moment.', { button: 'allow' })
     case 'no_answer':
-      // A server restarting: the dialog keeps what was typed, and the press can be made again.
-      return blocked('outside', 'Conductor is restarting. Press Allow this folder again in a moment.', { button: 'allow' })
+      return blocked('outside', 'Conductor did not answer. Press Allow this folder again in a moment.', { button: 'allow' })
+    case 'rate_limited':
+      return blocked('outside', 'Conductor refused too many requests. Press Allow this folder again in a minute.', { button: 'allow' })
+    case 'folder_changed':
+      return blocked('outside', 'The folder changed as it was allowed. Press Allow this folder again.', { button: 'allow' })
+    case 'too_many_roots':
+      return blocked('outside', 'Agents can use no more folders. Remove one in', { settings: true, after: ', or pick a folder agents can use.' })
     case 'not_supported':
     case 'not_the_app':
       return blocked('outside', '', noPress('settings'))
     default:
-      return blocked('outside', `The folder was not allowed: ${trimmed(a.message)}.`, { button: 'allow' })
+      // A refusal this page does not know offers nothing that could not help.
+      return blocked('outside', `The folder was not allowed: ${trimmed(a.message)}. Pick another.`)
   }
 }
 
 function trimmed(s: string | undefined): string {
   return (s ?? '').trim().replace(/[.\s]+$/, '') || 'no reason was given'
-}
-
-function upper(s: string): string {
-  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
-}
-
-/** Whether the text in the field changed so that an answer for an earlier text no longer counts. */
-export function answers(checkedFor: string, now: string): boolean {
-  return checkedFor === now
 }
