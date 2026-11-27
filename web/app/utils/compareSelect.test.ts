@@ -124,7 +124,7 @@ describe('nothing preselected, the rationale required, the answer final', () => 
 describe("the panel's words", () => {
   it('say when a selection opens, that a closed one is closed and why, and a comparison ended with none', () => {
     expect(selectionPanelWords(comparison({ settled: false }), null)).toBe('The selection opens when every lane has ended. Nothing is selected by default.')
-    expect(selectionPanelWords(comparison({ state: 'ended', settled: true }), null)).toMatch(/^This comparison ended with no candidate to select/)
+    expect(selectionPanelWords(comparison({ state: 'ended', settled: true }), null)).toMatch(/^This trial ended with no candidate to select/)
     const closed = comparison({ settled: false, selection: { decision: 'dr-9', state: 'superseded', options } })
     expect(selectionPanelWords(closed, record({ state: 'superseded', why: 'approach-a was retried: dr-9 no longer lists what is compared' }))).toBe(
       'dr-9 is closed: approach-a was retried: dr-9 no longer lists what is compared. A new selection opens when every lane has ended; answer that one.',
@@ -139,13 +139,13 @@ describe("the panel's words", () => {
   })
 
   it("say Brakeman's state: not asked, why there is none, queued, drafting, briefed", () => {
-    expect(brakemanWords(null).words).toBe('Brakeman was not asked to compare these candidates.')
+    expect(brakemanWords(null).words).toBe('Brakeman was not asked for a summary.')
     expect(brakemanWords({ why: 'Brakeman is not set up' })).toEqual({ words: 'Brakeman is not set up', open: false, briefed: false })
-    expect(brakemanWords({ request: 'br-3', state: 'queued' })).toEqual({ words: "Brakeman's draft is queued (br-3)", open: true, briefed: false })
+    expect(brakemanWords({ request: 'br-3', state: 'queued' })).toEqual({ words: "Brakeman's summary is queued (br-3)", open: true, briefed: false })
     // The live store's request moves first: running, then briefed, before the comparison is read again.
-    expect(brakemanWords({ request: 'br-3', state: 'queued' }, { state: 'running', config: undefined as never })).toMatchObject({ open: true, words: 'Brakeman is drafting (br-3)' })
+    expect(brakemanWords({ request: 'br-3', state: 'queued' }, { state: 'running', config: undefined as never })).toMatchObject({ open: true, words: 'Brakeman is writing its summary (br-3)' })
     expect(brakemanWords({ request: 'br-3', state: 'queued' }, { state: 'briefed', hasBrief: true, config: undefined as never })).toMatchObject({ briefed: true })
-    expect(brakemanWords({ request: 'br-3', state: 'over_budget', why: "over today's budget" }).words).toBe("No draft from br-3: over today's budget")
+    expect(brakemanWords({ request: 'br-3', state: 'over_budget', why: "over today's budget" }).words).toBe("No summary from br-3: over today's budget")
   })
 
   it('mark each statement with who said it', () => {

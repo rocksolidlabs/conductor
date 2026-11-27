@@ -125,7 +125,7 @@ func (s *Server) comparisonState(ctx context.Context, c crew.Comparison) string 
 // notSelectedWords is a candidate of the task refused as not selected in
 // the record: the engine's words for a command on a lane not selected.
 func notSelectedWords(task, decision string) string {
-	return fmt.Sprintf("%s was not selected in %s: launch a new comparison to try it again", task, decision)
+	return fmt.Sprintf("%s was not selected in %s: run a new trial to try it again", task, decision)
 }
 
 // selectFirstWords is what a delivery or a repair before the selection is told:
@@ -134,7 +134,7 @@ func notSelectedWords(task, decision string) string {
 // change is named by nothing, since it takes no answer.
 func selectFirstWords(st crew.ComparisonState) string {
 	if st.Decision == "" || st.State != crew.CompareSelecting && st.State != crew.CompareAnswered {
-		return "select a candidate first: the comparison has not settled"
+		return "select a candidate first: the trial has not settled"
 	}
 	return "select a candidate first: " + st.Decision + " is open"
 }
@@ -173,7 +173,7 @@ func (s *Server) compareDeliveryRefusal(ctx context.Context, c dispatch.Candidat
 		}
 		return "not_selected", fmt.Sprintf("%s/%d is before %s's selected candidate %s/%d: deliver the selected one or a later one", c.Run, c.Attempt, st.Decision, sel.Run, sel.Attempt), nil
 	case crew.CompareNone, crew.CompareEnded:
-		return "not_selected", "no candidate was selected: launch a new comparison", nil
+		return "not_selected", "no candidate was selected: run a new trial", nil
 	}
 	return "not_selected", selectFirstWords(st), nil
 }
@@ -228,7 +228,7 @@ func (s *Server) compareReviewRefusal(ctx context.Context, c dispatch.Candidate)
 		}
 		return refuse(notSelectedWords(c.Task, st.Decision))
 	case crew.CompareNone, crew.CompareEnded:
-		return refuse("no candidate was selected: launch a new comparison")
+		return refuse("no candidate was selected: run a new trial")
 	}
 	return refuse("select a candidate first: a repair before the selection would make the candidates unlike")
 }

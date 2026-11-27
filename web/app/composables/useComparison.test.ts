@@ -184,9 +184,9 @@ describe('useComparison', () => {
       await step(RUN_CHANGING_RETRY_MS)
       expect(sent).toHaveLength(3)
       // That read fails another way: said, the chain no longer said to be moving, and asked again after the live store's window.
-      sent[2]!.fail(new ApiError(500, 'internal', 'the comparison could not be read'))
+      sent[2]!.fail(new ApiError(500, 'internal', 'the trial could not be read'))
       await step()
-      expect(c.error.value).toBe('the comparison could not be read')
+      expect(c.error.value).toBe('the trial could not be read')
       expect(c.changing.value).toBe(false)
       await step(RUN_EVENT_WINDOW_MS)
       expect(sent).toHaveLength(4)
@@ -211,9 +211,9 @@ describe('useComparison', () => {
 
     const other = useComparison({ run: () => 'e2e-crew-99999999' })
     await settle()
-    sent.at(-1)!.fail(new ApiError(404, 'not_found', 'this run is not a comparison'))
+    sent.at(-1)!.fail(new ApiError(404, 'not_found', 'this run is not a trial'))
     await settle()
-    expect(other.missing.value).toBe('this run is not a comparison')
+    expect(other.missing.value).toBe('this run is not a trial')
     expect(other.loaded.value).toBe(true)
     expect(other.comparison.value).toBeNull()
   })

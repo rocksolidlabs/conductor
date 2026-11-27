@@ -147,7 +147,7 @@ describe("the Review view after the selected candidate's repair", () => {
 describe('Request changes on a candidate of a comparison, held before anything is written', () => {
   const cmp = (sel: Comparison['selection'], state?: string) => ({ ...comparison(sel), state })
   it("is held on a lane not selected, in the server's words", () => {
-    expect(reviewHold(applied, 'approach-a')).toEqual({ title: 'approach-a was not selected', words: 'approach-a was not selected in dr-9: launch a new comparison to try it again' })
+    expect(reviewHold(applied, 'approach-a')).toEqual({ title: 'approach-a was not selected', words: 'approach-a was not selected in dr-9: run a new trial to try it again' })
   })
 
   it('is free on the selected lane, its repair among them, and on a task that is no lane (a review), and while nothing is read', () => {
@@ -158,8 +158,8 @@ describe('Request changes on a candidate of a comparison, held before anything i
 
   it('is held after None of these, and before the selection is applied', () => {
     const none = cmp({ decision: 'dr-9', state: 'applied', options: [], applied: { how: 'selected', none: true } })
-    expect(reviewHold(none, 'approach-b')).toEqual({ title: 'No candidate was selected', words: 'no candidate was selected: launch a new comparison' })
-    expect(reviewHold(cmp(null, 'ended'), 'approach-b')!.words).toBe('no candidate was selected: launch a new comparison')
+    expect(reviewHold(none, 'approach-b')).toEqual({ title: 'No candidate was selected', words: 'no candidate was selected: run a new trial' })
+    expect(reviewHold(cmp(null, 'ended'), 'approach-b')!.words).toBe('no candidate was selected: run a new trial')
     for (const s of [cmp({ decision: 'dr-9', state: 'open', options: [] }), cmp(null, 'running')])
       expect(reviewHold(s, 'approach-b')).toEqual({ title: 'The selection is not applied yet', words: 'select a candidate first: a repair before the selection would make the candidates unlike' })
   })
@@ -201,7 +201,7 @@ describe("the comparison's top line while its selection waits", () => {
 })
 
 describe('the verdict of a draft while Request changes is held', () => {
-  const hold = { title: 'approach-a was not selected', words: 'approach-a was not selected in dr-9: launch a new comparison to try it again' }
+  const hold = { title: 'approach-a was not selected', words: 'approach-a was not selected in dr-9: run a new trial to try it again' }
   it('is Comment in place of Request changes, so the verdict checked can be sent; any other verdict stays', () => {
     expect(heldVerdict('request_changes', hold)).toBe('comment')
     expect(heldVerdict('approve', hold)).toBe('approve')

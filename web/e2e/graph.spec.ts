@@ -1,3 +1,4 @@
+import type { Locator, Page } from '@playwright/test'
 import { expect, logged, member, test, type Run } from './fixtures'
 import { noOverlap } from './layout'
 
@@ -96,6 +97,29 @@ test('the run page draws the members and their start rules, and a handoff as it 
   await expect.poll(async () => member(await api.run(runId), 'docs').status, { timeout: 30_000 }).not.toBe('pending')
 })
 
+/**
+ * The middle of a handle, pointed at in view and at rest: the canvas is scrolled to the middle of the window (the crew page is taller
+ * than it, its graph under Setup), the handle's box read twice the same, and the point checked to land on the handle itself, never on
+ * what covers it (a toast, the unsaved-changes bar).
+ */
+async function pointAt(page: Page, canvas: Locator, handle: Locator): Promise<{ x: number; y: number }> {
+  await canvas.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }))
+  let at = { x: 0, y: 0 }
+  await expect(async () => {
+    const one = (await handle.boundingBox())!
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+    const two = (await handle.boundingBox())!
+    expect(two, 'the handle is at rest').toEqual(one)
+    at = { x: two.x + two.width / 2, y: two.y + two.height / 2 }
+    const hit = await handle.evaluate((el, p) => {
+      const top = document.elementFromPoint(p.x, p.y)
+      return !!top && (el === top || el.contains(top))
+    }, at)
+    expect(hit, 'the point lands on the handle, in view and uncovered').toBe(true)
+  }).toPass({ timeout: 15_000 })
+  return at
+}
+
 test('the editor sets a start rule by drawing an edge, and refuses a second parent', async ({ page, api }) => {
   await page.goto(`/crews/${encodeURIComponent(crewId)}`)
   await page.locator('[data-members-view]').getByRole('tab', { name: 'Graph' }).click()
@@ -106,11 +130,11 @@ test('the editor sets a start rule by drawing an edge, and refuses a second pare
   // Drag from tests' source handle to docs' target handle: docs starts after tests.
   const from = canvas.locator('[data-graph-node="tests"] .vue-flow__handle.source')
   const to = canvas.locator('[data-graph-node="docs"] .vue-flow__handle.target')
-  const a = (await from.boundingBox())!
-  const b = (await to.boundingBox())!
-  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2)
+  const a = await pointAt(page, canvas, from)
+  const b = await pointAt(page, canvas, to)
+  await page.mouse.move(a.x, a.y)
   await page.mouse.down()
-  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 })
+  await page.mouse.move(b.x, b.y, { steps: 12 })
   await page.mouse.up()
   await expect(canvas.locator('[data-graph-edge="tests-docs"][data-graph-edge-kind="after"]')).toHaveCount(1)
   await page.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save', exact: true }).click()
@@ -118,11 +142,12 @@ test('the editor sets a start rule by drawing an edge, and refuses a second pare
 
   // A second parent for docs is refused, and said.
   const from2 = canvas.locator('[data-graph-node="lead"] .vue-flow__handle.source')
-  const a2 = (await from2.boundingBox())!
-  const b2 = (await to.boundingBox())!
-  await page.mouse.move(a2.x + a2.width / 2, a2.y + a2.height / 2)
+  // The save's toast sits over the window's bottom right, where the graph can be: the points are checked uncovered.
+  const a2 = await pointAt(page, canvas, from2)
+  const b2 = await pointAt(page, canvas, to)
+  await page.mouse.move(a2.x, a2.y)
   await page.mouse.down()
-  await page.mouse.move(b2.x + b2.width / 2, b2.y + b2.height / 2, { steps: 12 })
+  await page.mouse.move(b2.x, b2.y, { steps: 12 })
   await page.mouse.up()
   await expect(page.getByText('docs already starts after tests: delete that edge first').first()).toBeVisible()
   await expect(canvas.locator('[data-graph-edge="lead-docs"]')).toHaveCount(0)

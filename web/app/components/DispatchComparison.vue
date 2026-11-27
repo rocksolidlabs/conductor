@@ -56,19 +56,19 @@ const labels = computed<Record<string, SelectionMark>>(() => {
 <template>
   <section class="flex flex-col gap-4" data-compare-view :data-compare-run="run" :data-compare-state="state" :data-compare-settled="comparison ? String(comparison.settled) : undefined">
     <div class="flex flex-wrap items-center gap-2">
-      <h2 class="text-base font-semibold text-highlighted">Comparison</h2>
+      <h2 class="text-base font-semibold text-highlighted">Trial results</h2>
       <UButton label="Back to the ticket" icon="i-lucide-arrow-left" size="xs" color="neutral" variant="ghost" :to="back" data-compare-back />
     </div>
 
-    <PageEmpty v-if="state === 'unnamed'" state="missing" words="No run is named: a comparison opens from a run of the ticket." :actions="[{ label: `Back to ${ticketKey}`, icon: 'i-lucide-arrow-left', to: ticketPath(ticketKey) }]" data-compare-unnamed />
+    <PageEmpty v-if="state === 'unnamed'" state="missing" words="No run is named: a trial's results open from a run of the ticket." :actions="[{ label: `Back to ${ticketKey}`, icon: 'i-lucide-arrow-left', to: ticketPath(ticketKey) }]" data-compare-unnamed />
     <PageEmpty v-else-if="state === 'missing'" state="missing" :words="`${c.missing.value}: ${run}`" :actions="[{ label: `Back to ${ticketKey}`, icon: 'i-lucide-arrow-left', to: ticketPath(ticketKey) }]" data-compare-missing />
     <PageEmpty v-else-if="state === 'failed'" state="failed" :error="c.error.value" data-compare-failed @again="c.read()" />
-    <PageEmpty v-else-if="state === 'reading'" state="reading" thing="comparison" data-compare-reading />
+    <PageEmpty v-else-if="state === 'reading'" state="reading" thing="trial's results" data-compare-reading />
 
     <template v-else-if="comparison">
-      <UAlert v-if="c.error.value" color="neutral" variant="subtle" icon="i-lucide-cloud-alert" :title="`Not read again: ${c.error.value}`" description="What is shown is the last comparison read; it is read again by itself." data-compare-stale />
+      <UAlert v-if="c.error.value" color="neutral" variant="subtle" icon="i-lucide-cloud-alert" :title="`Not read again: ${c.error.value}`" description="What is shown is the last read of the results; they are read again by themselves." data-compare-stale />
       <p v-if="c.changing.value" class="flex items-center gap-1.5 text-xs text-muted" data-compare-changing>
-        <UIcon name="i-lucide-loader-circle" class="size-3.5 flex-none animate-spin" />The run is changing: the comparison is read again in a second.
+        <UIcon name="i-lucide-loader-circle" class="size-3.5 flex-none animate-spin" />The run is changing: the results are read again in a second.
       </p>
 
       <!-- What the candidates are compared on: the base, the objective, the criteria. -->
