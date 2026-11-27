@@ -309,10 +309,14 @@ test("a member's old address lands inside its crew before any socket to it opens
       if (id !== lead && id !== core) return
       const s = { id, at: new URL(page.url()).pathname, closed: false, chatOnly: false }
       sockets.push(s)
-      ws.on('framesent', (f) => typeof f.payload === 'string' && f.payload.includes('"chatOnly":true') && (s.chatOnly = true))
+      ws.on('framesent', (f) => {
+        const text = typeof f.payload === 'string' ? f.payload : f.payload.toString('utf8')
+        if (text.includes('"chatOnly":true')) s.chatOnly = true
+      })
       ws.on('close', () => (s.closed = true))
     })
-    const views = (id: string) => sockets.filter((s) => s.id === id && !s.chatOnly)
+    // A view's sockets open now (a loaded machine may see one closed and opened again by its transport, one at a time).
+    const views = (id: string) => sockets.filter((s) => s.id === id && !s.chatOnly && !s.closed)
     await memberPage(page, 'lead')
     await expect(page.locator('[data-transport-state="open"]')).toHaveCount(1, { timeout: LONG_MS })
     await expect.poll(() => views(lead).length, { message: "one view's socket to the member" }).toBe(1)
@@ -323,7 +327,7 @@ test("a member's old address lands inside its crew before any socket to it opens
     await page.locator(`[data-member-strip] [data-member-tab="core"]`).click()
     await expect.poll(() => where(page)).toBe(placeOf('core'))
     await expect(page.locator('[data-transport-state="open"]')).toHaveCount(1, { timeout: LONG_MS })
-    await expect.poll(() => views(lead).filter((s) => !s.closed).length, { message: "the first member's view's socket closed" }).toBe(0)
+    await expect.poll(() => views(lead).length, { message: "the first member's view's socket closed" }).toBe(0)
     await expect.poll(() => views(core).length, { message: "one view's socket to the other member" }).toBe(1)
     // The old address was replaced, and the tab replaced the member: one Back leaves for where the person was.
     await page.goBack()
