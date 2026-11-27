@@ -322,11 +322,11 @@ func (c Crew) ValidateSave() error {
 			what := "goal, role and instructions"
 			switch {
 			case people > 0 && cmp > 0:
-				what = "goal, role, instructions, people and comparison"
+				what = "goal, role, instructions, people and trial"
 			case people > 0:
 				what = "goal, role, instructions and people"
 			case cmp > 0:
-				what = "goal, role, instructions and comparison"
+				what = "goal, role, instructions and trial"
 			}
 			return invalidf("task %s: its %s are %d bytes as its task file keeps them, more than %d", quote(t.ID), what, n, maxTaskText)
 		}
@@ -451,7 +451,7 @@ func (c Crew) checkTasks(names []string) error {
 			return invalidf("a project manifest is only set with tasks")
 		}
 		if c.Compare != nil {
-			return invalidf("compare: a comparison is only set on a crew with tasks")
+			return invalidf("compare: a trial is only set on a crew with tasks")
 		}
 		return nil
 	}
