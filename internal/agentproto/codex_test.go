@@ -240,6 +240,20 @@ type codexServer struct {
 // rec.
 func newCodexServer(t *testing.T, rec *recorder, opts CodexOptions) (*Codex, *codexServer, chan error) {
 	t.Helper()
+	read := make(chan error, 1)
+	// Registered first, run last: once codexPipes' cleanup has ended the
+	// pipes, Read has returned.
+	t.Cleanup(func() { <-read })
+	c, s := codexPipes(t, opts)
+	go func() { read <- c.Read(context.Background(), rec) }()
+	return c, s, read
+}
+
+// codexPipes is a driver on a fake app server, its Read left to the caller
+// (a session's). The cleanup ends the driver's input and the server's
+// output, so that a Read running ends.
+func codexPipes(t *testing.T, opts CodexOptions) (*Codex, *codexServer) {
+	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	s := &codexServer{t: t, out: outW, got: make(chan struct{}, 1024), queue: make(chan string, 1024), done: make(chan struct{}),
@@ -250,8 +264,6 @@ func newCodexServer(t *testing.T, rec *recorder, opts CodexOptions) (*Codex, *co
 	c := NewCodex(inW, outR, opts)
 	go s.serve(inR)
 	go s.writer()
-	read := make(chan error, 1)
-	go func() { read <- c.Read(context.Background(), rec) }()
 	t.Cleanup(func() {
 		_ = c.CloseInput()
 		close(s.done)
@@ -259,9 +271,8 @@ func newCodexServer(t *testing.T, rec *recorder, opts CodexOptions) (*Codex, *co
 		s.closed = true
 		_ = outW.Close()
 		s.wmu.Unlock()
-		<-read
 	})
-	return c, s, read
+	return c, s
 }
 
 // answer queues v for the fake's writer: the fake keeps reading what the
@@ -510,25 +521,27 @@ func TestCodexApprovalThroughThePermissionPath(t *testing.T) {
 			t.Fatalf("a request answered twice: %s", l)
 		}
 	}
-	// A file change is asked about with the changes it was announced with,
-	// and a request of another thread, or about a change never shown, is
-	// declined at once, never asked.
+	// A file change is handed over with the changes it was announced with,
+	// and the root it asks to write under beside them; one about a change
+	// never shown is handed over with no changes, for the session to deny
+	// (it names no call the stream announced); a request of another thread
+	// is declined at once, never handed over.
 	s.write(`{"method":"item/started","params":{"threadId":"` + fixtureThread + `","turnId":"t","item":{"type":"fileChange","id":"call-2","changes":[{"path":"a.txt","kind":{"type":"update","move_path":null},"diff":"-a\n+b\n"}],"status":"inProgress"}}}`)
 	s.write(`{"id":8,"method":"item/fileChange/requestApproval","params":{"threadId":"` + fixtureThread + `","turnId":"t","itemId":"call-2","grantRoot":"/work","startedAtMs":1}}`)
 	s.write(`{"id":9,"method":"item/fileChange/requestApproval","params":{"threadId":"` + fixtureThread + `","turnId":"t","itemId":"call-never","startedAtMs":1}}`)
 	s.write(`{"id":10,"method":"item/commandExecution/requestApproval","params":{"threadId":"019a0000-0000-7000-8000-0000000000ff","turnId":"t","itemId":"call-1","command":"rm -rf /","startedAtMs":1}}`)
-	perms = waitEvent(t, rec, "permission", 3)
+	perms = waitEvent(t, rec, "permission", 4)
 	if f := perms[2].perm; f.Tool != "fileChange" || f.Call != "call-2" || string(f.Input) != `{"changes":[{"diff":"-a\n+b\n","kind":"update","path":"a.txt"}],"grantRoot":"/work"}` {
 		t.Fatalf("the file change's request %+v %s", f, f.Input)
 	}
-	if got := s.await(`"id":9,`); got != `{"id":9,"result":{"decision":"decline"}}` {
-		t.Fatalf("a change never shown: %s", got)
+	if f := perms[3].perm; f.Tool != "fileChange" || f.Call != "call-never" || string(f.Input) != `{"changes":[]}` {
+		t.Fatalf("a change never shown %+v %s", f, f.Input)
 	}
 	if got := s.await(`"id":10,`); got != `{"id":10,"result":{"decision":"decline"}}` {
 		t.Fatalf("another thread's: %s", got)
 	}
-	if len(rec.kinds("permission")) != 3 {
-		t.Fatalf("a request that was declined at once was asked:\n%s", rec.render())
+	if len(rec.kinds("permission")) != 4 || len(rec.kinds("tool_started")) != 2 {
+		t.Fatalf("another thread's request was handed over, or a step announced by a request:\n%s", rec.render())
 	}
 	// A withdrawal the session makes (the turn's end) is a decline, never
 	// Codex's cancel, which would stop the turn too.

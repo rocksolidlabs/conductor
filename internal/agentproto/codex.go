@@ -1043,10 +1043,11 @@ func (c *Codex) refuse(id json.RawMessage) {
 	_ = c.writeJSON(map[string]any{"id": id, "error": map[string]any{"code": -32601, "message": "Conductor does not answer this request"}})
 }
 
-// approval hands the session an approval request: the step it names
-// (announced first where the stream did not), the request's own command
-// line and folder for a command, the step's changes and the root it asks to
-// write under for a file change.
+// approval hands the session an approval request: the step it names (its
+// item, the call), under the tool name the item was announced with, its
+// input the item's as announced, a command's own line and folder where the
+// request names them, a file change's root to write under beside its
+// changes.
 func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.RawMessage, e session.ProtocolEvents) {
 	var item, cwd, command, grantRoot string
 	field(p, "itemId", &item)
@@ -1057,6 +1058,14 @@ func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.Ra
 		c.decline(id)
 		return
 	}
+	// The session takes a request only for the call the stream announced,
+	// under the same tool name, with an input of the same canonical form:
+	// the item's id is the call, and the input is built as the item's was
+	// (codexStep). What the request names beside its item (a command line
+	// or folder of its own, a root to write under) goes into that input, so
+	// that a request asking for more than its item showed is bound to no
+	// call and denied; one for an item never announced is handed over as it
+	// is, and denied.
 	step, announced := c.r.tools[item]
 	var tool string
 	var input []byte
@@ -1073,23 +1082,15 @@ func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.Ra
 			}
 		}
 		input = commandInput(command, cwd)
-		if !announced {
-			c.announce(item, tool, input, command, e)
-		}
 	} else {
 		tool = "fileChange"
-		if !announced || step.name != tool {
-			// No change was shown to ask about: declined, never asked
-			// blind.
-			c.decline(id)
-			return
+		input = []byte(`{"changes":[]}`)
+		if announced && step.name == tool {
+			input = step.input
 		}
-		// The changes as they were announced, so that the request is about
-		// the step shown; with the root it asks to write under beside them.
-		input = step.input
 		if grantRoot != "" {
 			var was map[string]any
-			if json.Unmarshal(step.input, &was) != nil || was == nil {
+			if json.Unmarshal(input, &was) != nil || was == nil {
 				c.decline(id)
 				return
 			}
