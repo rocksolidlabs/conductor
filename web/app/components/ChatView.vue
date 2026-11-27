@@ -123,11 +123,25 @@ const stopListening = conn.onControl((msg) => {
 })
 onBeforeUnmount(stopListening)
 
-async function send(text: string) {
+/**
+ * Whether this box may send a line for the agent to expand (I19, UX3 R10): the server's word on this connection alone (the welcome's
+ * `expand`, then each `way` message's), never the page's, never a link's.
+ */
+const canExpand = computed(() => controls.value && conn.expand.value)
+
+async function send(text: string, how?: { own: boolean; back: (text: string) => void }) {
   said.value = ''
+  // Only the person's own line, and only where the server said so: anything else goes as written.
+  const expand = canExpand.value && how?.own === true
   try {
-    await going(() => conn.submitAcked(text))
+    await going(() => conn.submitAcked(text, expand ? { expand: true } : {}))
   } catch (e) {
+    // The owner's no is the truth: the line comes back into the box, in the owner's words.
+    if (e instanceof ReplyError && e.code === 'not_sent') {
+      said.value = e.message || 'Not sent.'
+      how?.back(text)
+      return
+    }
     // A message not acknowledged in time is shown by its entry ("Sent, not yet confirmed."); every other refusal in the owner's words.
     if (e instanceof ReplyError && (e.code === 'no_word' || e.code === 'unconfirmed')) return
     said.value = (e instanceof ReplyError && MESSAGE_FAILED[e.code]) || 'The message was not sent.'
@@ -276,7 +290,7 @@ watch(
             <div v-for="p in b.prompts" :key="`e${p.seq}`" class="flex flex-col items-end gap-1" data-chat-prompt :data-prompt-state="p.state">
               <!-- A message's text; an answer to a question: its text is never kept (#364); its sender's own browser shows what it sent, anyone else the
                    words that say a question was answered. -->
-              <p v-if="promptText(p)" class="max-w-[85%] rounded-lg bg-elevated px-3 py-2 text-sm whitespace-pre-wrap break-words text-highlighted" data-chat-prompt-text>{{ promptText(p) }}</p>
+              <p v-if="promptText(p)" class="max-w-[85%] rounded-lg bg-elevated px-3 py-2 text-sm whitespace-pre-wrap break-words text-highlighted" :data-chat-prompt-expanded="p.expanded || undefined" data-chat-prompt-text><ChatPrompt :entry="p" /></p>
               <template v-else-if="answered(p)">
                 <p
                   class="max-w-[85%] rounded-lg bg-elevated px-3 py-2 text-sm whitespace-pre-wrap break-words"
@@ -329,9 +343,9 @@ watch(
         v-if="controls"
         ref="composer"
         :files="conn.fileView.value ? files : undefined"
-        :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said, name: agentName, draftKey, asked }"
+        :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said, name: agentName, draftKey, asked, expand: canExpand, folder: conn.welcome.value?.cwd }"
         data-chat-box
-        @send="(text) => send(text)"
+        @send="(text, _to, how) => send(text, how)"
         @stop="stop"
         @answer="(text, question, taken) => emit('reply', text, question, taken)"
       />

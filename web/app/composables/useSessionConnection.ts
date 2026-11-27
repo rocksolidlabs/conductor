@@ -23,6 +23,11 @@ export interface SessionConnection {
   readonly noted: Ref<SessionWay | ''>
   readonly why: Ref<string>
   /**
+   * Whether this connection may send a line for the agent to expand (I19, UX3 R10): the welcome's `expand`, then each `way`
+   * message's (one without it withdraws it). The server's word alone: false at every new connection until its welcome says so.
+   */
+  readonly expand: Ref<boolean>
+  /**
    * A chat's transcript as this page holds it (utils/transcript.ts), across the connections made again: the highest mark it holds is
    * the next hello's `transcriptAfter`, so a connection made again is sent only what changed after it. `transcriptVersion` rises with
    * every change, for a view to redraw by.
@@ -49,7 +54,7 @@ export interface SessionConnection {
   sendInput(data: Uint8Array): boolean
   submit(text: string): boolean
   /** A message with the owner's word on it (a chat's: `submit_ok` once the agent took it, or the owner's refusal in its words). */
-  submitAcked(text: string): Promise<boolean>
+  submitAcked(text: string, opts?: { expand?: boolean }): Promise<boolean>
   answer(reply: QuestionReply, opts?: { sent?: () => void }): Promise<boolean>
   chat(post: ChatPost): boolean
   chatSend(send: ChatSend): boolean
@@ -72,6 +77,7 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
   const way = ref<SessionWay>('terminal')
   const noted = ref<SessionWay | ''>('')
   const why = ref('')
+  const expand = ref(false)
   const transcript = new Transcript()
   const transcriptVersion = ref(0)
   const outputs = new Set<(data: Uint8Array, replay: boolean) => void>()
@@ -92,6 +98,7 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       way.value = msg.way === 'protocol' ? 'protocol' : 'terminal'
       noted.value = msg.noted === 'terminal' || msg.noted === 'protocol' ? msg.noted : ''
       why.value = ''
+      expand.value = msg.expand === true
       transcript.welcome(msg)
       transcriptVersion.value = transcript.version
     } else if (msg.t === 'way') {
@@ -100,6 +107,7 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       way.value = msg.way
       noted.value = msg.noted ?? ''
       why.value = msg.why ?? ''
+      expand.value = msg.expand === true
       // The owner sends no entry while the session runs in its terminal: what it added meanwhile (the move's notice) is read back as
       // it comes back to the chat on this connection.
       if (msg.way === 'terminal') transcript.leave()
@@ -128,6 +136,7 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
     transport.value = t
     role.value = ''
     welcome.value = undefined
+    expand.value = false
     t.onOutput((data, replay) => {
       if (transport.value !== t) return
       for (const cb of outputs) cb(data, replay)
@@ -160,6 +169,7 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
     way,
     noted,
     why,
+    expand,
     transcript,
     transcriptVersion,
     connect,
@@ -181,7 +191,7 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       return true
     },
     submit: (text) => open() && transport.value!.submit(text),
-    submitAcked: (text) => (open() ? transport.value!.submitAcked(text) : Promise.reject(new ReplyError('not_connected', 'not connected'))),
+    submitAcked: (text, opts = {}) => (open() ? transport.value!.submitAcked(text, opts.expand ? { expand: true } : {}) : Promise.reject(new ReplyError('not_connected', 'not connected'))),
     answer(reply, opts = {}) {
       if (!open()) return Promise.reject(new ReplyError('not_connected', 'not connected'))
       return transport.value!.answer(reply, opts)

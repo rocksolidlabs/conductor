@@ -79,3 +79,35 @@ export type RowDraftsView = Pick<RowDrafts, 'get' | 'text' | 'edit' | 'settle'>
 
 /** The sidebar's row drafts, provided by SessionSidebar to the row fields it draws (SidebarPrompt). */
 export const ROW_DRAFTS: InjectionKey<RowDraftsView> = Symbol('rowDrafts')
+
+/**
+ * Which boxes hold a line the person typed or pasted themselves (UX3 R10, I19): only such a line may go for the agent to expand. A
+ * trusted input in the box or the person's own pick from its list makes the line theirs (`typed`); a line the page puts there (a
+ * refused one coming back, any text set by code) is the page's (`set`) until the person changes it; a send lets it go (`sent`). A
+ * line kept for a session while the person was away (useBoxDrafts) keeps its owner: it is what they typed, never sent. Pure.
+ */
+export class OwnLines {
+  private readonly by = new Set<string>()
+
+  typed(id: string): void {
+    this.by.add(id)
+  }
+
+  set(id: string): void {
+    this.by.delete(id)
+  }
+
+  sent(id: string): void {
+    this.by.delete(id)
+  }
+
+  is(id: string): boolean {
+    return this.by.has(id)
+  }
+
+  /** Drops the sessions no longer listed. */
+  keep(ids: Iterable<string>): void {
+    const listed = new Set(ids)
+    for (const id of [...this.by]) if (!listed.has(id)) this.by.delete(id)
+  }
+}

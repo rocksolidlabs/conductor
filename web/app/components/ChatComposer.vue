@@ -3,8 +3,8 @@ import type { ScopeItem } from '~/utils/chat'
 import { chatBytes, chatCounter, chatTooLong, cleanChatText } from '~/utils/chat'
 import { MAX_SUBMIT } from '~/utils/protocol'
 import { giveFocusBack, type ReplyTaken } from '~/utils/reply'
-import { RowDrafts } from '~/utils/rowDrafts'
-import { fileRows, mentionAt, pickMention, type Mention, type MenuRow } from '~/utils/chatBoxMenu'
+import { OwnLines, RowDrafts } from '~/utils/rowDrafts'
+import { fileRows, mentionAt, outsideMention, pickMention, type Mention, type MenuRow } from '~/utils/chatBoxMenu'
 
 /**
  * Where a message is written (design 2a, 2c, 2e): Enter sends, Shift+Enter is
@@ -34,8 +34,13 @@ const props = withDefaults(
      * `asked` is the question the session's page shows (UX3 R5): while it takes a typed reply (`reply`), a line begun as it shows is
      * bound to it (replyLine's rule, by RowDrafts) and goes as its answer (`answer`), Send reading Answer; a line begun before it came
      * stays a message. A refused answer comes back into the box, bound as it was.
+     *
+     * `expand` is the server's word that this connection may send a line for the agent to expand (UX3 R10): the agent's commands and
+     * files then; `folder` is the session's folder, for the line about a file outside it. A line goes for expand only when the person
+     * typed or pasted it, or picked from the list, themselves (OwnLines); `send`'s third argument says so, and hands back a refused
+     * line (`back`).
      */
-    agent?: { verbatim?: boolean; running: boolean; canStop: boolean; said?: string; name?: string; draftKey?: string; asked?: { id?: string; choices: boolean; reply: boolean } | null }
+    agent?: { verbatim?: boolean; running: boolean; canStop: boolean; said?: string; name?: string; draftKey?: string; asked?: { id?: string; choices: boolean; reply: boolean } | null; expand?: boolean; folder?: string }
     /**
      * The agent's box's files for `@` (UX3 R6): the words typed after it ('' for the files the agent touched) to the paths from the
      * folder, and whether more match than came; rejected when the read was refused. None where this connection may not read files:
@@ -55,11 +60,17 @@ const props = withDefaults(
   },
 )
 /** `to` is '' for the chat alone, `agent` for this session's agent, else a run member's name. */
-const emit = defineEmits<{ send: [text: string, to: string]; stop: []; answer: [text: string, question: string | undefined, taken: ReplyTaken] }>()
+const emit = defineEmits<{ send: [text: string, to: string, how?: { own: boolean; back: (text: string) => void }]; stop: []; answer: [text: string, question: string | undefined, taken: ReplyTaken] }>()
 
 /** The agent's box keeps its line by session in the app's store; the people's chat keeps its own. */
 const lines: RowDrafts = props.agent?.draftKey ? useBoxDrafts() : (reactive(new RowDrafts()) as RowDrafts)
 const lineKey = computed(() => props.agent?.draftKey ?? '')
+/** Whose the line in the box is: the person's own typing (a trusted input, or their own pick), or one the page put there. */
+const own: OwnLines = props.agent?.draftKey ? useOwnLines() : new OwnLines()
+function onInput(e: Event) {
+  if (e.isTrusted) own.typed(lineKey.value)
+  noteCaret()
+}
 const people = ref('')
 const draft = computed({
   get: () => (props.agent ? lines.text(lineKey.value) : people.value),
@@ -85,11 +96,14 @@ const empty = computed(() => (props.agent ? draft.value.trim() === '' : cleanCha
 const who = computed(() => props.agent?.name || 'the agent')
 const boxPlaceholder = computed(() => {
   const a = props.agent?.asked
-  if (!a?.reply) return `Message ${who.value}`
+  if (!a?.reply) return props.agent?.expand ? `Message ${who.value} · @ for a file, / for a command` : `Message ${who.value}`
   return a.choices ? 'Pick an answer above, or type your own' : `Answer ${who.value}…`
 })
 /** The agent's line begins with /: what the session does with a command is said then, and only then. */
-const slash = computed(() => !!props.agent && draft.value.trimStart().startsWith('/'))
+const slash = computed(() => !!props.agent && !props.agent.expand && draft.value.trimStart().startsWith('/'))
+/** A file the line names that lies outside the folder, where the agent would attach it: said, so that the person can take it out. */
+const outside = computed(() => (props.agent?.expand ? outsideMention(draft.value) : ''))
+const folderName = computed(() => props.agent?.folder?.replace(/\/+$/, '').split('/').pop() || 'the folder')
 
 /** The run chat's choice: where the next message goes; back to chat only when the member can no longer take it. */
 const scope = ref('')
@@ -118,8 +132,18 @@ function keepCursor() {
 function send(to: string) {
   if (props.disabled || empty.value || tooLong.value) return
   if (answering.value) return answer()
-  emit('send', draft.value, to)
+  const key = lineKey.value
+  const mine = own.is(key)
+  // A line the owner refused (`not_sent`) comes back into an empty box as the page's, never as the person's: sent again unchanged,
+  // it goes as written.
+  const back = (text: string) => {
+    if (lineKey.value !== key || draft.value !== '') return
+    draft.value = text
+    own.set(key)
+  }
+  emit('send', draft.value, to, { own: mine, back })
   draft.value = ''
+  own.sent(key)
   if (props.agent) keepCursor()
 }
 
@@ -131,6 +155,8 @@ function answer() {
   const from = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)
   emit('answer', raw.trim(), bound === ASKED ? undefined : bound, (outcome) => {
     lines.settle(key, raw, outcome)
+    // What comes back into the box is the page's now, until the person changes it.
+    if (outcome === 'refused') own.set(key)
     if (outcome === 'refused') giveFocusBack(from)
   })
   keepCursor()
@@ -217,13 +243,15 @@ const menuOpen = computed(() => !!mention.value && dismissed.value !== mentionKe
 const menuId = useId()
 const activeId = computed(() => (menuOpen.value && menuRows.value.length ? `${menuId}-${active.value}` : undefined))
 
-/** The person's pick: the `@` word becomes `@<path> `, the cursor after it, the list closed. */
-function pick(i: number) {
+/** The person's pick: the `@` word becomes `@<path> `, the cursor after it, the list closed. Their own act, when the press is theirs. */
+function pick(i: number, trusted: boolean) {
   const m = mention.value
   const row = menuRows.value[i]
   if (!m || !row?.pickable) return
   const put = pickMention(draft.value, m, row.value)
   draft.value = put.text
+  if (trusted) own.typed(lineKey.value)
+  else own.set(lineKey.value)
   caret.value = put.caret
   fileList.value = null
   void nextTick(() => {
@@ -246,7 +274,7 @@ function menuKey(e: KeyboardEvent): boolean {
   if (e.key === 'Enter' || e.key === 'Tab') {
     if (e.shiftKey && e.key === 'Enter') return false
     e.preventDefault()
-    pick(active.value)
+    pick(active.value, e.isTrusted)
     return true
   }
   if (e.key === 'Escape') {
@@ -283,7 +311,7 @@ function keepTyping(e: Event) {
 <template>
   <!-- The agent's box: one row, the field, Stop turn while a turn runs, Send; under it only what the person must know now. -->
   <form v-if="agent" ref="form" class="relative flex flex-col gap-1.5 px-3 py-2.5" data-chat-composer @submit.prevent="send('')">
-    <ChatBoxMenu v-if="menuOpen" :id="menuId" kind="file" :rows="menuRows" :active="active" :foot="menuFoot" @pick="pick" @hover="(i) => (active = i)" />
+    <ChatBoxMenu v-if="menuOpen" :id="menuId" kind="file" :rows="menuRows" :active="active" :foot="menuFoot" @pick="(i, trusted) => pick(i, trusted)" @hover="(i) => (active = i)" />
     <div class="flex items-end gap-2">
       <UTextarea
         ref="input"
@@ -302,7 +330,7 @@ function keepTyping(e: Event) {
         :aria-autocomplete="files ? 'list' : undefined"
         data-chat-input
         @keydown="onKeydown"
-        @input="noteCaret"
+        @input="onInput"
         @keyup="noteCaret"
         @click="noteCaret"
         @select="noteCaret"
@@ -316,6 +344,7 @@ function keepTyping(e: Event) {
     </div>
     <p v-if="slash && agent.verbatim === true" class="text-[11px] text-muted" data-chat-help="verbatim">Sent as plain text. To run a command, use the Terminal.</p>
     <p v-else-if="slash && agent.verbatim === false" class="text-[11px] text-muted" data-chat-help="commands">Messages starting with <code class="font-mono">/</code> may run as the agent's commands.</p>
+    <p v-if="outside" class="text-[11px] text-warning" role="status" data-chat-outside><span class="font-mono" data-mono="path">{{ outside }}</span> is outside {{ folderName }}. The agent attaches it without asking.</p>
     <p v-if="agent.said" class="text-[11px] text-warning" role="status" data-chat-said>{{ agent.said }}</p>
     <span v-if="counter" class="self-end font-mono text-[11px] text-muted" :class="tooLong && 'text-error'" data-mono="measure" data-chat-counter>{{ counter }}</span>
   </form>

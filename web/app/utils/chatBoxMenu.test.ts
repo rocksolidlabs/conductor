@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fileRows, fromFolder, MENU_ROWS, mentionAt, pickMention, safePath, startsWithSlash } from './chatBoxMenu'
+import { fileRows, fromFolder, MENU_ROWS, mentionAt, outsideMention, pickMention, safePath, startsWithSlash } from './chatBoxMenu'
 
 describe("the chat box's list for @", () => {
   it('triggerAtAWordsStart: an @ word at the start or after white space, the cursor in it or at its end', () => {
@@ -52,5 +52,15 @@ describe("the chat box's list for @", () => {
     expect(startsWithSlash('/compact')).toBe(true)
     expect(startsWithSlash('  /model')).toBe(true)
     expect(startsWithSlash('see /etc')).toBe(false)
+  })
+})
+
+describe('outsideMention (UX3 R10)', () => {
+  it('names the first @ word outside the folder: from /, from ~, through ..; none inside it', () => {
+    expect(outsideMention('look at @notes.txt')).toBe('')
+    expect(outsideMention('look at @/etc/hosts')).toBe('/etc/hosts')
+    expect(outsideMention('@~/.ssh/config please')).toBe('~/.ssh/config')
+    expect(outsideMention('@src/../../x')).toBe('src/../../x')
+    expect(outsideMention('mail a@/etc/hosts')).toBe('')
   })
 })

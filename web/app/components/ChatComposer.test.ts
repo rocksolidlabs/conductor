@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 // The box to write in, a chat's agent's (docs/plans/chat-or-terminal.md, design 11; UX3 R4). The app's vitest mounts no component:
@@ -10,7 +11,8 @@ const agentForm = src.slice(src.indexOf('<form v-if="agent"'), src.indexOf('<for
 
 describe("the agent's box", () => {
   it('draws no standing line: what the session does with a command is said only while the line begins with /', () => {
-    expect(src).toContain("const slash = computed(() => !!props.agent && draft.value.trimStart().startsWith('/'))")
+    // Where the server lets this box send a line to expand, the line is no plain text and says nothing (UX3 R10).
+    expect(src).toContain("const slash = computed(() => !!props.agent && !props.agent.expand && draft.value.trimStart().startsWith('/'))")
     expect(agentForm).toMatch(/<p v-if="slash && agent\.verbatim === true"[^>]*data-chat-help="verbatim">Sent as plain text\. To run a command, use the Terminal\.<\/p>/)
     expect(agentForm).toMatch(/<p v-else-if="slash && agent\.verbatim === false"[^>]*data-chat-help="commands">Messages starting with <code[^>]*>\/<\/code> may run as the agent's commands\.<\/p>/)
     expect(src.match(/data-chat-help=/g)).toHaveLength(2)
@@ -35,7 +37,7 @@ describe("the agent's box", () => {
     expect(send).toBeGreaterThan(stop)
     expect(row).toMatch(/<UTooltip v-if="agent\.running && agent\.canStop" :text="`Stops what \$\{who\} is doing now\. The conversation stays\.`">\s*<UButton label="Stop turn" icon="i-lucide-square" color="neutral" variant="outline"/)
     expect(src).not.toContain('Stop this turn')
-    expect(src).toContain('if (!a?.reply) return `Message ${who.value}`')
+    expect(src).toContain('if (!a?.reply) return props.agent?.expand ? `Message ${who.value} · @ for a file, / for a command` : `Message ${who.value}`')
     expect(view).not.toContain('Write to the agent')
   })
 
@@ -45,7 +47,7 @@ describe("the agent's box", () => {
 
   it('keeps its line by session in the app\'s store, and takes the cursor only when nothing else holds it', () => {
     expect(src).toContain('const lines: RowDrafts = props.agent?.draftKey ? useBoxDrafts() : (reactive(new RowDrafts()) as RowDrafts)')
-    expect(view).toContain('name: agentName, draftKey, asked }"')
+    expect(view).toContain('name: agentName, draftKey, asked, expand: canExpand, folder: conn.welcome.value?.cwd }"')
     expect(view).toMatch(/function takeCursor\(\) \{\s*if \(!controls\.value \|\| keysAnswer\.value/)
     expect(view).toContain('const keysAnswer = computed(() => !!props.asked && (props.asked.choices || !props.asked.reply))')
     expect(view).toContain('if (!el || el === document.body) composer.value?.focus()')
@@ -83,7 +85,7 @@ describe("the agent's box", () => {
     // Enter and Tab pick while it is open and never send; nothing while an input method composes.
     expect(src).toMatch(/function onKeydown\(e: KeyboardEvent\) \{\s*if \(menuKey\(e\)\) return/)
     expect(src).toContain("if (!menuOpen.value || e.isComposing) return false")
-    expect(src).toMatch(/if \(e\.key === 'Enter' \|\| e\.key === 'Tab'\) \{[\s\S]*?e\.preventDefault\(\)\s*pick\(active\.value\)\s*return true/)
+    expect(src).toMatch(/if \(e\.key === 'Enter' \|\| e\.key === 'Tab'\) \{[\s\S]*?e\.preventDefault\(\)\s*pick\(active\.value, e\.isTrusted\)\s*return true/)
     // Escape closes the list and keeps the text: it is the list's, not the box's.
     expect(src).toMatch(/if \(e\.key === 'Escape'\) \{\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)\s*dismissed\.value = mentionKey\.value\s*return true/)
     // Closed with Escape, it opens again for the next @ word, even one typed the same.
@@ -94,5 +96,32 @@ describe("the agent's box", () => {
     // A pick: only a row that may be picked, the @ word replaced by the path and a space.
     expect(src).toContain('if (!m || !row?.pickable) return')
     expect(src).toContain('const put = pickMention(draft.value, m, row.value)')
+  })
+  it("marksForExpandOnlyThePersonsOwnLine (UX3 R10): the person's typing or own pick, where the server said expand", () => {
+    // The line is the person's only after a trusted input in the box or their own pick; code that sets it makes it the page's.
+    expect(src).toMatch(/function onInput\(e: Event\) \{\s*if \(e\.isTrusted\) own\.typed\(lineKey\.value\)/)
+    expect(src).toContain('if (trusted) own.typed(lineKey.value)')
+    expect(src).toContain('pick(active.value, e.isTrusted)')
+    expect(src.match(/own\.typed\(/g)).toHaveLength(2)
+    // A refused answer and a refused message come back as the page's.
+    expect(src).toMatch(/if \(outcome === 'refused'\) own\.set\(key\)/)
+    expect(src).toMatch(/draft\.value = text\s*own\.set\(key\)/)
+    expect(src).toContain("emit('send', draft.value, to, { own: mine, back })")
+    // The chat asks for expand only for that line, and only on the server's word for this connection.
+    expect(view).toContain('const canExpand = computed(() => controls.value && conn.expand.value)')
+    expect(view).toContain('const expand = canExpand.value && how?.own === true')
+    expect(view).toMatch(/if \(e instanceof ReplyError && e\.code === 'not_sent'\) \{[\s\S]*?how\?\.back\(text\)/)
+    // No other place of the app asks for it.
+    const root = new URL('..', import.meta.url).pathname
+    const asking: string[] = []
+    const walk = (dir: string) => {
+      for (const f of readdirSync(dir)) {
+        const p = join(dir, f)
+        if (statSync(p).isDirectory()) walk(p)
+        else if (/\.(vue|ts)$/.test(f) && !/\.test\.ts$/.test(f) && /expand: true/.test(readFileSync(p, 'utf8'))) asking.push(p.slice(root.length))
+      }
+    }
+    walk(root)
+    expect(asking.sort()).toEqual(['components/ChatView.vue', 'composables/useSessionConnection.ts', 'utils/transport/base.ts'])
   })
 })

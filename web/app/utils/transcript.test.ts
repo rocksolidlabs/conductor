@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ref, type Ref } from 'vue'
 import { useTypedAnswers } from '~/composables/useTypedAnswers'
 import { MAX_TRANSCRIPT_ENTRY, MAX_TRANSCRIPT_PAGE, type TranscriptEntry, type TranscriptReply, type TranscriptRequest } from './protocol'
-import { ANSWERED_WORDS, answerOf, answerShown, chatBlocks, conductorStep, entryValid, fileLine, lastWords, limitReads, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
+import { ANSWERED_WORDS, answerOf, answerShown, chatBlocks, conductorStep, entryValid, fileLine, lastWords, promptParts, limitReads, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
 
 // A chat's transcript as the page keeps it (docs/plans/chat-or-terminal.md, designs 5, 6 and 11): each entry at its latest revision
 // by seq, the highest mark held as the next hello's resume point, what is past the wire's bounds refused, a message that answers a
@@ -289,5 +289,23 @@ describe('fileLine', () => {
     expect(fileLine({ path: 'notes.txt', op: 'create', added: 3 })).toEqual({ name: 'notes.txt', words: 'created', added: '+3', removed: '' })
     expect(fileLine({ path: 'old.go', op: 'delete', removed: 0 })).toEqual({ name: 'old.go', words: 'deleted', added: '', removed: '' })
     expect(fileLine({ path: '/etc/hosts', outside: true, op: 'edit' }).name).toBe('A file outside the folder')
+  })
+})
+
+describe('promptParts (UX3 R10)', () => {
+  it('expandedPromptParts: a command only at the start, a mention only at a word\'s start, an address is text, nothing for a line sent as written', () => {
+    expect(promptParts({ text: '/compact now', expanded: true })).toEqual([{ kind: 'command', text: '/compact' }, { kind: 'text', text: ' now' }])
+    expect(promptParts({ text: 'Look at @notes.txt and mail a@b', expanded: true })).toEqual([
+      { kind: 'text', text: 'Look at ' },
+      { kind: 'mention', text: '@notes.txt' },
+      { kind: 'text', text: ' and mail a@b' },
+    ])
+    expect(promptParts({ text: 'see /compact', expanded: true })).toEqual([{ kind: 'text', text: 'see /compact' }])
+    expect(promptParts({ text: '/compact @notes.txt', expanded: false })).toEqual([{ kind: 'text', text: '/compact @notes.txt' }])
+    expect(promptParts({ text: '/bad$name', expanded: true })).toEqual([{ kind: 'text', text: '/bad$name' }])
+    expect(promptParts({ text: 'x', answers: 'q1', expanded: true })).toEqual([])
+    // The parts are the text whole: nothing added, nothing lost.
+    const text = '/fix-issue 12 with @src/a.go\nand @b.md'
+    expect(promptParts({ text, expanded: true }).map((p) => p.text).join('')).toBe(text)
   })
 })

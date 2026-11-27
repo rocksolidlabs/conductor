@@ -537,3 +537,35 @@ export const CHAT_END_SLACK = 48
 export function atChatEnd(el: Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < CHAT_END_SLACK
 }
+
+/** One part of a message the agent was sent to expand (UX3 R10): its leading command, a file it names, or text. */
+export type PromptPart = { kind: 'text'; text: string } | { kind: 'command'; text: string } | { kind: 'mention'; text: string }
+
+const PART_COMMAND = /^\/([A-Za-z0-9_][A-Za-z0-9_.:-]*)(?=\s|$)/
+
+/**
+ * A message's parts as the conversation draws them (UX3 R10): only for an entry sent for the agent to expand (`expanded`), a leading
+ * `/name` and each `@word` at a word's start; everything else, and every part of an entry sent as written, is text. An address
+ * (a@b) is text.
+ */
+export function promptParts(e: Pick<TranscriptEntry, 'text' | 'expanded' | 'answers'>): PromptPart[] {
+  const text = e.answers ? '' : (e.text ?? '')
+  if (!text) return []
+  if (!e.expanded) return [{ kind: 'text', text }]
+  const parts: PromptPart[] = []
+  let rest = text
+  const cmd = PART_COMMAND.exec(rest)
+  if (cmd) {
+    parts.push({ kind: 'command', text: cmd[0] })
+    rest = rest.slice(cmd[0].length)
+  }
+  let at = 0
+  for (const m of rest.matchAll(/(^|\s)(@\S+)/g)) {
+    const start = m.index! + m[1]!.length
+    if (start > at) parts.push({ kind: 'text', text: rest.slice(at, start) })
+    parts.push({ kind: 'mention', text: m[2]! })
+    at = start + m[2]!.length
+  }
+  if (at < rest.length) parts.push({ kind: 'text', text: rest.slice(at) })
+  return parts
+}

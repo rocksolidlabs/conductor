@@ -86,3 +86,15 @@ export function fileRows(paths: readonly string[]): MenuRow[] {
   }
   return rows
 }
+
+/**
+ * The first `@` word of a line, at a word's start, that names a file outside the session's folder (UX3 R10): one that begins with `/`
+ * or `~`, or holds a `..` part. '' for none.
+ */
+export function outsideMention(text: string): string {
+  for (const m of text.matchAll(/(?:^|\s)@(\S+)/g)) {
+    const p = m[1]!
+    if (p.startsWith('/') || p.startsWith('~') || p.split('/').includes('..')) return p
+  }
+  return ''
+}

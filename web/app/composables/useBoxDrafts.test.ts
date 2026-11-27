@@ -1,6 +1,6 @@
 import { effectScope, nextTick, ref } from 'vue'
 import { describe, expect, it } from 'vitest'
-import { boxDrafts } from './useBoxDrafts'
+import { boxDrafts, ownLines } from './useBoxDrafts'
 
 // The chat boxes' lines, by session (UX3 R4): kept per session past the box that drew one, dropped when sent, emptied, or when the
 // session is no longer listed.
@@ -64,6 +64,46 @@ describe('the chat boxes’ lines', () => {
     listed.value = undefined
     await nextTick()
     expect(drafts.text('a')).toBe('kept')
+    scope.stop()
+  })
+})
+
+describe('whose line it is (UX3 R10): only a line the person typed or pasted, or picked themselves, may go for expand', () => {
+  function own(ids: string[] | undefined) {
+    const listed = ref<string[] | undefined>(ids)
+    const scope = effectScope()
+    const lines = scope.run(() => ownLines(() => listed.value))!
+    return { listed, lines, scope }
+  }
+
+  it("a line the person typed is theirs; a send lets it go; one kept while they were away stays theirs", () => {
+    const { lines } = own(['a', 'b'])
+    expect(lines.is('a')).toBe(false)
+    lines.typed('a')
+    expect(lines.is('a')).toBe(true)
+    // They open b and come back: the kept line is still what they typed.
+    expect(lines.is('a')).toBe(true)
+    lines.sent('a')
+    expect(lines.is('a')).toBe(false)
+  })
+
+  it('a line the page puts back (a refused answer, a message the owner did not take) is the page\'s until the person changes it', () => {
+    const { lines } = own(['a'])
+    lines.typed('a')
+    lines.set('a')
+    expect(lines.is('a')).toBe(false)
+    lines.typed('a')
+    expect(lines.is('a')).toBe(true)
+  })
+
+  it('drops the sessions no longer listed, once the list is read', async () => {
+    const { listed, lines, scope } = own(undefined)
+    lines.typed('a')
+    lines.typed('b')
+    listed.value = ['a']
+    await nextTick()
+    expect(lines.is('a')).toBe(true)
+    expect(lines.is('b')).toBe(false)
     scope.stop()
   })
 })
