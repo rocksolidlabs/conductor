@@ -113,9 +113,11 @@ for (const size of [
 }
 
 test("a member's tab opens that member in this page's place: one Back leaves the crew's members", async ({ browser }) => {
-  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  // From the Crews page, which stays where it is (the home leaves for a session worth opening).
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
   try {
     const home = pagePath(page)
+    expect(home).toBe('/crews')
     await memberPage(page, 'lead')
     const strip = page.locator(`[data-member-strip][data-run="${run.id}"]`)
     const lead = strip.locator('[data-member-tab="lead"]')
@@ -153,15 +155,17 @@ test("a member's Terminal | Chat: both sides drawn, Chat dimmed with why; a pres
     const terminal = sw.locator('[data-way-side="terminal"]')
     const chat = sw.locator('[data-way-side="protocol"]')
     await expect(terminal).toHaveAttribute('aria-pressed', 'true')
-    // Dimmed, not disabled: it keeps its tooltip, on hover and on focus.
+    // Dimmed, not disabled: it keeps its tooltip, on hover and on focus, and its press.
     await expect(chat).toHaveAttribute('aria-disabled', 'true')
-    await expect(chat).toBeEnabled()
+    await expect(chat).not.toHaveAttribute('disabled')
     // No line stands above a member's terminal, the first reply's among them.
     await expect(page.locator('[data-way-line]')).toHaveCount(0)
     await chat.hover()
     await expect(page.getByRole('tooltip', { includeHidden: true })).toContainText(MEMBER_TERMINAL)
-    // A press says it as the line, for a moment, and moves nothing.
-    await chat.click()
+    // A press says it as the line, for a moment, and moves nothing. Playwright's click waits for an aria-disabled button to be enabled:
+    // the press is the keyboard's, as a person's Enter on the focused side.
+    await chat.focus()
+    await page.keyboard.press('Enter')
     await expect(page.locator('[data-way-line]')).toHaveText(MEMBER_TERMINAL)
     await expect(sw).toHaveAttribute('data-way', 'terminal')
     expect(moves).toEqual([])
