@@ -829,8 +829,8 @@ const (
 // stream: a call whose input holds its raw input, its locations, its
 // content or its title (an ACP agent's tool call: rawInput, locations,
 // content's diffs, title) names a place of the deny list anywhere in them,
-// whatever the call's kind. Every string they hold is judged as a command line's
-// words, from the session's folder and from each folder the raw input says
+// whatever the call's kind. Every string they hold but the text a file is
+// to hold (writtenText) is judged as a command line's words, from the session's folder and from each folder the raw input says
 // the call runs in (each folder judged once, before the walk: under the
 // list, as it is spelled, and as its links lead), and, where it looks like a
 // path, as a path; a file URI as its path. Past a bound (maxWalkStrings, a
@@ -923,7 +923,10 @@ func (s *Local) streamFloored(input []byte) string {
 				walk(x)
 			}
 		case map[string]any:
-			for _, x := range t {
+			for k, x := range t {
+				if writtenText(k, x, t) {
+					continue
+				}
 				walk(x)
 			}
 		}
@@ -932,6 +935,28 @@ func (s *Local) streamFloored(input []byte) string {
 		walk(fields[k])
 	}
 	return why
+}
+
+// writtenTextKeys name the text a call is to write (a diff's old and new
+// text, an edit's strings, a file's text), never judged as words.
+var writtenTextKeys = []string{"oldText", "newText", "old_string", "new_string", "old_str", "new_str", "file_text"}
+
+// writtenText says the value v under the key k of the object m is text a
+// file is to hold, or bytes, which the walk does not judge: a diff's
+// oldText and newText and an edit's old and new strings, a write's content
+// when it is a string, an embedded resource's text (an object with a uri),
+// and a blob or data. What can name a place or a command is judged: a title,
+// a location's path, a diff's path, a uri, a text block's text, the other
+// values of the raw input.
+func writtenText(k string, v any, m map[string]any) bool {
+	if slices.Contains(writtenTextKeys, k) || k == "blob" || k == "data" {
+		return true
+	}
+	if _, ok := v.(string); ok && k == "content" {
+		return true
+	}
+	_, hasURI := m["uri"]
+	return k == "text" && hasURI
 }
 
 // looksLikePath says a string may name a place: one line, with a slash, or

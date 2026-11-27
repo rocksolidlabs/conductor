@@ -1079,9 +1079,11 @@ func TestTheFloorFollowsAPathsLinksBeforeItsDotDot(t *testing.T) {
 }
 
 // The walk of a call's strings is for calls that come in an agent's
-// stream: a request to the prompt tool (Claude Code's) to write a file whose
-// text names a denied place is asked, as any write outside the list is; the
-// same text in an in-stream call's content is floored.
+// stream, and never judges text to be written: a request to the prompt tool
+// (Claude Code's) to write a file whose text names a denied place is asked,
+// as any write outside the list is, and so is an in-stream call whose text
+// to be written names one; the same text in what an in-stream call shows
+// the person is floored.
 func TestTheWalkOfACallsStringsIsForCallsThatComeInAStream(t *testing.T) {
 	data := realDir(t, t.TempDir())
 	text := "Its state lives in " + filepath.Join(data, "secrets.json") + "\n"
@@ -1093,6 +1095,21 @@ func TestTheWalkOfACallsStringsIsForCallsThatComeInAStream(t *testing.T) {
 	if e := openRequest(t, s, "c-write"); e.Tool != "Write" || !h.held() {
 		t.Fatalf("a write whose text names the list: %+v, held %v", e, h.held())
 	}
+	// In the stream, the text a file is to hold is not judged either: a
+	// diff's new and old text, a write's content, an embedded resource's
+	// text.
+	for i, in := range []string{
+		j(map[string]any{"kind": "edit", "title": "x", "content": []any{map[string]any{"type": "diff", "path": "docs/x.md", "oldText": text, "newText": text}}}),
+		j(map[string]any{"kind": "edit", "title": "x", "rawInput": map[string]any{"path": "docs/x.md", "content": text, "new_string": text}}),
+		j(map[string]any{"kind": "read", "title": "x", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "resource", "resource": map[string]any{"uri": "file:///tmp/notes.md", "text": text}}}}}),
+	} {
+		call := fmt.Sprintf("c-text-%d", i)
+		f.ToolStarted(ToolStep{Ref: call, Name: "edit", Input: []byte(in)})
+		if e, v := inStreamAsked(t, s, f, "req-"+call, call, "edit", in); v != nil || e.State != PermissionOpen {
+			t.Fatalf("text to be written, %s: %+v, replied %+v", in, e, v)
+		}
+	}
+	// What the call shows the person (a text block) is judged.
 	in := j(map[string]any{"kind": "edit", "title": "x", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": text}}}})
 	f.ToolStarted(ToolStep{Ref: "c-acp", Name: "edit", Input: []byte(in)})
 	e, v := inStreamAsked(t, s, f, "req-acp", "c-acp", "edit", in)
