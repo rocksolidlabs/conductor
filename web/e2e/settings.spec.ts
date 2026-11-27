@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect, standingRoute, stopStrays, test, viaMore, type Api } from './fixtures'
 import type { Locator, Page, Request } from '@playwright/test'
@@ -577,11 +577,9 @@ async function putBack(api: Api, start: BrakemanConf) {
 }
 /** The Reads a turn field of Brakeman's section, and a value of it that is not the one saved. */
 const readsField = (page: Page) => page.locator('[data-brakeman-reads] input, input[data-brakeman-reads]').first()
-/** Opens the Advanced fold of Brakeman's section (#993), where its limits are: kept mounted while folded, shown once opened. */
+/** Brakeman's limits (#993), in view under Limits since UX3 R59: a settings page folds nothing. Waits for them to show. */
 async function brakemanAdvanced(page: Page) {
-  const toggle = page.locator('[data-brakeman-advanced-toggle]')
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-  await toggle.click()
+  await expect(page.locator('[data-brakeman-advanced-toggle]')).toHaveCount(0)
   await expect(readsField(page)).toBeVisible()
 }
 
@@ -957,7 +955,7 @@ async function standIn(page: Page, state: E2EState, platform: Platform, server?:
     noticed: ['publishing'],
   }
   await page.addInitScript(
-    ({ token, form, url, platform }) => {
+    ({ token, form, url, platform, server }) => {
       const settings = { ...form }
       const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[]; e2eRestarts: number }
       w.e2eSets = []
@@ -1082,6 +1080,8 @@ for (const platform of ['linux', 'win32'] as const) {
   }
 
   test(`/settings?section=<id> opens on that section once it has rendered, and an unknown one at the top (${platform})`, async ({ page, state }) => {
+    // Eight loads, each waited on to settle (four waits of the expect's bound): the timeout bounds a hang, above their sum.
+    test.setTimeout(8 * 5 * 15_000)
     await standIn(page, state, platform)
     for (const id of ['switchyard', 'agents', 'app'] as const) {
       await page.goto(`/settings?section=${id}`)
@@ -1686,4 +1686,85 @@ test("a server that stopped is said in one line at the top, with its log and a r
   await line.locator('[data-server-state-restart]').click()
   await expect.poll(() => page.evaluate(() => (window as unknown as { e2eRestarts: number }).e2eRestarts)).toBe(1)
   await expect(page.locator('[data-about-card] [data-server-word]')).toHaveText('Stopped')
+})
+
+// Accounts and GitHub (UX3 R58): what the grey Add account needs is said beside it; a rename's Cancel comes before its Save and a
+// remove question's Keep it before its Remove; GitHub's Check and save sits at its foot's right end. The account is the test's own.
+test('Accounts says what Add account needs, puts Cancel and Keep it first, and GitHub its Check and save at the right', async ({ page, api, state }) => {
+  test.setTimeout(20 * 15_000)
+  const dir = mkdtempSync(join(state.home, 'e2e-settings-account-'))
+  const { rev } = await api.ok<{ rev: number }>('GET', '/api/accounts')
+  const label = `e2e settings ${Date.now()}`
+  const made = await api.ok<{ account: { id: string } }>('POST', '/api/accounts', { adapter: 'claude', label, folder: dir, expectedRev: rev })
+  try {
+    await page.goto('/settings')
+    const card = page.locator('[data-accounts-card]')
+    await expect(card).toContainText('The logins your agents use. Each change saves at once.')
+    const add = card.locator('[data-account-add]')
+    await expect(add.locator('[data-account-add-submit]')).toBeDisabled()
+    await expect(add.locator('[data-account-add-needs]')).toHaveText('Needs a label and a folder.')
+    await add.locator('[data-account-add-label]').fill('Work')
+    const folderInput = add.locator('[data-account-add-folder] input[role="combobox"]')
+    await folderInput.fill(dir)
+    await folderInput.press('Escape')
+    await expect(add.locator('[data-account-add-needs]')).toHaveText('Saves at once.')
+    await expect(add.locator('[data-account-add-submit]')).toBeEnabled()
+    await add.locator('[data-account-add-label]').fill('')
+    // The order of a rename's and a remove question's buttons: the one that changes nothing first.
+    const row = card.locator(`[data-account-row="${made.account.id}"]`)
+    await row.locator('[data-account-rename]').click()
+    const renameButtons = await row.getByRole('button').evaluateAll((bs) => bs.map((b) => b.textContent?.trim()))
+    expect(renameButtons.indexOf('Cancel')).toBeLessThan(renameButtons.indexOf('Save'))
+    await row.locator('[data-account-rename-cancel]').click()
+    await row.locator('[data-account-remove]').click()
+    const removeButtons = await row.getByRole('button').evaluateAll((bs) => bs.map((b) => b.textContent?.trim()))
+    expect(removeButtons.indexOf('Keep it')).toBeLessThan(removeButtons.indexOf('Remove'))
+    await row.locator('[data-account-remove-keep]').click()
+    // The default badge shows where an agent has two logins to choose from.
+    await expect(card.locator('[data-accounts-adapter="claude"] [data-account-is-default]')).toHaveCount(1)
+    // GitHub: Check and save at the right end of its foot, the note left of it.
+    const foot = page.locator('[data-settings-github] [data-github-foot]')
+    await foot.scrollIntoViewIfNeeded()
+    const f = await boxOf(foot)
+    const b = await boxOf(foot.locator('[data-github-save]'))
+    expect(Math.abs(f.right - b.right)).toBeLessThanOrEqual(1)
+    await expect(page.locator('[data-settings-github]')).toContainText('Saved by its own button.')
+  } finally {
+    const d = await api.ok<{ rev: number }>('GET', '/api/accounts')
+    await api.call('DELETE', `/api/accounts/${made.account.id}?expectedRev=${d.rev}`)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// Edits not saved stay while another page is open (UX3 R81): back on Settings the field and the bar show them; a setting saved
+// meanwhile wins; a reload drops them.
+test('Settings keeps an edit not saved across a visit to another page, a setting saved meanwhile wins, and a reload drops it', async ({ page, state }) => {
+  test.setTimeout(20 * 15_000)
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  await page.locator('[data-yolo-switch]').click()
+  const mine = join(state.root, 'settings-draft-mine')
+  const theirs = join(state.root, 'settings-draft-theirs')
+  await page.getByLabel('Default folder', { exact: true }).fill(mine)
+  await expect(page.locator('[data-settings-changed]')).toHaveText('Changed: Where agents work, How agents run. Saving restarts the server.')
+  // Another page, in the same window.
+  await page.locator('a[href="/yard"]').first().click()
+  await expect(page).toHaveURL(/\/yard/)
+  // Meanwhile the default folder is saved elsewhere (the app's settings change under the page): that one wins.
+  await page.evaluate((theirs) => {
+    const w = window as unknown as { conductorDesktop: { settings: { set: (p: object) => Promise<unknown> } }; e2eSets: object[] }
+    return w.conductorDesktop.settings.set({ defaultCwd: theirs }).then(() => w.e2eSets.pop())
+  }, theirs)
+  await viaMore(page, 'Settings')
+  await expect(page).toHaveURL(/\/settings/)
+  await settled(page, 'linux')
+  await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByLabel('Default folder', { exact: true })).toHaveValue(theirs)
+  await expect(page.locator('[data-settings-changed]')).toHaveText('Changed: How agents run. Saving restarts the server.')
+  // A reload drops what was not saved.
+  await page.reload()
+  await settled(page, 'linux')
+  await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'false')
+  await expect(page.locator('[data-save-settings]')).toBeDisabled()
 })
