@@ -404,7 +404,8 @@ describe('changedFields', () => {
   it('names what a draft changed', () => {
     expect(changedFields(saved, saved)).toEqual([])
     expect(changedFields({ ...saved, goal: 'ship it' }, saved)).toEqual(['Goal'])
-    expect(changedFields({ ...saved, name: 'x', cwd: '/x', yolo: true, members: [m('lead'), m('b')] }, saved)).toEqual(['Name', 'Folder', 'More options', 'Members'])
+    expect(changedFields({ ...saved, name: 'x', cwd: '/x', yolo: true, members: [m('lead'), m('b')] }, saved)).toEqual(['Name', 'Folder', 'Yolo', 'Members'])
+    expect(changedFields({ ...saved, yolo: true, openAfterLaunch: false }, saved)).toEqual(['Yolo', 'More options'])
     expect(changedFields(saved, undefined)).toEqual([])
   })
 })

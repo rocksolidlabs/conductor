@@ -32,13 +32,16 @@ test("a terminal session's switch moves it to its chat, whose turn shows its wor
   try {
     const view = await openSession(page, s.id)
     budget(3 * STEP_MS)
-    // Before the first reply: Chat waits, in the plan's words, and cannot be pressed.
+    // Before the first reply: Chat waits, in the plan's words on its dimmed side (no line above the terminal: UX3 R15), and cannot
+    // be pressed.
     const sw = page.locator('[data-way-switch]')
     await expect(sw).toHaveAttribute('data-way', 'terminal')
-    await expect(page.locator('[data-way-line]')).toHaveText("Chat opens after the agent's first reply.")
+    await expect(sw.locator('[data-way-side="protocol"]')).toHaveAttribute('aria-description', "Chat opens after the agent's first reply.")
+    await expect(page.locator('[data-way-line]')).toHaveCount(0)
     await expect(sw.locator('[data-way-side="protocol"]')).toBeDisabled()
     await firstTurn(page, api, s.id, 'remember PINEAPPLE')
     budget(12 * STEP_MS + LONG_MS)
+    await expect(sw.locator('[data-way-side="protocol"]')).not.toHaveAttribute('aria-description', "Chat opens after the agent's first reply.")
     await expect(page.locator('[data-way-line]')).toHaveCount(0)
     // The switch moves it. The first press in this browser draws one note in the chat, under the move's notice, where it covers
     // nothing: the agent's terms decide how the mode is used, and under it that the chat has Conductor's tools only.

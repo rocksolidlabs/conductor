@@ -107,7 +107,7 @@ async function go(continueRun: boolean) {
       <UBadge :label="count" color="neutral" variant="subtle" size="sm" data-review-draft-count />
       <UButton label="A general note" icon="i-lucide-message-square-plus" size="xs" color="neutral" variant="ghost" class="ml-auto" data-review-general @click="emit('general')" />
     </div>
-    <p class="text-xs text-dimmed">Kept in this browser until it is sent; nothing is a record before.<template v-if="unsaved"> This browser did not keep it: it lasts as long as this page.</template></p>
+    <p class="text-xs text-dimmed">Kept on this device until it is sent.<template v-if="unsaved"> This device did not keep it: it lasts as long as this page.</template></p>
 
     <UAlert v-if="hold" color="neutral" variant="subtle" icon="i-lucide-lock" :title="hold.title" data-review-hold>
       <template #description>

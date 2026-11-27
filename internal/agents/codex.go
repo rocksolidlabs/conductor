@@ -277,7 +277,8 @@ const MCPToolTimeout = 12 * time.Minute
 // codexMCPEnv is the TOML list of the variables Codex passes on to
 // Conductor's MCP server (#354): every CONDUCTOR_* one a session sets,
 // CONDUCTOR_BRAKEMAN among them, by which the server lists a Brakeman
-// turn's tools, and CONDUCTOR_PROTOCOL, set for a chat's child (the
-// protocol way, docs/plans/chat-or-terminal.md, row 10), by which it knows
-// it serves a chat.
-const codexMCPEnv = `["CONDUCTOR_SESSION_ID","CONDUCTOR_NOTIFY_URL","CONDUCTOR_NOTIFY_TOKEN","CONDUCTOR_HOST_SOCKET","CONDUCTOR_HOST_EVENTS","CONDUCTOR_BIN","CONDUCTOR_CREW","CONDUCTOR_RUN","CONDUCTOR_MEMBER","CONDUCTOR_TASK","CONDUCTOR_ATTEMPT","CONDUCTOR_TASK_FILE","CONDUCTOR_AGENT","CONDUCTOR_SKILL","CONDUCTOR_BRAKEMAN","CONDUCTOR_PROTOCOL"]`
+// turn's tools. Not CONDUCTOR_PROTOCOL: the server lists Conductor's
+// permission tool only to an agent whose program calls it (Claude Code's),
+// and Codex asks in its own stream; Codex's notify and hooks have it from
+// Codex's own environment.
+const codexMCPEnv = `["CONDUCTOR_SESSION_ID","CONDUCTOR_NOTIFY_URL","CONDUCTOR_NOTIFY_TOKEN","CONDUCTOR_HOST_SOCKET","CONDUCTOR_HOST_EVENTS","CONDUCTOR_BIN","CONDUCTOR_CREW","CONDUCTOR_RUN","CONDUCTOR_MEMBER","CONDUCTOR_TASK","CONDUCTOR_ATTEMPT","CONDUCTOR_TASK_FILE","CONDUCTOR_AGENT","CONDUCTOR_SKILL","CONDUCTOR_BRAKEMAN"]`

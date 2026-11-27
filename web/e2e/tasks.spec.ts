@@ -132,7 +132,7 @@ test('the run page shows the tasks, their attempts and results, the task graph, 
   await page.locator('[data-task-detail-close]').click()
   await expect(page).not.toHaveURL(/task=/)
   // The grid tile says the member's task; the graph draws the tasks with their needs.
-  await page.locator('[data-run-view]').getByRole('tab', { name: 'Grid' }).click()
+  await page.locator('[data-run-view]').getByRole('tab', { name: 'Members' }).click()
   await expect(page.locator('[data-member="builder"] [data-branch]')).toContainText('build #2')
   await page.locator('[data-run-view]').getByRole('tab', { name: 'Graph' }).click()
   const canvas = page.locator('[data-graph-canvas]')

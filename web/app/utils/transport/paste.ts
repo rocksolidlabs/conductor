@@ -29,7 +29,7 @@ export class PasteTransport extends BaseTransport {
 
   /** The offer blob, once every candidate is gathered (or GATHER_MS has passed). */
   async offer(): Promise<string> {
-    if (typeof RTCPeerConnection === 'undefined') throw new Error('this browser has no WebRTC')
+    if (typeof RTCPeerConnection === 'undefined') throw new Error('WebRTC is not available here')
     const pc = new RTCPeerConnection({ iceServers: this.stun.length ? [{ urls: this.stun }] : [] })
     this.pc = pc
     const dc = pc.createDataChannel('term', { ordered: true })

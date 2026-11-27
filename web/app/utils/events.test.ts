@@ -427,7 +427,7 @@ describe('followJump', () => {
 
 describe('eventAlert', () => {
   const s = session('')
-  it('alerts for a type routed to Browser, with a readable title and the detail', () => {
+  it('alerts for a type routed to This device, with a readable title and the detail', () => {
     expect(eventAlert({ sessionId: 's1', session: s, type: 'artifact', entry: entry('artifact', { url: 'https://x/pr/1' }) }, routes())).toEqual({
       title: 'api-sweep: artifact',
       body: 'https://x/pr/1',
@@ -437,7 +437,7 @@ describe('eventAlert', () => {
     expect(eventAlert({ sessionId: 's1', session: s, type: 'exit_nonzero', entry: entry('status', { message: 'exited (exit 3)' }) }, routes())).toMatchObject({ title: 'api-sweep: exit 3' })
     expect(eventAlert({ sessionId: 's1', session: s, type: 'done', entry: entry('attention', { message: 'done' }) }, routes({ done: { browser: true } }))).toMatchObject({ title: 'api-sweep: done', body: EVENT_INFO.done.source })
   })
-  it('stays quiet for a type not routed to Browser and for needs_input, which the session state alerts', () => {
+  it('stays quiet for a type not routed to This device and for needs_input, which the session state alerts', () => {
     expect(eventAlert({ sessionId: 's1', type: 'progress', entry: entry('progress') }, routes())).toBeNull()
     expect(eventAlert({ sessionId: 's1', type: 'artifact', entry: entry('artifact') }, routes({ artifact: { browser: false } }))).toBeNull()
     expect(eventAlert({ sessionId: 's1', type: 'needs_input', entry: entry('attention', { message: 'needs_input' }) }, routes())).toBeNull()

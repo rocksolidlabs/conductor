@@ -442,7 +442,7 @@ export function utf8Bytes(s: string): number {
 }
 
 /** Being made under an ask this browser does not hold: the words for a pending entry with no make kept to finish. */
-export const PENDING_ELSEWHERE = "Being made: it finishes when the browser that asked it asks again, or at the server's next start."
+export const PENDING_ELSEWHERE = "Being made: it finishes when the device that asked for it asks again, or at the server's next start."
 
 /**
  * What a draft card does about a make that did not finish, from the request's entry for the item and the make this browser kept:
