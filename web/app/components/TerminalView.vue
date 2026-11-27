@@ -977,8 +977,11 @@ onBeforeUnmount(() => {
       <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile', invisible: chatShown }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-scaled-font="scaledAt" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>
 
-    <!-- A chat, over the terminal's pane: the whole view, or a tile's line. -->
-    <ChatView v-if="chatShown && !compact" ref="chatView" :connection="conn" :read-only="readOnly" :operator="operator" :verbatim="verbatim" :opens-changes="opensChanges" :note="chatNote" @dismiss-note="emit('dismissNote')" class="absolute inset-0 z-10" @open-diff="emit('openChange', $event)" />
+    <!-- A chat, over the terminal's pane: the whole view, or a tile's line. The page's `ask` (the card for a question) goes to the chat,
+         which draws it just above its box. -->
+    <ChatView v-if="chatShown && !compact" ref="chatView" :connection="conn" :read-only="readOnly" :operator="operator" :verbatim="verbatim" :opens-changes="opensChanges" :note="chatNote" @dismiss-note="emit('dismissNote')" class="absolute inset-0 z-10" @open-diff="emit('openChange', $event)">
+      <template v-if="$slots.ask" #ask><slot name="ask" /></template>
+    </ChatView>
     <div v-else-if="chatShown" class="absolute inset-0 z-10 flex flex-col gap-1 bg-default px-2.5 py-2 text-xs" data-chat-tile>
       <span class="text-muted">Runs as a chat.</span>
       <span v-if="chatLast" class="line-clamp-3 break-words text-default" data-chat-tile-words>{{ chatLast }}</span>

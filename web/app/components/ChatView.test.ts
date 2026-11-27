@@ -94,9 +94,26 @@ describe('the chat', () => {
 
   it("noBarBesideTheQuestion: where the chat shows a permission question, no reply bar repeats it", () => {
     const pages = (p: string) => readFileSync(new URL(`../pages/${p}`, import.meta.url), 'utf8')
-    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!(way === 'protocol' && answersInChat(attention))"`)
+    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!askInChat && !(way === 'protocol' && answersInChat(attention))"`)
+    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!answersInChat(attention)"`)
     expect(pages('join/[token].vue')).toContain(`<QuickReplyBar v-if="!(joinWay === 'protocol' && answersInChat(attention))"`)
     expect(pages('yard.vue')).toContain(`<QuickReplyBar v-if="!(focused.way === 'protocol' && answersInChat(focused.attention))"`)
+  })
+
+  it('drawsTheAskAboveTheBox: the card for a question sits between the conversation and the box, in the chat\'s column', () => {
+    const t = template(view)
+    const scroll = t.indexOf('data-chat-scroll')
+    const ask = t.indexOf('<slot name="ask" />')
+    const box = t.indexOf('<ChatComposer')
+    expect(scroll).toBeGreaterThan(-1)
+    expect(ask).toBeGreaterThan(scroll)
+    expect(box).toBeGreaterThan(ask)
+    expect(t).toMatch(/<div v-if="\$slots\.ask \|\| controls" class="mx-auto w-full max-w-3xl[^"]*" data-chat-foot>/)
+    // The terminal hands the page's card to its chat, and the session page fills it in Chat alone.
+    const terminal = readFileSync(new URL('./TerminalView.vue', import.meta.url), 'utf8')
+    expect(terminal).toContain('<template v-if="$slots.ask" #ask><slot name="ask" /></template>')
+    const page = readFileSync(new URL('../pages/sessions/[id].vue', import.meta.url), 'utf8')
+    expect(page).toContain('<template v-if="askInChat" #ask>')
   })
 
   it("followsOnlyAtTheEnd: where the person is, is measured as a change arrives, before it is drawn; one reading above the end stays", () => {

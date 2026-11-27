@@ -205,14 +205,18 @@ defineExpose({ showQuestion })
         </template>
       </div>
     </div>
-    <ChatComposer
-      v-if="controls"
-      class="mx-auto w-full max-w-3xl"
-      placeholder="Write to the agent"
-      :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said }"
-      data-chat-box
-      @send="(text) => send(text)"
-      @stop="stop"
-    />
+    <!-- The chat's foot, in the conversation's column: the card for the agent's question (the page's `ask`) just above the box, so
+         that what it asks and where to answer sit together. The card draws nothing while nothing is asked. -->
+    <div v-if="$slots.ask || controls" class="mx-auto w-full max-w-3xl border-t border-default" data-chat-foot>
+      <div v-if="$slots.ask" class="px-3 [&_[data-quick-reply]]:mt-2.5" data-chat-ask><slot name="ask" /></div>
+      <ChatComposer
+        v-if="controls"
+        placeholder="Write to the agent"
+        :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said }"
+        data-chat-box
+        @send="(text) => send(text)"
+        @stop="stop"
+      />
+    </div>
   </div>
 </template>

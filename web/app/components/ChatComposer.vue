@@ -83,7 +83,7 @@ function keepTyping(e: Event) {
 </script>
 
 <template>
-  <form class="flex flex-col gap-1.5 border-t border-default px-3 py-2.5" data-chat-composer @submit.prevent="send(scope)">
+  <form class="flex flex-col gap-1.5 px-3 py-2.5" :class="agent ? '' : 'border-t border-default'" data-chat-composer @submit.prevent="send(scope)">
     <p v-if="offline" class="text-[11px] text-warning" data-chat-offline>Messages send once you are back online</p>
     <UTextarea
       ref="input"
