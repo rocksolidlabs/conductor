@@ -336,6 +336,14 @@ func TestPermissionFloor(t *testing.T) {
 		{"a read of the session's own file", "Read", `{"file_path":"notes.txt"}`, false},
 		{"a command that computes the path", "Bash", bash("D=" + filepath.Dir(data) + "; cat $D/" + filepath.Base(data) + "x/secrets.json"), false},
 		{"a command naming nothing", "Bash", bash("make test"), false},
+		// Codex's steps (internal/agentproto, codex.go): a file change names
+		// its files in a list, and may ask to write under a root; a command
+		// names the folder it runs in.
+		{"a Codex file change of a denied file", "fileChange", `{"changes":[{"path":"notes.txt","kind":"update","diff":""},{"path":"` + secret + `","kind":"update","diff":""}]}`, true},
+		{"a Codex file change asking to write under the folder", "fileChange", `{"changes":[{"path":"notes.txt","kind":"update","diff":""}],"grantRoot":"` + data + `"}`, true},
+		{"a Codex command run in the folder", "commandExecution", `{"command":"cat secrets.json","cwd":"` + data + `"}`, true},
+		{"a Codex command naming nothing", "commandExecution", `{"command":"make test","cwd":""}`, false},
+		{"a Codex file change of the session's own file", "fileChange", `{"changes":[{"path":"notes.txt","kind":"update","diff":"-a\n+b"}]}`, false},
 	}
 	for i, c := range cases {
 		call := fmt.Sprintf("c-%d", i)
