@@ -133,8 +133,10 @@ type rootList struct {
 	// for a folder is made so without a mount.
 	stat func(path string) (os.FileInfo, error)
 	// beforeAdd, when a test sets it before its request, runs under mu
-	// between a folder's judgement and the last look before it is added.
-	beforeAdd func(path string)
+	// between a folder's judgement and the last look before it is added;
+	// beforeLock runs as an add asks for mu, before anything is judged.
+	beforeAdd  func(path string)
+	beforeLock func(path string)
 }
 
 // newRootList holds the configuration's allowed roots, each the folder it
@@ -547,6 +549,9 @@ func (s *Server) handleAddRoot(w http.ResponseWriter, r *http.Request) {
 // Just before the add the folder is looked at once more, by identity.
 func (s *Server) allowRoot(path, confirmed string) (string, bool, *rootRefusal) {
 	l := s.roots
+	if l.beforeLock != nil {
+		l.beforeLock(path)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	roots := l.list()

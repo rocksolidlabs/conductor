@@ -435,3 +435,51 @@ func TestWhoAmISaysWhereTheFoldersComeFrom(t *testing.T) {
 		}
 	}
 }
+
+// An add judges the folder under the roots' lock: a second press of the
+// same folder, asked while the first is held between its judgement and its
+// add, waits for the lock, then finds the folder allowed and adds nothing.
+// Judged before the lock, it would find the folder outside and add it a
+// second time.
+func TestAnAddIsJudgedUnderTheLock(t *testing.T) {
+	e := newTestEnv(t, withDesktopKey)
+	folder := realRoot(t, t.TempDir())
+	held, release := make(chan struct{}), make(chan struct{})
+	atLock := make(chan struct{}, 2)
+	e.srv.roots.beforeLock = func(string) { atLock <- struct{}{} }
+	var once sync.Once
+	e.srv.roots.beforeAdd = func(string) {
+		once.Do(func() {
+			close(held)
+			<-release
+		})
+	}
+	type answer struct {
+		status int
+		out    map[string]any
+	}
+	first, second := make(chan answer, 1), make(chan answer, 1)
+	go func() {
+		status, out := e.allow(folder, "")
+		first <- answer{status, out}
+	}()
+	<-atLock
+	<-held
+	go func() {
+		status, out := e.allow(folder, "")
+		second <- answer{status, out}
+	}()
+	// The second press is at the lock, the first holding it.
+	<-atLock
+	close(release)
+	a, b := <-first, <-second
+	if a.status != http.StatusOK || a.out["added"] != true {
+		t.Fatalf("the first press: %d %v", a.status, a.out)
+	}
+	if b.status != http.StatusOK || b.out["added"] != false {
+		t.Fatalf("the second press: %d %v", b.status, b.out)
+	}
+	if got := e.srv.roots.paths(); len(got) != 2 || got[1] != folder {
+		t.Fatalf("the roots: %v", got)
+	}
+}

@@ -18,7 +18,7 @@ const workbench = /^http:\/\/(127\.0\.0\.1|localhost):\d+\//
 type Bridge = {
   token(): Promise<string>
   allowFolder?(path: string, confirmed?: string): Promise<{ ok: boolean; root?: string; saved?: boolean; code?: string }>
-  serverState(): Promise<{ state: string; url: string; pid?: number }>
+  serverState(): Promise<{ state: string; url: string; origin?: string; pid?: number }>
   restartServer(): Promise<void>
 }
 
@@ -48,7 +48,13 @@ test('a folder outside is allowed from the app with no restart, kept in its sett
   const config = join(root, 'conductor.json')
   writeFileSync(config, JSON.stringify({ catalog: { disableDefaults: true, agents: [{ id: 'cat', name: 'cat', command: ['/bin/cat'] }] } }))
   const wrapper = join(root, 'conductor')
-  writeFileSync(wrapper, `#!/bin/sh\ncmd=$1\nshift\nCONDUCTOR_REACH=off CONDUCTOR_RENDEZVOUS=0 exec ${JSON.stringify(bin)} "$cmd" --config ${JSON.stringify(config)} "$@"\n`)
+  // The wrapper keeps the first line the app writes on the server's stdin (the token and the key), so that the test knows their
+  // values, and hands the server that line and the rest of stdin.
+  const secretsFile = join(root, 'secrets.json')
+  writeFileSync(
+    wrapper,
+    `#!/bin/sh\ncmd=$1\nshift\nIFS= read -r line\nprintf '%s\\n' "$line" > ${JSON.stringify(secretsFile)}\n{ printf '%s\\n' "$line"; cat; } | CONDUCTOR_REACH=off CONDUCTOR_RENDEZVOUS=0 ${JSON.stringify(bin)} "$cmd" --config ${JSON.stringify(config)} "$@"\n`,
+  )
   chmodSync(wrapper, 0o755)
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('CONDUCTOR_')) env[k] = v
@@ -60,7 +66,7 @@ test('a folder outside is allowed from the app with no restart, kept in its sett
     const page = started.page
     // The bridge as the workbench's page has it (window.conductorDesktop).
     const desk = () => (window as unknown as { conductorDesktop: Bridge }).conductorDesktop
-    const state = () => page.evaluate(`(${desk})().serverState()`) as Promise<{ state: string; url: string; pid?: number }>
+    const state = () => page.evaluate(`(${desk})().serverState()`) as Promise<{ state: string; url: string; origin?: string; pid?: number }>
     const token = (await page.evaluate(`(${desk})().token()`)) as string
     const api = async (method: string, origin: string, path: string, body?: unknown) => {
       const res = await fetch(origin + path, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -68,7 +74,10 @@ test('a folder outside is allowed from the app with no restart, kept in its sett
     }
     const before = await state()
     expect(before.state).toBe('running')
-    const origin = new URL(before.url).origin
+    // The app talks to the address its server bound.
+    expect(before.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+    expect(new URL(page.url()).origin).toBe(before.origin)
+    const origin = before.origin!
     // whoami says the app may allow a folder; the folder is outside, and a launch there is refused.
     expect((await api('GET', origin, '/api/whoami')).body?.folders).toBe('app')
     expect((await api('GET', origin, `/api/roots/check?path=${encodeURIComponent(outside)}`)).body?.state).toBe('outside')
@@ -92,9 +101,22 @@ test('a folder outside is allowed from the app with no restart, kept in its sett
     const there = await api('POST', origin, '/api/sessions', { agentId: 'cat', cwd: outside })
     expect(there.status).toBe(201)
     expect(there.body?.cwd).toBe(outside)
-    // Neither the settings file nor the app's log holds the key the app gave its server.
-    const logs = readFileSync(join(userData, 'logs', 'main.log'), 'utf8') + readFileSync(join(userData, 'logs', 'server.log'), 'utf8')
-    expect(logs).not.toMatch(/CONDUCTOR_DESKTOP_KEY=/)
+    // The token and the key the app handed its server, by their values: in neither the settings file nor either log, and in
+    // neither the server's starting environment nor its command line as the system shows them.
+    const secrets = JSON.parse(readFileSync(secretsFile, 'utf8')) as { workbenchToken: string; desktopKey: string }
+    expect(secrets.workbenchToken).toBe(token)
+    expect(secrets.desktopKey).toMatch(/^[0-9a-f]{64}$/)
+    const kept = [
+      readFileSync(join(userData, 'settings.json'), 'utf8'),
+      readFileSync(join(userData, 'logs', 'main.log'), 'utf8'),
+      readFileSync(join(userData, 'logs', 'server.log'), 'utf8'),
+      readFileSync(`/proc/${before.pid}/environ`, 'utf8'),
+      readFileSync(`/proc/${before.pid}/cmdline`, 'utf8'),
+    ]
+    for (const text of kept) {
+      expect(text.includes(secrets.workbenchToken)).toBe(false)
+      expect(text.includes(secrets.desktopKey)).toBe(false)
+    }
 
     // Restart server: the folder comes back from the saved settings.
     // The restart moves the page to the new server's origin: the call is started, not awaited for its answer.
@@ -109,7 +131,7 @@ test('a folder outside is allowed from the app with no restart, kept in its sett
         { timeout: 60_000 },
       )
       .toBe(true)
-    const nextOrigin = new URL(next.url).origin
+    const nextOrigin = next.origin!
     expect((await api('GET', nextOrigin, `/api/roots/check?path=${encodeURIComponent(outside)}`)).body?.state).toBe('allowed')
     await app.close()
     app = undefined

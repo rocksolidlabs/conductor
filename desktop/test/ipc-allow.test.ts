@@ -18,6 +18,8 @@ let stored: DesktopSettings = defaultSettings('/home/me', '/ud')
 const asked: string[] = []
 let answer: () => { status: number; body: unknown } = () => ({ status: 200, body: { root: '/srv/proj', added: true } })
 const restarts: number[] = []
+// While set, every request the press sends is held until it resolves: the press is under way.
+let gate: Promise<void> | null = null
 const folders = new FolderAllow({
   get: () => stored,
   set: (s) => void (stored = s),
@@ -26,6 +28,7 @@ const folders = new FolderAllow({
   key: () => KEY,
   fetch: async (url) => {
     asked.push(url)
+    if (gate) await gate
     const a = answer()
     return { status: a.status, json: async () => a.body }
   },
@@ -163,5 +166,29 @@ describe('conductor:allowFolder', () => {
     } finally {
       trusted = origin
     }
+  })
+
+  it("holds a Settings save and a restart the page asks for behind a press under way, and refuses a press meanwhile", async () => {
+    let release!: () => void
+    gate = new Promise<void>((r) => (release = r))
+    const w = win(origin + '/')
+    const before = restarts.length
+    const n = asked.length
+    // A press through the bridge, its request held.
+    const press = call(w.from(w.main), '/srv/held', '') as Promise<unknown>
+    await vi.waitFor(() => expect(asked.length).toBe(n + 1))
+    // A save that restarts the server, and a restart, both asked while the press is under way.
+    const save = handlers.get('conductor:settings:set')!(w.from(w.main), { yolo: !stored.yolo }) as Promise<unknown>
+    const restart = handlers.get('conductor:restartServer')!(w.from(w.main)) as Promise<unknown>
+    await new Promise((r) => setImmediate(r))
+    expect(restarts.length).toBe(before)
+    // A press asked while they wait comes after the one under way, and is busy: it asks nothing.
+    const second = call(w.from(w.main), '/srv/other', '') as Promise<unknown>
+    gate = null
+    release()
+    await Promise.all([press, save, restart])
+    expect(await second).toMatchObject({ ok: false, code: 'busy' })
+    expect(asked.length).toBe(n + 1)
+    expect(restarts.length).toBe(before + 2)
   })
 })
