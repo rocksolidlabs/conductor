@@ -77,6 +77,9 @@ async function lookAgainNow() {
   start.value?.querySelector<HTMLElement>('[data-welcome-again]')?.focus()
 }
 
+/** The sessions that ended, offered to pick up (WelcomeResume): with one drawn, the title says nothing is running. */
+const resumeRows = ref(0)
+
 /** The other ways to start, folded at every visit. */
 const unfolded = ref(false)
 const foldId = useId()
@@ -104,8 +107,8 @@ async function loadExamples() {
         <img src="/brand/conductor-mark.svg" alt="" class="size-8 flex-none dark:hidden" />
         <img src="/brand/conductor-mark-reversed.svg" alt="" class="hidden size-8 flex-none dark:block" />
         <div class="min-w-0">
-          <h2 class="text-base font-semibold text-highlighted" data-welcome-title>Welcome to Conductor</h2>
-          <p class="text-balance text-sm text-muted" data-welcome-sentence>Run your coding agents here, and answer them from anywhere.</p>
+          <h2 class="text-base font-semibold text-highlighted" data-welcome-title>{{ resumeRows ? 'Nothing is running' : 'Welcome to Conductor' }}</h2>
+          <p v-if="!resumeRows" class="text-balance text-sm text-muted" data-welcome-sentence>Run your coding agents here, and answer them from anywhere.</p>
         </div>
       </div>
 
@@ -157,6 +160,7 @@ async function loadExamples() {
               />
             </template>
           </p>
+          <WelcomeResume @rows="resumeRows = $event" />
         </template>
         <template v-else-if="offer">
           <!-- No agent but the shell: said in plain text (a standing fact, never amber), with the two ways on. -->
