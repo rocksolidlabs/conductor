@@ -1,0 +1,41 @@
+Usage: helper [OPTIONS] [COMMAND]
+
+A made-up agent for Conductor's tests, its help in clap's form with no
+blank line between its options.
+
+Commands:
+  login    Signs in
+  help     Shows help
+
+Options:
+  -v, --version
+          Prints the version
+      --model <model>
+          The model to use (use 'auto' to let it pick)
+      --reasoning-effort <level>
+          How hard it thinks [possible values: low, medium, high]
+  -r, --resume [<value>]
+          Goes on with a session (optionally named)
+      --session-id <id>
+          The session's id
+      --allow-tool [<tools>...]
+          Tools that run without a question
+      --allow-all-tools
+          Every tool runs without a question [env: HELPER_ALLOW_ALL=]
+      --allow-all-paths
+          Every path may be read and written
+      --allow-all-urls
+          Every address may be fetched
+      --allow-all
+          All of the three above
+      --yolo
+          All of the three above
+  -C <directory>
+          Changes to the folder first
+      --add-dir <directory>
+          Another folder it may use
+  -h, --help
+          Prints help
+
+Help Topics:
+  config       How settings are read
