@@ -727,6 +727,9 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 	if json.Unmarshal(input, &fields) != nil {
 		return false
 	}
+	if s.nestedDenied(fields, deny) {
+		return true
+	}
 	switch plainOf(tool) {
 	case "command":
 		// A command that names its own folder (Codex's) is run there: a
@@ -773,6 +776,35 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 				}
 			}
 			if s.pathDenied(v, deny) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nestedDenied says a call whose input holds its raw input, its locations
+// and its content beside each other (an ACP agent's tool call: rawInput,
+// locations, content's diffs) names a place of the deny list in any of
+// them, whatever the call's kind: the raw input judged as a command's and a
+// file tool's input are, each location's and each diff's path. The caller
+// holds s.mu.
+func (s *Local) nestedDenied(fields map[string]any, deny []string) bool {
+	if raw, ok := fields["rawInput"].(map[string]any); ok {
+		if commandNamesDenied(commandText(raw), deny, s.info.Cwd) {
+			return true
+		}
+		for _, k := range []string{"file_path", "filePath", "notebook_path", "path", "abs_path", "cwd"} {
+			if v, ok := raw[k].(string); ok && v != "" && s.pathDenied(v, deny) {
+				return true
+			}
+		}
+	}
+	for _, key := range []string{"locations", "content"} {
+		list, _ := fields[key].([]any)
+		for _, item := range list {
+			m, _ := item.(map[string]any)
+			if v, ok := m["path"].(string); ok && v != "" && s.pathDenied(v, deny) {
 				return true
 			}
 		}

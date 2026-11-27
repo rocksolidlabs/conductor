@@ -991,3 +991,36 @@ func TestAnInStreamRequestDuringAMoveOrARestartIsDenied(t *testing.T) {
 		})
 	}
 }
+
+// An Agent Client Protocol agent's call is floored by every place it names,
+// whatever its kind: its raw input's command line and paths, its
+// locations, its diffs' paths; and its kind "execute" is a command's plain
+// words.
+func TestAnACPCallIsFlooredByEveryPlaceItNames(t *testing.T) {
+	data := realDir(t, t.TempDir())
+	secret := filepath.Join(data, "secrets.json")
+	s, _, f := protocolSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	f.TurnStarted("")
+	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	for i, tc := range []struct {
+		name, tool, input string
+		floored           bool
+	}{
+		{"a command in its raw input", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + secret}}), true},
+		{"a path in its raw input", "other", j(map[string]any{"kind": "other", "title": "x", "rawInput": map[string]any{"path": secret}}), true},
+		{"a location", "read", j(map[string]any{"kind": "read", "title": "x", "locations": []any{map[string]any{"path": secret}}}), true},
+		{"a diff's path", "edit", j(map[string]any{"kind": "edit", "title": "x", "content": []any{map[string]any{"type": "diff", "path": secret, "newText": "x"}}}), true},
+		{"nothing of the list", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "make test"}}), false},
+	} {
+		call := fmt.Sprintf("c-%d", i)
+		f.ToolStarted(ToolStep{Ref: call, Name: tc.tool, Input: []byte(tc.input)})
+		e, v := inStreamAsked(t, s, f, "req-"+call, call, tc.tool, tc.input)
+		if !tc.floored {
+			if v != nil || e.State != PermissionOpen || e.Plain != "command" {
+				t.Fatalf("%s: %+v, replied %+v", tc.name, e, v)
+			}
+			continue
+		}
+		deniedWith(t, s, e, v, FloorWords)
+	}
+}

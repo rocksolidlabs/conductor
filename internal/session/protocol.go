@@ -1919,11 +1919,11 @@ func canonicalJSON(input []byte) []byte {
 // plainOf is the closed set of a request's plain words by its tool.
 func plainOf(tool string) string {
 	switch strings.ToLower(tool) {
-	case "bash", "shell", "exec", "command", "commandexecution":
+	case "bash", "shell", "exec", "command", "commandexecution", "execute":
 		return "command"
-	case "edit", "write", "multiedit", "notebookedit", "filechange":
+	case "edit", "write", "multiedit", "notebookedit", "filechange", "delete", "move":
 		return "file"
-	case "read", "grep", "glob", "ls":
+	case "read", "grep", "glob", "ls", "search":
 		return "read"
 	}
 	return "tool"
