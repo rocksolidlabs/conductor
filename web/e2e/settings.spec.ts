@@ -29,6 +29,19 @@ function pickerFolder(root: string, name: string): { dir: string; pick: string }
   return { dir, pick }
 }
 
+/** Adds a folder agents can use through Add folder and the picker, typed into its path: its chip shows. */
+async function addFolder(page: Page, dir: string) {
+  await page.locator('[data-pick-dir="root"]').click()
+  const picker = page.getByRole('dialog')
+  await expect(picker).toContainText('Add a folder agents can use')
+  await picker.locator('[data-dir-picker-path]').fill(dir)
+  await picker.locator('[data-dir-picker-path]').press('Enter')
+  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(dir)
+  await picker.locator('[data-dir-picker-use]').click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.locator(`[data-root-chip="${dir}"]`)).toBeVisible()
+}
+
 test('the folder picker browses the server, outside the roots too, and fills the field', async ({ page, state }) => {
   const own = pickerFolder(state.root, 'settings-picker')
   const form = {
@@ -88,7 +101,7 @@ test('the folder picker browses the server, outside the roots too, and fills the
   await expect(picker.locator('[data-dir-picker-note]')).toHaveCount(0)
   await picker.locator('[data-dir-picker-use]').click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
-  await expect(page.getByLabel('Default working directory', { exact: true })).toHaveValue(own.pick)
+  await expect(page.getByLabel('Default folder', { exact: true })).toHaveValue(own.pick)
   // One column that reads top to bottom (#366), each card below the one before it, and the save bar in the panel's footer, in
   // reach wherever the page is scrolled. How wide it is, and the navigation beside it (#433), are the tests below.
   const cards = await page.locator('[data-settings-sections] > [data-settings-section]').evaluateAll((els) => els.map((e) => ({ top: e.getBoundingClientRect().top, bottom: e.getBoundingClientRect().bottom })))
@@ -750,8 +763,7 @@ test("a Save that cannot send Brakeman's section with the app's settings is refu
     await brakemanAdvanced(page)
     const save = page.locator('[data-save-settings]')
     const error = page.locator('[data-settings-error]')
-    const dataDir = page.getByLabel('Data directory', { exact: true })
-    const roots = page.getByLabel('Allowed roots')
+    const dataDir = page.getByLabel('Where Conductor keeps its data', { exact: true })
     const cwd = page.locator('[data-brakeman-cwd] input, input[data-brakeman-cwd]').first()
     /** Nothing was sent: no set of the app's, Brakeman's settings as they were. */
     const nothingSent = async () => {
@@ -772,16 +784,19 @@ test("a Save that cannot send Brakeman's section with the app's settings is refu
     await dataDir.fill(state.data)
 
     // A new root, and Brakeman's folder under it: the folder would be checked against the roots the server has now.
-    await roots.fill(`${state.root}\n${state.root}-more`)
-    await cwd.fill(`${state.root}-more`)
+    const more = `${state.root}-more`
+    mkdirSync(more, { recursive: true })
+    await addFolder(page, more)
+    await cwd.fill(more)
     await cwd.press('Escape')
     await save.click()
     await expect(error).toHaveText(
       "Brakeman's folder is checked against the allowed roots the server has now, and this Save changes them: save the allowed roots alone first, then Brakeman's folder. Nothing was sent, Brakeman's settings with the rest. Your edits are kept.",
     )
     await nothingSent()
-    await expect(cwd).toHaveValue(`${state.root}-more`)
-    await roots.fill(state.root)
+    await expect(cwd).toHaveValue(more)
+    await page.locator(`[data-root-chip="${more}"] [data-root-remove]`).click()
+    await expect(page.locator(`[data-root-chip="${more}"]`)).toHaveCount(0)
     await cwd.fill(start.cwd ?? '')
     await cwd.press('Escape')
 
@@ -1039,7 +1054,7 @@ for (const platform of ['linux', 'win32'] as const) {
       const input = await boxOf(field.locator('input'))
       expect(input.left).toBeGreaterThan(label.right)
       expect(input.width).toBeLessThanOrEqual(576)
-      const roots = await boxOf(page.getByLabel('Allowed roots'))
+      const roots = await boxOf(page.locator('[data-allowed-roots] ul'))
       expect(roots.width).toBeLessThanOrEqual(576)
       await expect(page.locator('[data-settings-save-bar]')).toBeInViewport()
       // The navigation stays in place as the sections scroll, and marks the section in view; each entry brings its own into view.
@@ -1117,7 +1132,7 @@ for (const platform of ['linux', 'win32'] as const) {
       // The fields stack, and the folder buttons stay beside their inputs.
       const field = page.locator('[data-switchyard-server]')
       expect((await boxOf(field.locator('input'))).top).toBeGreaterThan((await boxOf(field.locator('label'))).bottom)
-      const cwd = await boxOf(page.getByLabel('Default working directory', { exact: true }))
+      const cwd = await boxOf(page.getByLabel('Default folder', { exact: true }))
       const pick = await boxOf(page.locator('[data-pick-dir="defaultCwd"]'))
       expect(pick.left).toBeGreaterThanOrEqual(cwd.right)
       expect(Math.abs(pick.top - cwd.top)).toBeLessThanOrEqual(4)
@@ -1479,4 +1494,53 @@ test("Settings' agents: not installed and an identified agent's badge are neithe
     expect(amber).not.toContain(await colour(b))
     expect(green).not.toContain(await colour(b))
   }
+})
+
+// The folders agents can use are a list with Add folder, checked as they are picked (UX3 R55): a chip a folder, the last one kept, a
+// Default folder outside every folder said under its field and holding Save, a data folder inside one said and not holding it.
+test('the folders agents can use: Add folder makes a chip, a chip goes, the last stays, and the folder fields say what is wrong at once', async ({ page, state }) => {
+  test.setTimeout(20 * 15_000)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  const save = page.locator('[data-save-settings]')
+  await expect(save).toBeDisabled()
+  await expect(page.getByText('Allowed roots')).toHaveCount(0)
+  // Add folder, through the picker: a chip, and Save offered.
+  const own = pickerFolder(state.root, 'settings-roots')
+  await addFolder(page, own.pick)
+  await expect(save).toBeEnabled()
+  // A chip's remove takes it out, and the page is as saved again.
+  await page.locator(`[data-root-chip="${own.pick}"]`).getByRole('button', { name: `Remove ${own.pick}` }).click()
+  await expect(page.locator(`[data-root-chip="${own.pick}"]`)).toHaveCount(0)
+  await expect(save).toBeDisabled()
+  // The last folder cannot be taken away.
+  const last = page.locator(`[data-root-chip="${state.root}"]`)
+  await expect(last.locator('[data-root-remove]')).toBeDisabled()
+  await expect(last.locator('[title="Agents need at least one folder."]')).toHaveCount(1)
+  // A Default folder outside every folder agents can use: said under the field, Save held.
+  const cwd = page.getByLabel('Default folder', { exact: true })
+  await cwd.fill('/srv/elsewhere')
+  const field = page.locator('[data-default-folder]')
+  await expect(field).toContainText('Pick a folder inside one that agents can use.')
+  await expect(save).toBeDisabled()
+  await expect(page.locator('[data-settings-blocked]')).toBeVisible()
+  await cwd.fill(state.root)
+  await expect(field).not.toContainText('Pick a folder inside one that agents can use.')
+  // A data folder inside a folder agents can use: said, Save not held.
+  const data = page.getByLabel('Where Conductor keeps its data', { exact: true })
+  await data.fill(join(state.root, 'data-here'))
+  await expect(page.locator('[data-data-folder]')).toContainText('Keep this outside the folders agents can use.')
+  await expect(save).toBeEnabled()
+  await data.fill(state.data)
+  await expect(save).toBeDisabled()
+  // A long path wraps inside its chip and keeps its end in view, its whole form in its title; nothing scrolls sideways.
+  const deep = join(state.root, 'settings-roots', 'a-folder-with-a-rather-long-name-that-goes-on', 'and-on-and-on-past-the-row', 'the-end-of-it')
+  mkdirSync(deep, { recursive: true })
+  await addFolder(page, deep)
+  const chip = page.locator(`[data-root-chip="${deep}"] [data-mono="path"]`)
+  await expect(chip).toHaveAttribute('title', deep)
+  await uncut(chip)
+  expect(await body(page).evaluate((b) => b.scrollWidth <= b.clientWidth)).toBe(true)
 })
