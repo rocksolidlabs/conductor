@@ -309,3 +309,15 @@ describe('promptParts (UX3 R10)', () => {
     expect(promptParts({ text, expanded: true }).map((p) => p.text).join('')).toBe(text)
   })
 })
+
+describe('promptParts, as the agent reads a mention (UX3 R10)', () => {
+  it('drawsAQuotedPathWholeAndPunctuationAsText', () => {
+    expect(promptParts({ text: 'read @"my file.txt", then @notes.txt.', expanded: true })).toEqual([
+      { kind: 'text', text: 'read ' },
+      { kind: 'mention', text: '@"my file.txt"' },
+      { kind: 'text', text: ', then ' },
+      { kind: 'mention', text: '@notes.txt' },
+      { kind: 'text', text: '.' },
+    ])
+  })
+})

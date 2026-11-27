@@ -87,14 +87,43 @@ export function fileRows(paths: readonly string[]): MenuRow[] {
   return rows
 }
 
+/** A file a line names with `@` (UX3 R10): where its mention lies in the line, and the path it names. */
+export interface NamedFile {
+  start: number
+  end: number
+  path: string
+}
+
+/** What a bare mention's end does not hold: the punctuation a sentence puts after a word. */
+const MENTION_TRAIL = /[.,;:!?)\]}>'"]+$/
+
 /**
- * The first `@` word of a line, at a word's start, that names a file outside the session's folder (UX3 R10): one that begins with `/`
- * or `~`, or holds a `..` part. '' for none.
+ * The files a line names, as the agent reads them: `@` at a word's start, then a path in double quotes (one mention, its spaces and
+ * all) or a word, the punctuation after a bare word left out (`@notes.txt,` names notes.txt).
+ */
+export function mentionsIn(text: string): NamedFile[] {
+  const out: NamedFile[] = []
+  for (const m of text.matchAll(/(^|\s)@("[^"\n]*"|\S+)/g)) {
+    const start = m.index! + m[1]!.length
+    let body = m[2]!
+    let path: string
+    if (body.length >= 2 && body.startsWith('"') && body.endsWith('"')) path = body.slice(1, -1)
+    else {
+      body = body.replace(MENTION_TRAIL, '')
+      path = body
+    }
+    if (path) out.push({ start, end: start + 1 + body.length, path })
+  }
+  return out
+}
+
+/**
+ * The first file a line names that lies outside the session's folder (UX3 R10): a path that begins with `/` or `~`, or holds a `..`
+ * part, quoted or not. '' for none.
  */
 export function outsideMention(text: string): string {
-  for (const m of text.matchAll(/(?:^|\s)@(\S+)/g)) {
-    const p = m[1]!
-    if (p.startsWith('/') || p.startsWith('~') || p.split('/').includes('..')) return p
+  for (const f of mentionsIn(text)) {
+    if (f.path.startsWith('/') || f.path.startsWith('~') || f.path.split('/').includes('..')) return f.path
   }
   return ''
 }

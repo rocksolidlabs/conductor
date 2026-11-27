@@ -37,6 +37,12 @@ export class RowDrafts {
     const d = this.drafts.get(id)
     if (after === '') {
       this.drafts.delete(id)
+      // A message the owner refused while the person wrote another comes back once the box is empty (putBack).
+      const back = this.back.get(id)
+      if (back !== undefined) {
+        this.back.delete(id)
+        this.drafts.set(id, { text: back })
+      }
       return
     }
     this.drafts.set(id, { text: after, question: bindDraft(d?.text ?? '', after, d?.question, current, d?.kept) })
@@ -66,6 +72,19 @@ export class RowDrafts {
     else if (d?.text === line) this.drafts.set(id, { ...d, kept: true })
   }
 
+  /** Messages the owner refused (`not_sent`) while the person had begun another line in that box, by session. */
+  private readonly back = new Map<string, string>()
+
+  /**
+   * A message the owner refused (`not_sent`) comes back into its own session's box, as a message bound to no question (UX3 R10): at
+   * once when that box is empty, else as soon as the person empties it. It is never dropped for a line typed meanwhile.
+   */
+  putBack(id: string, text: string): void {
+    if (!text) return
+    if (this.text(id) === '') this.drafts.set(id, { text })
+    else this.back.set(id, text)
+  }
+
   /**
    * The line bound to `from` is bound to `to` now (UX3 R5): a line begun while its question had no id yet takes the id when it comes.
    * Any other line is left as it is.
@@ -86,6 +105,7 @@ export class RowDrafts {
     const listed = new Set(ids)
     for (const id of [...this.drafts.keys()]) if (!listed.has(id)) this.drafts.delete(id)
     for (const id of [...this.away.keys()]) if (!listed.has(id)) this.away.delete(id)
+    for (const id of [...this.back.keys()]) if (!listed.has(id)) this.back.delete(id)
   }
 }
 
@@ -96,16 +116,19 @@ export type RowDraftsView = Pick<RowDrafts, 'get' | 'text' | 'edit' | 'settle'>
 export const ROW_DRAFTS: InjectionKey<RowDraftsView> = Symbol('rowDrafts')
 
 /**
- * Which boxes hold a line the person typed or pasted themselves (UX3 R10, I19): only such a line may go for the agent to expand. A
- * trusted input in the box or the person's own pick from its list makes the line theirs (`typed`); a line the page puts there (a
- * refused one coming back, any text set by code) is the page's (`set`) until the person changes it; a send lets it go (`sent`). A
- * line kept for a session while the person was away (useBoxDrafts) keeps its owner: it is what they typed, never sent. Pure.
+ * Which boxes hold a line the person typed or pasted themselves (UX3 R10, I19): only such a line may go for the agent to expand. It
+ * records, by session, the text the person's own input or own pick left in the box (`typed`); the line is theirs while the box holds
+ * exactly that text (`is`). Any change the person did not make (code that writes the box, a line the page puts back, a drop) leaves
+ * a text the record does not hold, or ends the record (`set`), so it is the page's line until the person changes it. A send ends it
+ * (`sent`). A line kept for a session while the person was away (useBoxDrafts) keeps its record: it is what they typed, never sent.
+ * Pure.
  */
 export class OwnLines {
-  private readonly by = new Set<string>()
+  private readonly by = new Map<string, string>()
 
-  typed(id: string): void {
-    this.by.add(id)
+  typed(id: string, text: string): void {
+    if (text === '') this.by.delete(id)
+    else this.by.set(id, text)
   }
 
   set(id: string): void {
@@ -116,13 +139,13 @@ export class OwnLines {
     this.by.delete(id)
   }
 
-  is(id: string): boolean {
-    return this.by.has(id)
+  is(id: string, text: string): boolean {
+    return text !== '' && this.by.get(id) === text
   }
 
   /** Drops the sessions no longer listed. */
   keep(ids: Iterable<string>): void {
     const listed = new Set(ids)
-    for (const id of [...this.by]) if (!listed.has(id)) this.by.delete(id)
+    for (const id of [...this.by.keys()]) if (!listed.has(id)) this.by.delete(id)
   }
 }

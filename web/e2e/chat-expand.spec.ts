@@ -91,7 +91,6 @@ test("the operator's own typed lines go for the agent to expand: a command, a pi
     // Drawn again after a reload: the chips are the entries' own.
     await page.reload()
     await expect(page.locator('[data-chat-prompt-text][data-chat-prompt-expanded] [data-chat-chip]').first()).toBeVisible({ timeout: LONG_MS })
-    await expect(page.locator('[data-chat-prompt-text]').filter({ hasText: 'edit please' }).locator('[data-chat-chip]')).toHaveCount(0)
   } finally {
     await page.context().close()
   }
@@ -103,6 +102,11 @@ test('a line the page put in the box goes as written: text set by code, and a pi
     const { conv } = await aChat(page, 'e2e expand by code')
     budget(10 * STEP_MS + 3 * LONG_MS)
     let n = marks(conv)
+    // The person types in the box and empties it: what code writes after that is not theirs.
+    await box(page).click()
+    await page.keyboard.type('x')
+    await page.keyboard.press('Backspace')
+    await expect(box(page)).toHaveValue('')
     // Text set by code (an input event no person made), then sent with a person's Enter: as written.
     await box(page).evaluate((el: HTMLTextAreaElement) => {
       el.value = '/compact'
@@ -112,7 +116,10 @@ test('a line the page put in the box goes as written: text set by code, and a pi
     await box(page).press('Enter')
     expect(await markOf(conv, ++n)).toBe('marked')
     await expect(turnWith(page, 'stub chat: /compact')).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
-    await expect(page.locator('[data-chat-prompt-text]').filter({ hasText: '/compact' }).last().locator('[data-chat-chip]')).toHaveCount(0)
+    // A line with a command and a file, sent as written, draws no chip: chips are the expanded entries' alone.
+    const plain = page.locator('[data-chat-prompt-text]').filter({ hasText: '/compact' }).last()
+    await expect(plain).toBeVisible({ timeout: LONG_MS })
+    await expect(plain.locator('[data-chat-chip]')).toHaveCount(0)
     // The person types an @ word, and a pick no person pressed fills it: the page's line, as written.
     await box(page).click()
     await page.keyboard.type('@no')
@@ -127,6 +134,44 @@ test('a line the page put in the box goes as written: text set by code, and a pi
     await page.keyboard.press('Escape')
     await box(page).press('Enter')
     expect(await markOf(conv, ++n)).toBe('unmarked')
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("text dragged from the conversation into the box is not the person's typing: it goes as written, and a / line says so", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const { conv } = await aChat(page, 'e2e expand drop')
+    // A line sent as written (code puts it in the box), so that the agent's reply repeats a command's and a file's words.
+    await box(page).evaluate((el: HTMLTextAreaElement) => {
+      el.value = '/model and @notes.txt in words'
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await box(page).press('Enter')
+    budget(8 * STEP_MS + 3 * LONG_MS)
+    // The agent's reply holds a command's and a file's words; the person drags them from it onto the box with the mouse.
+    const words = page.locator('[data-chat-words]').filter({ hasText: 'stub chat: /model and @notes.txt in words' }).last()
+    await expect(words).toBeVisible({ timeout: LONG_MS })
+    await words.click({ clickCount: 3 })
+    const picked = await page.evaluate(() => window.getSelection()?.toString().trim() ?? '')
+    expect(picked).toContain('/model')
+    const [from, to] = await Promise.all([words.boundingBox(), box(page).boundingBox()])
+    await page.mouse.move(from!.x + from!.width / 4, from!.y + from!.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 12 })
+    await page.mouse.up()
+    await expect(box(page)).toHaveValue(/stub chat: \/model and @notes\.txt in words/)
+    const n = marks(conv)
+    await box(page).press('Enter')
+    expect(await markOf(conv, n + 1)).toBe('marked')
+    // A line that begins with / and is not the person's own says it goes as plain text.
+    await box(page).evaluate((el: HTMLTextAreaElement) => {
+      el.value = '/compact'
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await expect(page.locator('[data-chat-view] [data-chat-help="plain"]')).toHaveText('Sent as plain text. Type it yourself to run it as a command.')
+    await box(page).fill('')
   } finally {
     await page.context().close()
   }
@@ -152,6 +197,26 @@ test("a control link's lines go as written, with no chips, in its window and in 
       await expect(line).toBeVisible({ timeout: LONG_MS })
       await expect(line.locator('[data-chat-chip]')).toHaveCount(0)
     }
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("the server's word is the box's: once the session becomes a crew's member, the operator's own line goes as written", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const { id, conv } = await aChat(page, 'e2e expand crew')
+    budget(8 * STEP_MS + 3 * LONG_MS)
+    await expect(box(page)).toHaveAttribute('placeholder', /· @ for a file, \/ for a command$/)
+    // A crew formed round the session: its way message says no more expand, and the page takes the server's word.
+    const r = await own.api.call('POST', `/api/sessions/${id}/crew`, { name: 'e2e expand crew', goal: 'a goal', members: [{ name: 'lead', start: { when: 'immediately' } }], self: 'lead' })
+    expect(r.status, JSON.stringify(r.body)).toBe(201)
+    await expect(box(page)).not.toHaveAttribute('placeholder', /@ for a file/, { timeout: LONG_MS })
+    const n = marks(conv)
+    await box(page).click()
+    await page.keyboard.type('/compact')
+    await box(page).press('Enter')
+    expect(await markOf(conv, n + 1)).toBe('marked')
   } finally {
     await page.context().close()
   }

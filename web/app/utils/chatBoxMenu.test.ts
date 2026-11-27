@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { commandAt, commandRows, fileRows, fromFolder, MENU_ROWS, pickCommand, wholeCommand, mentionAt, outsideMention, pickMention, safePath, startsWithSlash } from './chatBoxMenu'
+import { commandAt, commandRows, fileRows, fromFolder, MENU_ROWS, mentionAt, mentionsIn, outsideMention, pickCommand, pickMention, safePath, startsWithSlash, wholeCommand } from './chatBoxMenu'
 
 describe("the chat box's list for @", () => {
   it('triggerAtAWordsStart: an @ word at the start or after white space, the cursor in it or at its end', () => {
@@ -99,5 +99,19 @@ describe("the chat box's list for / (UX3 R11)", () => {
     expect(wholeCommand(list, '')).toBe(false)
     expect(pickCommand('/fi', commandAt('/fi', 3)!, 'fix-issue')).toEqual({ text: '/fix-issue ', caret: 11 })
     expect(pickCommand('/fi 12', commandAt('/fi 12', 3)!, 'fix-issue')).toEqual({ text: '/fix-issue 12', caret: 11 })
+  })
+})
+
+describe('mentionsIn (UX3 R10): the files a line names, as the agent reads them', () => {
+  it('a quoted path is one mention; a sentence\'s punctuation after a bare one is left out', () => {
+    expect(mentionsIn('look at @notes.txt, then @"my file.txt".')).toEqual([
+      { start: 8, end: 18, path: 'notes.txt' },
+      { start: 25, end: 39, path: 'my file.txt' },
+    ])
+    expect(mentionsIn('mail a@b and (@src/a.go)')).toEqual([])
+    expect(mentionsIn('see @src/a.go)')).toEqual([{ start: 4, end: 13, path: 'src/a.go' }])
+    expect(outsideMention('@"~/.ssh/id_rsa" please')).toBe('~/.ssh/id_rsa')
+    expect(outsideMention('read @/etc/hosts.')).toBe('/etc/hosts')
+    expect(outsideMention('read @"notes and more.txt"')).toBe('')
   })
 })

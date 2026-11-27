@@ -6,8 +6,8 @@ import type { OwnServer } from './own-server'
 
 // The chat box's list for `@` (UX3 R6), on a server of the spec's own with the chat's stub: an `@` word lists the folder's files
 // whose name holds it, read from the find's answer (never a clock); Enter picks and writes `@<path> `, the list goes, and the
-// operator's own line goes for the agent to attach the file (UX3 R10); Escape closes it and keeps the text; it stays open through a redraw the spec causes; a control
-// link's box gets the same list; every row uncut and inside the window at 2000 x 810, 1440 x 900 and 390 x 844, at rest.
+// operator's own line goes for the agent to attach the file (UX3 R10); Escape closes it and keeps the text; it stays open through
+// a redraw the spec causes; a control link's box, whose lines go as written, offers none; every row uncut and inside the window at 2000 x 810, 1440 x 900 and 390 x 844, at rest.
 test.describe.configure({ mode: 'serial' })
 
 let own: OwnServer
@@ -72,7 +72,7 @@ test('an @ word lists the files that match; Enter writes the path, the list goes
   }
 })
 
-test('the list stays open through a turn that ends while it shows, and a control link gets the same list', async ({ browser }) => {
+test('the list stays open through a turn that ends while it shows; a control link\'s box, whose lines go as written, offers none', async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
   try {
     const { id, conv } = await aChat(page, 'e2e files menu redraw')
@@ -93,7 +93,11 @@ test('the list stays open through a turn that ends while it shows, and a control
     await expect(box(c.g)).toBeVisible({ timeout: LONG_MS })
     await box(c.g).click()
     await c.g.keyboard.type('@no')
-    await expect(row(c.g, 'notes.txt')).toBeVisible({ timeout: LONG_MS })
+    await expect(box(c.g)).toHaveValue('@no')
+    // A picked file there would never be attached: no list (UX3 R10). Read again after a moment the find would have answered in.
+    await c.g.keyboard.type('t')
+    await expect(box(c.g)).toHaveValue('@not')
+    await expect(c.g.locator('[data-chat-menu]')).toHaveCount(0)
   } finally {
     await page.context().close()
   }
