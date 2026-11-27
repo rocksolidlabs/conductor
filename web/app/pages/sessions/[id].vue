@@ -234,11 +234,11 @@ const menu = computed(() => [
           ...(canFullscreen ? [{ label: fullscreen.fullscreen.value ? 'Exit fullscreen' : 'Enter fullscreen', icon: fullscreen.fullscreen.value ? 'i-lucide-minimize' : 'i-lucide-maximize', onSelect: fullscreen.toggle }] : []),
         ],
       ]),
-  [
-    { label: 'Mark as needs input', icon: 'i-lucide-hand', onSelect: () => signal('needs_input') },
-    { label: 'Mark as working', icon: 'i-lucide-loader-circle', onSelect: () => signal('working') },
-    { label: 'Clear signal', icon: 'i-lucide-x', onSelect: () => signal('clear') },
-  ],
+  // Mark as (UX3 R14): the three marks in one item, a nested menu; on a phone, where a nested menu opens over its parent, a labelled
+  // group of three.
+  sm.value ? [{ label: 'Mark as', icon: 'i-lucide-tag', children: [MARKS] }] : [{ type: 'label' as const, label: 'Mark as' }, ...MARKS],
+  // Fit to my window while the terminal shows and another window sets its size, as the palette's row.
+  ...(fitOffered() ? [[{ label: 'Fit to my window', icon: 'i-lucide-maximize-2', onSelect: () => terminal.value?.takeSize() }]] : []),
   ...(renamable.value ? [[{ label: 'Rename…', icon: 'i-lucide-pencil', onSelect: renameSession }]] : []),
   [
     { label: 'Copy session id', icon: 'i-lucide-copy', onSelect: () => void copy(id.value, 'Session id copied') },
@@ -246,8 +246,15 @@ const menu = computed(() => [
       ? [{ label: "Copy the agent's session id", icon: 'i-lucide-copy', onSelect: () => void copy(current.value!.agentSession!.id, "The agent's session id copied", `Its own session (${current.value!.agentSession!.source})`) }]
       : []),
   ],
-  [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
+  // Stop session… asks first, the palette's question as X asks it (UX3 R14).
+  [{ label: 'Stop session…', icon: 'i-lucide-square', disabled: !liveNow.value, onSelect: askStop }],
 ])
+/** The three marks a person may set on the session, as the palette's rows set them. */
+const MARKS = [
+  { label: 'Needs you', icon: 'i-lucide-hand', onSelect: () => signal('needs_input') },
+  { label: 'Working', icon: 'i-lucide-loader-circle', onSelect: () => signal('working') },
+  { label: 'Clear the mark', icon: 'i-lucide-x', onSelect: () => signal('clear') },
+]
 
 const terminal = ref<{ connection: SessionConnection; showQuestion: () => void; connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply, o?: { sent?: () => void }) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean; openPaste: () => void } | null>(null)
 
@@ -645,6 +652,14 @@ const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
 /** A phone folds the terminal under an open file by itself: the palette offers no collapse there, as the strip offers no button (#432). */
 const phone = useIsPhone()
 /**
+ * Fit to my window is offered while the terminal shows and another window sets its size: not while the terminal is collapsed under the
+ * open editor, as EditorColumn folds it wider than a phone (#432, review round 2), where its pane has no size to give the session.
+ */
+function fitOffered(): boolean {
+  const t = tabs.value
+  return !!terminal.value?.sizerShown() && !(t.tabs.length > 0 && !t.folded && !!t.collapsed && !phone.value)
+}
+/**
  * Shows a view (#332): the inspector on it, or the chat sheet below xl; one already shown stays shown. The header's Files and
  * Chat buttons toggle (showFiles, showChat); a palette row or a session row's Open … says "open" and never hides.
  */
@@ -680,8 +695,6 @@ palette.registerPage(() => {
     ['people', `Open People${chatUnread.value ? ` · ${chatUnread.value} unread` : ''}`, 'i-lucide-users'],
   ]
   const t = tabs.value
-  /** The terminal collapsed under the open editor, as EditorColumn folds it wider than a phone (#432): its pane has no height. */
-  const terminalCollapsed = t.tabs.length > 0 && !t.folded && !!t.collapsed && !phone.value
   const tabRows = t.tabs.map((tb) => ({
     key: `page:tab:${tb.id}`,
     label: tb.title,
@@ -738,7 +751,7 @@ palette.registerPage(() => {
       { key: 'page:mark-working', label: 'Mark as working', icon: 'i-lucide-loader-circle', run: () => signal('working') },
       { key: 'page:mark-clear', label: 'Clear signal', icon: 'i-lucide-x', run: () => signal('clear') },
       // Not while the terminal is collapsed (#432, review round 2): its pane has no size to give the session.
-      ...(terminal.value?.sizerShown() && !terminalCollapsed ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
+      ...(fitOffered() ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
       ...(t.tabs.length ? [{ key: 'page:fold', label: t.folded ? 'Bring the editor back' : 'Fold the editor to its tab strip', icon: 'i-lucide-panel-bottom', kbds: ['T'], run: () => (tabs.value = toggleFold(tabs.value)) }] : []),
       // Its mirror (#432): the terminal collapses to a bar under the editor, and back; the strip's button does the same.
       ...(t.tabs.length && !phone.value ? [{ key: 'page:collapse-terminal', label: t.collapsed && !t.folded ? 'Bring the terminal back' : 'Collapse the terminal', icon: t.collapsed && !t.folded ? 'i-lucide-panel-bottom-open' : 'i-lucide-panel-bottom-close', run: () => (tabs.value = toggleCollapse(tabs.value)) }] : []),
