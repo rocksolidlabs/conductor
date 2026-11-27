@@ -118,6 +118,19 @@ type ProtocolEvents interface {
 	TurnEnded(outcome string, u Usage)
 	// Notice is something the agent said that is none of the above.
 	Notice(code, words string)
+	// Commands is the agent's own commands as its program lists them now,
+	// the whole list each time (docs/plans/chat-or-terminal.md, row 12):
+	// the session cleans and bounds it, keeps it with the chat and sends
+	// it to the operator's own chat connection alone.
+	Commands(list []Command)
+}
+
+// Command is one of the agent's own commands, as its driver read it: its
+// name without the slash, the agent's words for it, its argument hint and
+// its aliases, unchecked (the session's commands.go cleans them).
+type Command struct {
+	Name, Words, Hint string
+	Aliases           []string
 }
 
 // Message is one message the session sends into the conversation.

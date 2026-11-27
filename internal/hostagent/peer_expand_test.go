@@ -63,3 +63,31 @@ func TestAPeersSubmitIsNeverExpanded(t *testing.T) {
 		}
 	}
 }
+
+// Row 12: the agent's own commands never reach a viewer through the host
+// link, the owner's window from the owner's own server included: not after
+// its replay, not on a change.
+func TestAPeerIsNeverSentTheCommands(t *testing.T) {
+	a, s, _, viewer := relayCredHost(t)
+	a.opts.ServerIsOwners = true
+	a.transcript.Store(true)
+	f := sessiontest.NewFakeProtocol()
+	f.ProtocolName, f.IsVerbatim = "claude-stream-json", true
+	if err := sessiontest.EnterProtocol(a.local, f.Start()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.local.Stop(context.Background()) })
+	f.Commands([]session.Command{{Name: "compact"}})
+	const id = "0123456789abcdef"
+	p := viewer(id, "")
+	f.Commands([]session.Command{{Name: "compact"}, {Name: "clear"}})
+	p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: mustJSON(proto.Ping{T: proto.CtlPing, TS: 9})})
+	relayedTo(t, s, id, func(f proto.Frame) bool {
+		var m map[string]any
+		_ = json.Unmarshal(f.Payload, &m)
+		if f.Type == proto.TypeTranscript && m["t"] == proto.TranscriptCommandsT {
+			t.Fatalf("a peer was sent the commands: %s", f.Payload)
+		}
+		return f.Type == proto.TypeControl && m["t"] == proto.CtlPong
+	})
+}

@@ -318,18 +318,25 @@ func (s *Local) broadcastWayLocked() { s.sendWayLocked("") }
 // on a chat whose driver has a mark, the operator's own chat connection
 // alone that its typed line goes for the agent to expand (Way.Expands,
 // I19): said again after a move, so its page never stands in with a word
-// of its own. The caller holds s.mu.
+// of its own; on a chat, that connection is sent the agent's commands
+// after it. The caller holds s.mu.
 func (s *Local) sendWayLocked(why string) {
 	plain := s.wayFrameLocked(why, false)
 	p := s.way.Load()
-	if p == nil || !p.verbatim {
+	if p == nil {
 		s.hub.Broadcast(plain)
 		return
 	}
-	own := s.wayFrameLocked(why, true)
+	own := s.wayFrameLocked(why, p.verbatim)
+	// The agent's own commands follow the way to a chat, to the operator's
+	// own chat connection alone (commands.go).
+	commands := s.commandsFrameLocked(p)
 	s.hub.Each(func(sub *Subscription) {
 		if s.operatorChatLocked(sub) {
 			sub.send(own)
+			if commands != nil {
+				sub.send(commands)
+			}
 		} else {
 			sub.send(plain)
 		}

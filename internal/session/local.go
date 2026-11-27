@@ -3308,6 +3308,11 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		for _, f := range s.transcriptReplayLocked(o.TranscriptAfter) {
 			sub.send(f)
 		}
+		// The agent's own commands after the replay, to the operator's own
+		// chat connection alone (commands.go).
+		if f := s.commandsFrameLocked(chat); f != nil && s.operatorChatLocked(sub) {
+			sub.send(f)
+		}
 	}
 	if room != nil {
 		room.attach(sub, s.hub)

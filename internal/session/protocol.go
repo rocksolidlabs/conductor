@@ -37,6 +37,7 @@ type (
 	FileChange        = way.FileChange
 	Usage             = way.Usage
 	PermissionRequest = way.PermissionRequest
+	Command           = way.Command
 	Verdict           = way.Verdict
 	// ProtocolStart starts a protocol way's child and its driver on the
 	// agent's conversation ("" for a new one).
@@ -237,6 +238,10 @@ type protocolWay struct {
 	showing   string
 	under     Attention
 	aside     []asideChange
+
+	// commands is the agent's own commands (commands.go): kept with the
+	// chat, gone with it, sent to the operator's own chat connections alone.
+	commands chatCommands
 }
 
 // queuedMessage is a message on its way into the conversation.
