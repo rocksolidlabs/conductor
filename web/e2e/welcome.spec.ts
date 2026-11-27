@@ -219,6 +219,76 @@ test("the card keeps its place: folded and unfolded it is inside the window at t
   }
 })
 
+/** The Launch dialog's memory of the last launch, in this app's storage before the page loads (utils/lastLaunch.ts's key). */
+async function remembered(page: Page, value: unknown) {
+  await page.context().addInitScript((v) => localStorage.setItem('conductor.launch.last', JSON.stringify(v)), value)
+  await page.reload()
+}
+
+test('someone who launched before reads Nothing is running and the agent they launched last, at the daily window, at 1440 and on a phone, in both themes', async ({ browser }) => {
+  const srv = await empty()
+  budget(3 * 2 * 8 * STEP_MS)
+  const { named } = offerOf(await settledCatalog(srv))
+  const lastOne = named.find((a) => a.id !== SHELL)
+  if (!lastOne) throw new Error('the e2e catalog has a second agent that is not the shell')
+  for (const size of [DAILY, { width: 1440, height: 900 }, { width: 390, height: 844, touch: true }]) {
+    const phone = 'touch' in size
+    const page = await dayPage(browser, { ...size, path: phone ? '/sessions' : '/', server: srv.started })
+    await remembered(page, { agent: lastOne.id, models: {} })
+    for (const theme of ['dark', 'light'] as const) {
+      const at = `${size.width} × ${size.height}, ${theme}`
+      if (theme === 'light') await useTheme(page, 'light')
+      const card = await settled(page)
+      await expect(card.locator('[data-welcome-title]'), at).toHaveText('Nothing is running')
+      await expect(card.locator('[data-welcome-sentence]'), at).toHaveCount(0)
+      await expect(card.locator('[data-welcome-primary]'), at).toHaveText(`Launch ${lastOne.name}`)
+      await expect(card.locator('[data-welcome-primary]'), at).toHaveAttribute('data-welcome-agent', lastOne.id)
+      await uncut(card.locator('[data-welcome-title]'))
+      await uncut(card.locator('[data-welcome-primary]'))
+      await noSideways(page)
+      if (phone) await tapTarget(card.locator('[data-welcome-primary]'))
+    }
+    await page.context().close()
+  }
+})
+
+test("an agent remembered that the server does not offer gives the first agent found and the first run's words", async ({ browser }) => {
+  const srv = await empty()
+  budget(6 * STEP_MS)
+  const { main } = offerOf(await settledCatalog(srv))
+  const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
+  await remembered(page, { agent: 'no-such-agent', models: {} })
+  const card = await settled(page)
+  await expect(card.locator('[data-welcome-primary]')).toHaveAttribute('data-welcome-agent', main.id)
+  await expect(card.locator('[data-welcome-title]')).toHaveText('Welcome to Conductor')
+  await expect(card.locator('[data-welcome-sentence]')).toHaveText(SENTENCE)
+  await page.context().close()
+})
+
+test("the server's record of the last launch outlasts its restart: with no memory in the app, the welcome names that agent", async ({ browser }) => {
+  budget(2 * START_WAIT_MS + 10 * STEP_MS)
+  const srv = await ownServer('welcome-last')
+  try {
+    const { named } = offerOf(await settledCatalog(srv))
+    const lastOne = named.find((a) => a.id !== SHELL)!
+    const s = await srv.api.ok<{ id: string }>('POST', '/api/sessions', { agentId: lastOne.id, name: 'welcome last launch' })
+    await expect.poll(async () => (await srv.api.ok<{ agent?: string }>('GET', '/api/launch/last')).agent, { message: 'the launch recorded' }).toBe(lastOne.id)
+    await srv.api.stopSession(s.id)
+    await expect.poll(async () => (await srv.api.session(s.id)).status, { timeout: STEP_MS }).toMatch(/exited|stopped/)
+    // Started again on its data: the session is no longer listed, and the record is read from its file.
+    await srv.restart()
+    expect((await srv.api.call('GET', `/api/sessions/${s.id}`)).status).toBe(404)
+    const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
+    expect(await page.evaluate(() => localStorage.getItem('conductor.launch.last'))).toBeNull()
+    const card = await settled(page)
+    await expect(card.locator('[data-welcome-primary]')).toHaveAttribute('data-welcome-agent', lastOne.id)
+    await expect(card.locator('[data-welcome-title]')).toHaveText('Nothing is running')
+    await page.context().close()
+  } finally {
+    await srv.stop()
+  }
+})
+
 // The tooltips of the welcome's buttons and of Crews' Load the examples (#374): each says what pressing it does, in the words of
 // utils/welcome.ts, written out here so that a change of them is seen.
 const EXAMPLES_TIP = 'Adds five ready-made crews to Crews; nothing starts until you launch one.'
