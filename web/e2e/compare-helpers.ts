@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto'
-import type { Locator, Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import { expect, type Api } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
 
-// A comparison made the way a person makes one (CP1, docs/plans/compare-crew.md): New comparison on Crews, filled and created; the
-// crew proposed as a ticket's plan revision and approved, through the API (DS2's own routes, unchanged); then Launch from that
-// revision, its statement read and its count sent from the dialog. What other specs of the comparison start from.
+// An agent trial (a comparison, in the code: CP1, docs/plans/compare-crew.md): its crew saved through the server's template route,
+// the body New agent trial posts; the crew proposed as a ticket's plan revision and approved, through the API (DS2's own routes,
+// unchanged); then Launch from that revision, its statement read and its count sent from the dialog. What other specs of a trial
+// start from; trial-form.spec.ts drives the form itself.
 
 /** A candidate as the form takes it: an agent of the e2e catalog, its arguments, its approach. */
 export interface ComparisonCandidate {
@@ -45,82 +46,39 @@ export interface MadeComparison {
   runId: string
 }
 
-/** Fills one ArgvInput with `args`, each one chip. */
-async function fillArgs(field: Locator, args: readonly string[]) {
-  const input = field.locator('input')
-  for (const a of args) {
-    await input.fill(/[\s"']/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)
-    await input.press('Enter')
-  }
-}
-
-/** Picks the option labelled `name` of a USelect, and waits for its menu to be gone (AGENTS.md: a menu that has closed is not gone). */
-async function pick(page: Page, select: Locator, name: string) {
-  await select.click()
-  await page.getByRole('option', { name, exact: true }).click()
-  await expect(page.getByRole('listbox')).toHaveCount(0)
+/** A line for a good result's id, as the trial form writes it from its words (utils/compareTemplate.ts criterionId). */
+function criterionId(text: string, i: number): string {
+  const words = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 34).replace(/-+$/, '')
+  return words || `criterion-${i + 1}`
 }
 
 /**
- * Fills New comparison on Crews with `o` and creates it; the crew's id, as the page opened it. The page must be one whose layout has
- * drawn (any page of the app). The agents are named as the catalog names them.
+ * Saves the crew of an agent trial with `o` through the server's template route (POST /api/crews/templates/compare), the body New
+ * agent trial posts, and opens it on Crews; the crew's id. The specs that do not test the form start here: trial-form.spec.ts drives
+ * the form itself.
  */
 export async function createComparison(page: Page, api: Api, o: ComparisonOptions): Promise<string> {
-  const catalog = (await api.ok<{ agents: Array<{ id: string; name: string }> }>('GET', '/api/catalog')).agents
-  const nameOf = (id: string) => catalog.find((a) => a.id === id)?.name ?? id
-  await page.goto('/crews')
-  await page.locator('[data-new-comparison]').click()
-  const form = page.locator('[data-compare-template]')
-  await expect(form).toBeVisible()
-  await form.locator('[data-compare-name]').fill(o.name ?? `e2e comparison ${randomBytes(3).toString('hex')}`)
-  const cwd = form.locator('[data-compare-cwd]').getByRole('combobox')
-  await cwd.fill(o.cwd)
-  await cwd.press('Tab')
-  await expect(cwd).toHaveValue(o.cwd)
-  await form.locator('[data-compare-goal]').fill(o.goal ?? 'Make the cache read fast')
-  await form.locator('[data-compare-instructions]').fill(o.instructions ?? 'Keep the API as it is.')
-
   const criteria = o.criteria ?? ['no new dependency']
-  for (let i = 0; i < criteria.length; i++) {
-    if (i > 0) await form.locator('[data-compare-add-criterion]').click()
-    await form.locator(`[data-compare-criterion="${i}"]`).fill(criteria[i]!)
+  const body: Record<string, unknown> = {
+    name: o.name ?? `e2e comparison ${randomBytes(3).toString('hex')}`,
+    cwd: o.cwd,
+    goal: o.goal ?? 'Make the cache read fast',
+    instructions: o.instructions ?? 'Keep the API as it is.',
+    criteria: criteria.map((text, i) => ({ id: criterionId(text, i), text })),
+    candidates: o.candidates.map((c) => ({ agentId: c.agentId, ...(c.args?.length ? { args: c.args } : {}), ...(c.approach ? { approach: c.approach } : {}) })),
   }
-
-  // The form starts with one empty check: removed when the test names none.
-  const checks = o.checks ?? []
-  const rows = form.locator('[data-compare-checks] [data-crew-check]')
-  for (let i = 0; i < checks.length; i++) {
-    if (i > 0) await form.locator('[data-compare-checks] [data-add-check]').click()
-    const row = rows.nth(i)
-    await row.getByLabel(`Id of check ${i + 1}`).fill(checks[i]!.id)
-    await fillArgs(row.getByLabel(`Command of check ${i + 1}`), checks[i]!.argv)
-  }
-  if (!checks.length) await rows.first().getByRole('button', { name: 'Remove check 1' }).click()
-  if (o.manifestFile) await form.locator('[data-compare-manifest-file]').click()
-
-  for (let i = 0; i < o.candidates.length; i++) {
-    if (i >= 2) await form.locator('[data-compare-add-candidate]').click()
-    const c = o.candidates[i]!
-    const row = form.locator(`[data-compare-candidate-row="${i}"]`)
-    await pick(page, row.locator('[data-compare-candidate-agent]'), nameOf(c.agentId))
-    if (c.args?.length) await fillArgs(row.locator('[data-compare-candidate-args]'), c.args)
-    if (c.approach) await row.locator('[data-compare-candidate-approach]').fill(c.approach)
-  }
-  if (o.reviewAgent) {
-    await form.locator('[data-compare-reviews]').click()
-    await pick(page, form.locator('[data-compare-review-agent]'), nameOf(o.reviewAgent))
-  }
-  if (o.brakeman) await form.locator('[data-compare-brakeman]').click()
-
-  await expect(form.locator('[data-compare-template-problem]')).toHaveCount(0)
-  await form.locator('[data-compare-create]').click()
-  await expect(form).toHaveCount(0, { timeout: 30_000 })
-  await expect(page).toHaveURL(/\/crews\/(?!new)[^/?]+/, { timeout: 30_000 })
-  return decodeURIComponent(new URL(page.url()).pathname.split('/')[2]!)
+  if (o.checks?.length) body.checks = o.checks
+  if (o.manifestFile) body.manifest = { file: true }
+  if (o.reviewAgent) Object.assign(body, { reviews: true, reviewAgent: o.reviewAgent })
+  if (o.brakeman) body.brakeman = true
+  const { crew } = await api.ok<{ crew: { id: string } }>('POST', '/api/crews/templates/compare', body)
+  await page.goto(`/crews/${encodeURIComponent(crew.id)}`)
+  await expect(page.locator('[data-crew-compare-block]')).toBeVisible({ timeout: 30_000 })
+  return crew.id
 }
 
 /**
- * A comparison made as a person makes one, then launched: New comparison created (createComparison), proposed as revision 1 of a
+ * A trial made and launched: its crew saved (createComparison), proposed as revision 1 of a
  * ticket of its own and approved through the API, then Launch from the ticket page, whose statement says the candidates' count and
  * whose button sends it. The ids of what it made; the run has started.
  */

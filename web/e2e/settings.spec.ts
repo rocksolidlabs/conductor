@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { expect, standingRoute, test, viaMore, type Api } from './fixtures'
+import { expect, standingRoute, stopStrays, test, viaMore, type Api } from './fixtures'
 import type { Locator, Page, Request } from '@playwright/test'
 import { uncut } from './layout'
 import type { E2EState } from './state'
@@ -12,8 +12,11 @@ import type { E2EState } from './state'
 test.skip(process.platform === 'win32', 'POSIX paths')
 
 // The tests route the page while it works: the standing route keeps its interception on from before the first load.
-test.beforeEach(async ({ page }) => {
+// No session another spec left runs: a save that restarts the server asks first while agents run (UX3 R56), and the tests that save
+// mean the save to go at once; the question has tests of its own, each with a session of its own.
+test.beforeEach(async ({ page, api }) => {
   await standingRoute(page.context())
+  await stopStrays(api, [])
 })
 
 /**
@@ -27,6 +30,19 @@ function pickerFolder(root: string, name: string): { dir: string; pick: string }
   const pick = join(dir, 'pick-me')
   mkdirSync(pick, { recursive: true })
   return { dir, pick }
+}
+
+/** Adds a folder agents can use through Add folder and the picker, typed into its path: its chip shows. */
+async function addFolder(page: Page, dir: string) {
+  await page.locator('[data-pick-dir="root"]').click()
+  const picker = page.getByRole('dialog')
+  await expect(picker).toContainText('Add a folder agents can use')
+  await picker.locator('[data-dir-picker-path]').fill(dir)
+  await picker.locator('[data-dir-picker-path]').press('Enter')
+  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(dir)
+  await picker.locator('[data-dir-picker-use]').click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.locator(`[data-root-chip="${dir}"]`)).toBeVisible()
 }
 
 test('the folder picker browses the server, outside the roots too, and fills the field', async ({ page, state }) => {
@@ -88,7 +104,7 @@ test('the folder picker browses the server, outside the roots too, and fills the
   await expect(picker.locator('[data-dir-picker-note]')).toHaveCount(0)
   await picker.locator('[data-dir-picker-use]').click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
-  await expect(page.getByLabel('Default working directory', { exact: true })).toHaveValue(own.pick)
+  await expect(page.getByLabel('Default folder', { exact: true })).toHaveValue(own.pick)
   // One column that reads top to bottom (#366), each card below the one before it, and the save bar in the panel's footer, in
   // reach wherever the page is scrolled. How wide it is, and the navigation beside it (#433), are the tests below.
   const cards = await page.locator('[data-settings-sections] > [data-settings-section]').evaluateAll((els) => els.map((e) => ({ top: e.getBoundingClientRect().top, bottom: e.getBoundingClientRect().bottom })))
@@ -518,7 +534,7 @@ test('the save toast says what became of the save, on the page that saved or the
 
   // On the page that saved: yolo is how agents run, the server restarts (here without moving), and the toast says so.
   await page.locator('[data-yolo-switch]').click()
-  await expect(save).toHaveText('Save and restart the server')
+  await expect(save).toHaveText('Save and restart')
   await save.click()
   await expect(toast('Saved; the server restarted')).toBeVisible()
   await expect(save).toBeDisabled()
@@ -539,7 +555,7 @@ test('the save toast says what became of the save, on the page that saved or the
   // A restart that fails: the error and no toast; the retry, the settings kept, says saved alone.
   await page.evaluate(() => sessionStorage.setItem('e2e.restart', 'fail'))
   await page.locator('[data-yolo-switch]').click()
-  await expect(save).toHaveText('Save and restart the server')
+  await expect(save).toHaveText('Save and restart')
   await save.click()
   await expect(page.locator('[data-settings-error]')).toContainText('did not start')
   await expect(toast('Saved; the server restarted')).toHaveCount(0)
@@ -670,7 +686,7 @@ test("the page's one Save saves Brakeman's section with the app's settings, and 
     // Both: Brakeman's is on the server by the time the app's are set (and the server restarts).
     await page.locator('[data-yolo-switch]').click()
     await readsField(page).fill(String(reads + 1))
-    await expect(save).toHaveText('Save and restart the server')
+    await expect(save).toHaveText('Save and restart')
     await save.click()
     await expect(toast('Saved; the server restarted')).toBeVisible()
     await expect(save).toBeDisabled()
@@ -689,7 +705,7 @@ test("the page's one Save saves Brakeman's section with the app's settings, and 
     await expect(error).toHaveText("Brakeman's settings were saved. The app's settings were not: the settings were refused. Your edits are kept.")
     await expect.poll(savedReads).toBe(reads + 2)
     await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'false')
-    await expect(save).toHaveText('Save and restart the server')
+    await expect(save).toHaveText('Save and restart')
     // Saved this time (the toast of the save before may still show its same words: the app's record says it).
     await save.click()
     await expect.poll(async () => (await sets()).length).toBe(3)
@@ -750,8 +766,7 @@ test("a Save that cannot send Brakeman's section with the app's settings is refu
     await brakemanAdvanced(page)
     const save = page.locator('[data-save-settings]')
     const error = page.locator('[data-settings-error]')
-    const dataDir = page.getByLabel('Data directory', { exact: true })
-    const roots = page.getByLabel('Allowed roots')
+    const dataDir = page.getByLabel('Where Conductor keeps its data', { exact: true })
     const cwd = page.locator('[data-brakeman-cwd] input, input[data-brakeman-cwd]').first()
     /** Nothing was sent: no set of the app's, Brakeman's settings as they were. */
     const nothingSent = async () => {
@@ -772,16 +787,19 @@ test("a Save that cannot send Brakeman's section with the app's settings is refu
     await dataDir.fill(state.data)
 
     // A new root, and Brakeman's folder under it: the folder would be checked against the roots the server has now.
-    await roots.fill(`${state.root}\n${state.root}-more`)
-    await cwd.fill(`${state.root}-more`)
+    const more = `${state.root}-more`
+    mkdirSync(more, { recursive: true })
+    await addFolder(page, more)
+    await cwd.fill(more)
     await cwd.press('Escape')
     await save.click()
     await expect(error).toHaveText(
       "Brakeman's folder is checked against the allowed roots the server has now, and this Save changes them: save the allowed roots alone first, then Brakeman's folder. Nothing was sent, Brakeman's settings with the rest. Your edits are kept.",
     )
     await nothingSent()
-    await expect(cwd).toHaveValue(`${state.root}-more`)
-    await roots.fill(state.root)
+    await expect(cwd).toHaveValue(more)
+    await page.locator(`[data-root-chip="${more}"] [data-root-remove]`).click()
+    await expect(page.locator(`[data-root-chip="${more}"]`)).toHaveCount(0)
     await cwd.fill(start.cwd ?? '')
     await cwd.press('Escape')
 
@@ -970,9 +988,12 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
   )
 }
 
-/** The sections this machine shows, in page order: what the navigation must list. */
-function expectedSections(platform: Platform) {
-  return [...(platform === 'win32' ? ['webrtc'] : []), 'switchyard', 'folders', 'running', 'agents', 'accounts', 'github', 'brakeman', 'app']
+/**
+ * The sections this machine shows, in page order: what the navigation must list. The page opens on where and how agents work, and
+ * on Windows the firewall is a row of Switchyard, no section of its own (UX3 R54).
+ */
+function expectedSections(_platform: Platform) {
+  return ['folders', 'running', 'agents', 'accounts', 'switchyard', 'github', 'brakeman', 'app']
 }
 
 const body = (page: Page) => page.locator('[data-slot="body"]:has([data-settings-sections])')
@@ -984,7 +1005,8 @@ async function layoutOf(page: Page) {
     const cs = getComputedStyle(b)
     return {
       body: { top: r(b).top, bottom: r(b).bottom, left: r(b).left, right: r(b).right, clientWidth: b.clientWidth, clientHeight: b.clientHeight, scrollWidth: b.scrollWidth, padLeft: parseFloat(cs.paddingLeft), padRight: parseFloat(cs.paddingRight), scrollTop: b.scrollTop },
-      sections: Array.from(b.querySelectorAll('[data-settings-section]')).map((e) => ({ id: e.getAttribute('data-settings-section')!, top: r(e).top, bottom: r(e).bottom, left: r(e).left, right: r(e).right, height: r(e).height })),
+      // The sections are the column's own children: a row inside one may carry an address of its own (the Windows firewall's webrtc).
+      sections: Array.from(b.querySelectorAll('[data-settings-sections] > [data-settings-section]')).map((e) => ({ id: e.getAttribute('data-settings-section')!, top: r(e).top, bottom: r(e).bottom, left: r(e).left, right: r(e).right, height: r(e).height })),
       layout: (() => {
         const l = b.querySelector('[data-desktop-settings], [data-settings-sections]')!
         return { left: r(l).left, right: r(l).right, width: r(l).width }
@@ -1035,7 +1057,7 @@ for (const platform of ['linux', 'win32'] as const) {
       const input = await boxOf(field.locator('input'))
       expect(input.left).toBeGreaterThan(label.right)
       expect(input.width).toBeLessThanOrEqual(576)
-      const roots = await boxOf(page.getByLabel('Allowed roots'))
+      const roots = await boxOf(page.locator('[data-allowed-roots] ul'))
       expect(roots.width).toBeLessThanOrEqual(576)
       await expect(page.locator('[data-settings-save-bar]')).toBeInViewport()
       // The navigation stays in place as the sections scroll, and marks the section in view; each entry brings its own into view.
@@ -1071,6 +1093,19 @@ for (const platform of ['linux', 'win32'] as const) {
       }).toBe(true)
       await expect(page.locator(`[data-settings-nav-entry="${id}"]`)).toHaveAttribute('aria-current', 'true')
     }
+    // WebRTC from WSL, a section once, is the Windows firewall row of Switchyard: its address lands on the row, Switchyard marked.
+    if (platform === 'win32') {
+      await page.goto('/settings?section=webrtc')
+      await settled(page, platform)
+      const row = page.locator('[data-switchyard-settings] [data-settings-section="webrtc"][data-ice-status]')
+      await expect.poll(async () => {
+        const b = await boxOf(body(page))
+        const r = await boxOf(row)
+        return Math.abs(r.top - b.top - 24) <= 1 || (r.top >= b.top && r.bottom <= b.bottom)
+      }).toBe(true)
+      await expect(row).toBeInViewport()
+      await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
+    }
     for (const q of ['?section=nope', '?section=', '', platform === 'linux' ? '?section=webrtc' : '?section=Switchyard']) {
       await page.goto(`/settings${q}`)
       await settled(page, platform)
@@ -1100,7 +1135,7 @@ for (const platform of ['linux', 'win32'] as const) {
       // The fields stack, and the folder buttons stay beside their inputs.
       const field = page.locator('[data-switchyard-server]')
       expect((await boxOf(field.locator('input'))).top).toBeGreaterThan((await boxOf(field.locator('label'))).bottom)
-      const cwd = await boxOf(page.getByLabel('Default working directory', { exact: true }))
+      const cwd = await boxOf(page.getByLabel('Default folder', { exact: true }))
       const pick = await boxOf(page.locator('[data-pick-dir="defaultCwd"]'))
       expect(pick.left).toBeGreaterThanOrEqual(cwd.right)
       expect(Math.abs(pick.top - cwd.top)).toBeLessThanOrEqual(4)
@@ -1135,7 +1170,7 @@ for (const platform of ['linux', 'win32'] as const) {
       // A field changed and saved, the save bar in the window and above the bottom bar.
       await page.locator('[data-yolo-switch]').click()
       const save = page.locator('[data-save-settings]')
-      await expect(save).toHaveText('Save and restart the server')
+      await expect(save).toHaveText('Save and restart')
       const bar = page.locator('[data-settings-save-bar]')
       await expect(bar).toBeInViewport()
       expect((await boxOf(bar)).bottom).toBeLessThanOrEqual((await boxOf(page.locator('[data-bottom-bar]'))).top)
@@ -1183,16 +1218,22 @@ for (const at of [{ name: 'a wide window', use: { viewport: { width: 1440, heigh
       await page.goto('/settings?section=running')
       await settled(page, 'linux')
       const save = page.locator('[data-save-settings]')
-      // No note: the button at the right end all the same.
+      // No words: the button at the right end all the same, the bar's empty words left of it.
       await expect(save).toHaveText('Save')
-      saveAtTheRight(await saveBarOf(page), 0)
-      // The restart sentence shown: left of the button, whole, and the button whole in the window.
-      await page.locator('[data-yolo-switch]').click()
-      await expect(save).toHaveText('Save and restart the server')
-      await expect(page.locator('[data-settings-save-bar]')).toContainText('running sessions end')
+      await expect(page.locator('[data-settings-discard]')).toHaveCount(0)
       saveAtTheRight(await saveBarOf(page), 1)
+      // What changed and what a save costs, left of Discard, and Discard left of Save: whole, the button whole in the window.
+      await page.locator('[data-yolo-switch]').click()
+      await expect(save).toHaveText('Save and restart')
+      await expect(page.locator('[data-settings-changed]')).toHaveText('Changed: How agents run. Saving restarts the server.')
+      await expect(page.locator('[data-settings-save-bar]')).not.toContainText('running sessions end')
+      const m = await saveBarOf(page)
+      saveAtTheRight(m, 2)
+      expect(m.notes[1]!.right, 'Discard ends where Save begins, less the gap').toBeLessThanOrEqual(m.save.left)
+      expect(m.notes[1]!.left, 'Discard is right of the words').toBeGreaterThanOrEqual(m.notes[0]!.right - 1)
       await uncut(save)
-      await uncut(page.locator('[data-settings-save-bar] > :not([data-save-settings])'))
+      await uncut(page.locator('[data-settings-discard]'))
+      await uncut(page.locator('[data-settings-changed]'))
     })
   })
 }
@@ -1225,10 +1266,11 @@ test('the save that restarts the server keeps the section in view in the address
   await page.mouse.move(sections.left + sections.width / 2, 300)
   await page.mouse.wheel(0, -100000)
   await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBe(0)
-  await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
-  await page.locator('[data-switchyard-enabled]').click()
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+  // Yolo, in view at the top of the page, back as it was: a change that restarts all the same.
+  await page.locator('[data-yolo-switch]').click()
   expect((await layoutOf(page)).body.scrollTop).toBe(0)
-  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart')
   await page.locator('[data-save-settings]').click()
   await expect(page.getByText('Saved; the server restarted', { exact: true }).last()).toBeVisible()
   await expect(page).toHaveURL(/\/settings$/)
@@ -1247,7 +1289,7 @@ test('a second click on Save while the first is under way saves once', async ({ 
   await page.goto('/settings?section=running')
   await settled(page, 'linux')
   await page.locator('[data-yolo-switch]').click()
-  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart')
   // Scrolled by hand from the section the address names to the end, so the save writes the section in view first and has that to
   // wait on.
   const sections = await boxOf(page.locator('[data-settings-sections]'))
@@ -1295,7 +1337,7 @@ test('a window made shorter moves the mark to the section in view, and a restart
   await page.goto('/settings')
   await settled(page, 'linux')
   await page.locator('[data-yolo-switch]').click()
-  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart')
   const sections = await boxOf(page.locator('[data-settings-sections]'))
   await page.mouse.move(sections.left + sections.width / 2, 450)
   await page.mouse.wheel(0, 100000)
@@ -1328,7 +1370,7 @@ test('a restart save made while a scroll\'s mark is still to come writes the sec
   // Yolo changed (the click is the person's own, so the mark follows the scroll alone from here), then Where agents work brought
   // back to the top of the body and marked.
   await page.locator('[data-yolo-switch]').click()
-  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart')
   await body(page).evaluate((b) => {
     const s = b.querySelector('[data-settings-section="folders"]')!
     b.scrollTop += s.getBoundingClientRect().top - b.getBoundingClientRect().top - 24
@@ -1374,7 +1416,7 @@ test('Settings chosen again in the same page goes back to the top, from a sectio
   const settingsLink = { click: () => viaMore(page, 'Settings') }
   const atTop = async () => {
     await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBe(0)
-    await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
+    await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
     await expect(page).toHaveURL(/\/settings$/)
   }
   // From a section the address names: the sidebar's Settings is a new address, plain /settings.
@@ -1388,7 +1430,7 @@ test('Settings chosen again in the same page goes back to the top, from a sectio
   await page.mouse.move(sections.left + sections.width / 2, 450)
   await page.mouse.wheel(0, 1500)
   await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBeGreaterThan(1000)
-  await expect(page.locator('[data-settings-nav-entry="switchyard"]')).not.toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).not.toHaveAttribute('aria-current', 'true')
   await settingsLink.click()
   await atTop()
 })
@@ -1406,5 +1448,189 @@ for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) 
     for (let i = 1; i < l.sections.length; i++) expect(l.sections[i]!.top).toBeGreaterThanOrEqual(l.sections[i - 1]!.bottom)
     expect(l.doc.scrollWidth).toBeLessThanOrEqual(l.doc.clientWidth)
     expect(l.body.scrollWidth).toBeLessThanOrEqual(l.body.clientWidth)
+  })
+}
+
+// The page opens on what people come for (UX3 R54): the folders agents may use and the Yolo switch are in view as it opens, in the
+// wide short window people use all day and at 1440, and Switchyard, with Reach and the Windows firewall, sits below Accounts.
+for (const size of [{ width: 2000, height: 810 }, { width: 1440, height: 810 }, { width: 1440, height: 900 }]) {
+  test(`at ${size.width} × ${size.height} Settings opens on the folders and the Yolo switch`, async ({ page, state }) => {
+    await page.setViewportSize(size)
+    await standIn(page, state, 'win32')
+    await page.goto('/settings')
+    await settled(page, 'win32')
+    expect((await layoutOf(page)).body.scrollTop).toBe(0)
+    await expect(page.locator('[data-pick-dir="root"]')).toBeInViewport()
+    await expect(page.locator('[data-yolo-switch]')).toBeInViewport()
+    await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+    // On Windows the Windows folders sit with the folders, and Reach and the firewall are Switchyard's.
+    await expect(page.locator('[data-settings-section="folders"] [data-wsl-windows-home]')).toBeVisible()
+    const yard = page.locator('[data-switchyard-settings]')
+    await expect(yard.getByText('Reach from outside your network', { exact: true })).toBeVisible()
+    await expect(yard.locator('[data-ice-firewall]')).toHaveText('rule missing')
+    await expect(page.locator('[data-settings-section="running"]')).not.toContainText('Reach')
+    // The switchyard's statement keeps every fact it stated.
+    for (const fact of ["each session's name, agent and folder name, this machine's name, and whether it waits on you", 'never its chat, activity or command line', 'It mints and checks the links and decides who joins', 'through its relay, which can read it', 'Publish only to a switchyard whose operator you trust']) await expect(yard).toContainText(fact)
+    await expect(page.getByText('WebRTC from WSL')).toHaveCount(0)
+    // Allow adds the rule: the badge says so, and the button goes.
+    await yard.locator('[data-ice-allow]').click()
+    await expect(yard.locator('[data-ice-firewall]')).toHaveText('rule present')
+    await expect(yard.locator('[data-ice-allow]')).toHaveCount(0)
+  })
+}
+
+// Settings' agents are drawn as the Agents page draws them (UX3 R54): one not installed asks nothing, so it is neither amber nor green.
+test("Settings' agents: not installed and an identified agent's badge are neither amber nor green", async ({ page, state }) => {
+  await standIn(page, state, 'linux')
+  await page.goto('/settings?section=agents')
+  await settled(page, 'linux')
+  const card = page.locator('[data-settings-section="agents"]')
+  const colour = (l: Locator) => l.evaluate((e) => getComputedStyle(e).color)
+  const probe = (v: string) =>
+    page.evaluate((v) => {
+      const e = document.createElement('span')
+      e.style.color = v
+      document.body.append(e)
+      const c = getComputedStyle(e).color
+      e.remove()
+      return c
+    }, v)
+  const amber = [await probe('var(--ui-warning)'), await probe('var(--ui-warning-text)')]
+  const green = [await probe('var(--ui-success)'), await probe('var(--ui-success-text)')]
+  const badges = card.locator('[data-not-installed], [data-identity="ok"]')
+  await expect(badges.first()).toBeVisible()
+  for (const b of await badges.all()) {
+    expect(amber).not.toContain(await colour(b))
+    expect(green).not.toContain(await colour(b))
+  }
+})
+
+// The folders agents can use are a list with Add folder, checked as they are picked (UX3 R55): a chip a folder, the last one kept, a
+// Default folder outside every folder said under its field and holding Save, a data folder inside one said and not holding it.
+test('the folders agents can use: Add folder makes a chip, a chip goes, the last stays, and the folder fields say what is wrong at once', async ({ page, state }) => {
+  test.setTimeout(20 * 15_000)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  const save = page.locator('[data-save-settings]')
+  await expect(save).toBeDisabled()
+  await expect(page.getByText('Allowed roots')).toHaveCount(0)
+  // Add folder, through the picker: a chip, and Save offered.
+  const own = pickerFolder(state.root, 'settings-roots')
+  await addFolder(page, own.pick)
+  await expect(save).toBeEnabled()
+  // A chip's remove takes it out, and the page is as saved again.
+  await page.locator(`[data-root-chip="${own.pick}"]`).getByRole('button', { name: `Remove ${own.pick}` }).click()
+  await expect(page.locator(`[data-root-chip="${own.pick}"]`)).toHaveCount(0)
+  await expect(save).toBeDisabled()
+  // The last folder cannot be taken away.
+  const last = page.locator(`[data-root-chip="${state.root}"]`)
+  await expect(last.locator('[data-root-remove]')).toBeDisabled()
+  await expect(last.locator('[title="Agents need at least one folder."]')).toHaveCount(1)
+  // A Default folder outside every folder agents can use: said under the field, Save held.
+  const cwd = page.getByLabel('Default folder', { exact: true })
+  await cwd.fill('/srv/elsewhere')
+  const field = page.locator('[data-default-folder]')
+  await expect(field).toContainText('Pick a folder inside one that agents can use.')
+  await expect(save).toBeDisabled()
+  await expect(page.locator('[data-settings-blocked]')).toBeVisible()
+  await cwd.fill(state.root)
+  await expect(field).not.toContainText('Pick a folder inside one that agents can use.')
+  // A data folder inside a folder agents can use: said, Save not held.
+  const data = page.getByLabel('Where Conductor keeps its data', { exact: true })
+  await data.fill(join(state.root, 'data-here'))
+  await expect(page.locator('[data-data-folder]')).toContainText('Keep this outside the folders agents can use.')
+  await expect(save).toBeEnabled()
+  await data.fill(state.data)
+  await expect(save).toBeDisabled()
+  // A long path wraps inside its chip and keeps its end in view, its whole form in its title; nothing scrolls sideways.
+  const deep = join(state.root, 'settings-roots', 'a-folder-with-a-rather-long-name-that-goes-on', 'and-on-and-on-past-the-row', 'the-end-of-it')
+  mkdirSync(deep, { recursive: true })
+  await addFolder(page, deep)
+  const chip = page.locator(`[data-root-chip="${deep}"] [data-mono="path"]`)
+  await expect(chip).toHaveAttribute('title', deep)
+  await uncut(chip)
+  expect(await body(page).evaluate((b) => b.scrollWidth <= b.clientWidth)).toBe(true)
+})
+
+// The save bar names what changed and offers Discard (UX3 R56): Discard puts back the app's fields and Brakeman's, and a refused
+// save's words sit in the bar beside Save, in view, the edits kept.
+test("Discard puts back the app's fields and Brakeman's; a refused save says why in the bar", async ({ page, state, api }) => {
+  test.setTimeout(20 * 15_000)
+  const start = await brakemanConf(api)
+  const reads = start.budget.readsPerTurn === 400 ? 500 : 400
+  const { sets } = await oneSaveStandIn(page, state)
+  try {
+    await page.goto('/settings')
+    await settled(page, 'linux')
+    await brakemanAdvanced(page)
+    const save = page.locator('[data-save-settings]')
+    const words = page.locator('[data-settings-changed]')
+    await page.locator('[data-yolo-switch]').click()
+    await page.locator('[data-tray-switch]').click()
+    await readsField(page).fill(String(reads))
+    await expect(words).toHaveText('Changed: How agents run, Brakeman, The app. Saving restarts the server.')
+    await page.locator('[data-settings-discard]').click()
+    await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'false')
+    await expect(page.locator('[data-tray-switch]')).toHaveAttribute('aria-checked', 'true')
+    await expect(readsField(page)).toHaveValue(String(start.budget.readsPerTurn))
+    await expect(save).toBeDisabled()
+    await expect(page.locator('[data-settings-discard]')).toHaveCount(0)
+    expect(await sets()).toEqual([])
+    // A save the app refuses: its words in the bar, in the error tone and in view, beside Save; the edit kept for the next Save.
+    await page.evaluate(() => sessionStorage.setItem('e2e.fail', 'refuse'))
+    await page.locator('[data-tray-switch]').click()
+    await save.click()
+    const error = page.locator('[data-settings-save-bar] [data-settings-error]')
+    await expect(error).toHaveText('the settings were refused')
+    await expect(error).toBeInViewport()
+    await expect(error).toHaveAttribute('role', 'alert')
+    await expect(page.locator('[data-tray-switch]')).toHaveAttribute('aria-checked', 'false')
+    await expect(page.locator('[data-settings-sections] [data-settings-error]')).toHaveCount(0)
+  } finally {
+    await putBack(api, start)
+  }
+})
+
+// A save that restarts the server while agents run asks first, in the bar (UX3 R56): Keep editing keeps every edit, Escape too, a double
+// click does not pass the question, and Save and restart saves. The session is the test's own; none other runs (the beforeEach).
+for (const size of [{ width: 2000, height: 810 }, { width: 1440, height: 810 }]) {
+  test(`at ${size.width} × ${size.height} Save and restart asks before a running agent stops`, async ({ page, state, api }) => {
+    test.setTimeout(20 * 15_000)
+    await page.setViewportSize(size)
+    const s = await api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'settings restart question', cwd: state.root })
+    try {
+      await standIn(page, state, 'linux')
+      await page.goto('/settings')
+      await settled(page, 'linux')
+      const bar = page.locator('[data-settings-save-bar]')
+      const save = page.locator('[data-save-settings]')
+      await page.locator('[data-yolo-switch]').click()
+      await expect(save).toHaveText('Save and restart')
+      // The session is on the page's list (its sidebar row) before the question can count it.
+      await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()).toBeAttached()
+      await save.click()
+      await expect(bar.locator('[data-settings-question]')).toHaveText('Restart the server now? 1 running agent stops.')
+      await expect(bar.locator('[data-settings-keep-editing]')).toBeFocused()
+      await bar.locator('[data-settings-keep-editing]').click()
+      await expect(bar.locator('[data-settings-question]')).toHaveCount(0)
+      await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'true')
+      // Escape keeps editing too.
+      await save.click()
+      await expect(bar.locator('[data-settings-keep-editing]')).toBeFocused()
+      await page.keyboard.press('Escape')
+      await expect(bar.locator('[data-settings-question]')).toHaveCount(0)
+      // A double click on Save asks, and its second click does not pass the question.
+      await save.dblclick()
+      await expect(bar.locator('[data-settings-question]')).toBeVisible()
+      expect(await page.evaluate(() => (window as unknown as { e2eSets: object[] }).e2eSets.length)).toBe(0)
+      // Save and restart saves.
+      await bar.locator('[data-settings-confirm]').click()
+      await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+      expect(await page.evaluate(() => (window as unknown as { e2eSets: Array<{ yolo?: boolean }> }).e2eSets.map((x) => x.yolo))).toEqual([true])
+    } finally {
+      await api.stopSession(s.id)
+    }
   })
 }

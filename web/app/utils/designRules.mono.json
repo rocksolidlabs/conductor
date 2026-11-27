@@ -77,6 +77,5 @@
   "pages/join/[token].vue": 1,
   "pages/people/[name].vue": 2,
   "pages/roundhouse.vue": 1,
-  "pages/sessions/[id].vue": 1,
-  "pages/settings.vue": 1
+  "pages/sessions/[id].vue": 1
 }

@@ -96,7 +96,7 @@ describe('the questions the palette asks', () => {
     ['the run page’s Stop run…', stopRunPageQuestion('nightly'), 'Stop the run', 'Cancel'],
     ['Stop every finished session', stopFinishedQuestion(['a', 'b']), 'Stop them', 'Cancel'],
     ['Restart server', restartQuestion(2), 'Restart server', 'Cancel'],
-    ['Save and restart the server', saveRestartQuestion(0), 'Save and restart the server', 'Cancel'],
+    ['Save and restart', saveRestartQuestion(2), 'Save and restart', 'Keep editing'],
     ['a link’s Revoke', revokeQuestion('review'), 'Revoke', 'Cancel'],
     ['a History row’s Resume', resumeQuestion('docs'), 'Resume', 'Keep it'],
   ]
@@ -110,9 +110,12 @@ describe('the questions the palette asks', () => {
     expect(stopRunPageQuestion('nightly')).toEqual({ ...stopQuestion({ kind: 'run', name: 'nightly' }), confirm: 'Stop the run' })
     expect(stopFinishedQuestion(['a'])).toMatchObject({ title: 'Stop 1 finished session?', detail: 'a' })
     expect(stopFinishedQuestion(['a', 'b'])).toMatchObject({ title: 'Stop 2 finished sessions?', detail: 'a, b' })
-    expect(restartQuestion(0).detail).toBe('No session is running.')
-    expect(restartQuestion(1).detail).toBe('1 session ends with it.')
-    expect(saveRestartQuestion(3)).toMatchObject({ title: 'Save and restart the server?', detail: '3 sessions end with it.' })
+    expect(restartQuestion(0).detail).toBe('No agent is running.')
+    expect(restartQuestion(1).detail).toBe('1 running agent stops.')
+    // Settings' save bar asks the same words (UX3 R56); the old ones are gone.
+    expect(saveRestartQuestion(1)).toMatchObject({ title: 'Restart the server now?', detail: '1 running agent stops.' })
+    expect(saveRestartQuestion(3)).toEqual({ title: 'Restart the server now?', detail: '3 running agents stop.', confirm: 'Save and restart', keep: 'Keep editing' })
+    expect(JSON.stringify(saveRestartQuestion(3))).not.toMatch(/sessions end|Save and restart the server/)
     expect(revokeQuestion('')).toMatchObject({ title: 'Revoke the link?', detail: 'Viewers using it are disconnected.' })
     expect(resumeQuestion('docs')).toMatchObject({ title: 'Resume docs?', detail: "A new session takes up its agent's own conversation." })
   })

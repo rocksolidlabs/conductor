@@ -211,6 +211,41 @@ export interface AgentInfo {
   protocol?: AgentProtocol
 }
 
+/** A value an agent's help lists for a flag; `set: 'yolo'` for one that turns its questions off. */
+export interface AgentFlagChoice {
+  value: string
+  about?: string
+  set?: 'yolo'
+}
+
+/** One flag of an agent's own help, as GET /api/catalog/{id}/flags reads it (internal/agents ParseFlags). */
+export interface AgentFlag {
+  name: string
+  aliases?: string[]
+  value: 'none' | 'required' | 'optional' | 'unknown'
+  placeholder?: string
+  repeat?: boolean
+  about?: string
+  choices?: AgentFlagChoice[]
+  examples?: string[]
+  kind?: 'choice' | 'model' | 'folder'
+  /** What a launch by Conductor sets itself, which a form does not offer. */
+  set?: 'model' | 'yolo' | 'session' | 'launch' | 'exit'
+  /** A session launched with it stays in its terminal. */
+  keepsTerminal?: boolean
+}
+
+/** GET /api/catalog/{id}/flags: an agent's flags from the help of the version installed on the server. */
+export interface AgentFlags {
+  agent: string
+  name: string
+  version?: string
+  state: 'read' | 'reading' | 'none'
+  why?: 'no_args' | 'no_recipe' | 'not_installed' | 'not_identified' | 'unreadable' | 'too_long' | 'no_flags'
+  flags: AgentFlag[]
+  models: string[]
+}
+
 /** An agent's protocol way (the catalog's `protocol`): `{}` turns an inherited one off. */
 export interface AgentProtocol {
   name?: string
@@ -1030,6 +1065,8 @@ export function useSessions() {
       request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog', { query: { wait: '0' } }).then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),
     /** One agent as the catalog lists it, once the server's checks of it have answered (about 4 s at most; still `checking` past that). */
     catalogAgent: (id: string, signal?: AbortSignal) => request<{ agent: AgentInfo }>(`/api/catalog/${encodeURIComponent(id)}`, { signal }).then((r) => r.agent),
+    /** An agent's own flags and the model names its help gives, read from the help of the version installed (`reading`: ask again). */
+    agentFlags: (id: string, signal?: AbortSignal) => request<AgentFlags>(`/api/catalog/${encodeURIComponent(id)}/flags`, { signal }),
     /** Adds an agent or replaces the one with the same id (a built-in too); the server saves it in its data directory. */
     saveAgent: (a: AgentInput) => request<{ agent: AgentInfo }>('/api/catalog', { method: 'POST', body: a }).then((r) => r.agent),
     /** Makes a copy of the agent `from` under the body's id (#291): what the body leaves out that the form has no control for is the source's, and an env value of `***` is the source's value, copied and never shown; 409 `id_taken` for an id an agent has. */
