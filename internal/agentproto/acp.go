@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,7 +90,27 @@ type ACPOptions struct {
 	Cwd     string
 	// InitWait bounds Begin, ACPInitWait when 0 (a test's knob).
 	InitWait time.Duration
+	// RawInputKeys are the keys of a call's raw input the client was taught
+	// for this agent (ACPRawInputKeys, recorded at the agent's own look): a
+	// call whose raw input holds any other key, or is not an object, is one
+	// the client does not read.
+	RawInputKeys []string
+	// YoloLeft says the session's terminal was a yolo launch, whose
+	// variables the chat's child does not take: the chat tells so as it
+	// begins.
+	YoloLeft bool
 }
+
+// acpRawInputKeys are the raw input's keys each agent's own look recorded,
+// by its adapter. None yet: until an agent's look, every call of it with a
+// raw input is declined.
+var acpRawInputKeys = map[string][]string{}
+
+// ACPRawInputKeys are the raw input's keys taught for an agent's adapter.
+func ACPRawInputKeys(adapter string) []string { return acpRawInputKeys[adapter] }
+
+// ACPYoloLeftWords is the notice a chat of a yolo launch begins with.
+const ACPYoloLeftWords = "Yolo stays with the terminal: this chat asks before each step."
 
 // ACP is the client of an agent's Agent Client Protocol on stdio
 // (session.Protocol): protocol 1, the baseline alone. It advertises no file
@@ -109,6 +130,8 @@ type ACP struct {
 	session  string
 	cwd      string
 	initWait time.Duration
+	keys     []string
+	yoloLeft bool
 
 	wmu    sync.Mutex
 	cmu    sync.Mutex
@@ -148,6 +171,8 @@ type acpCall struct {
 type acpRequest struct {
 	id      json.RawMessage
 	options []acpOption
+	// call is the tool call the request is about.
+	call string
 }
 
 type acpOption struct{ ID, Kind string }
@@ -178,7 +203,7 @@ func NewACP(in io.WriteCloser, out io.Reader, opts ACPOptions) *ACP {
 		wait = ACPInitWait
 	}
 	return &ACP{
-		in: in, out: out, session: opts.Session, cwd: opts.Cwd, initWait: wait,
+		in: in, out: out, session: opts.Session, cwd: opts.Cwd, initWait: wait, keys: opts.RawInputKeys, yoloLeft: opts.YoloLeft,
 		calls: map[string]*acpCall{}, requests: map[string]*acpRequest{}, byID: map[string]string{},
 		readDone: make(chan struct{}),
 		r:        acpRead{streamed: map[string]bool{}, tools: map[string]acpTool{}},
@@ -461,7 +486,15 @@ func (c *ACP) Read(ctx context.Context, e session.ProtocolEvents) error {
 			return l.err
 		}
 		if l.cut {
+			// A line the client could not read may have changed any call:
+			// every open call is changed, and every open request about one
+			// is withdrawn.
 			e.Notice(NoticeTooLarge, TooLargeWords)
+			for id, t := range c.r.tools {
+				t.changed = true
+				c.r.tools[id] = t
+				c.withdrawAbout(id, e)
+			}
 			continue
 		}
 		if len(bytes.TrimSpace(l.b)) == 0 {
@@ -522,6 +555,9 @@ func (c *ACP) answer(id json.RawMessage, m map[string]json.RawMessage, e session
 	case "session/resume", "session/load":
 		if a.err == nil {
 			e.Conversation(c.session)
+			if c.yoloLeft {
+				e.Notice("yolo_left", ACPYoloLeftWords)
+			}
 		}
 	case "session/prompt":
 		c.promptEnded(a, e)
@@ -661,7 +697,13 @@ func (c *ACP) update(u map[string]json.RawMessage, e session.ProtocolEvents) {
 		if id == "" {
 			return
 		}
-		name, input, summary, fields, unread := acpStep(u)
+		if t, open := c.r.tools[id]; open {
+			// Announced again: a call that is no longer as it was shown.
+			c.changeOf(id, t, u, e)
+			c.toolStatus(id, u, e)
+			return
+		}
+		name, input, summary, fields, unread := acpStep(u, c.keys)
 		c.announce(id, acpTool{name: name, input: input, fields: fields, unread: unread}, summary, e)
 		c.toolStatus(id, u, e)
 	case "tool_call_update":
@@ -674,12 +716,7 @@ func (c *ACP) update(u map[string]json.RawMessage, e session.ProtocolEvents) {
 		if !open {
 			return
 		}
-		if acpChanges(t.fields, u) {
-			// What the step was announced with is no longer all it is: a
-			// request about it is declined.
-			t.changed = true
-			c.r.tools[id] = t
-		}
+		c.changeOf(id, t, u, e)
 		c.toolStatus(id, u, e)
 	}
 }
@@ -692,6 +729,46 @@ var (
 	acpShownFields  = []string{"name", "title", "kind", "rawInput", "content", "locations"}
 	acpUpdateFields = []string{"toolCallId", "status", "rawOutput", "sessionUpdate"}
 )
+
+// changeOf is an update or a repeated announcement of the open call id: one
+// that gives a shown field another value, or holds a field the client does
+// not read, changes the call (a later request about it is declined) and
+// withdraws every open request about it; one that sets it running withdraws
+// them too, the call no longer waiting for the answer.
+func (c *ACP) changeOf(id string, t acpTool, u map[string]json.RawMessage, e session.ProtocolEvents) {
+	_, _, _, _, unread := acpStep(u, c.keys)
+	changed := acpChanges(t.fields, u) || unread
+	if changed {
+		t.changed = true
+		c.r.tools[id] = t
+	}
+	var status string
+	field(u, "status", &status)
+	if changed || (status != "" && status != "pending") {
+		c.withdrawAbout(id, e)
+	}
+}
+
+// withdrawAbout withdraws every open request about the call id: the agent
+// is answered cancelled, and the person's card closes.
+func (c *ACP) withdrawAbout(id string, e session.ProtocolEvents) {
+	c.mu.Lock()
+	var gone []string
+	var ids []json.RawMessage
+	for ref, r := range c.requests {
+		if r.call == id {
+			gone = append(gone, ref)
+			ids = append(ids, r.id)
+			delete(c.requests, ref)
+			delete(c.byID, idKey(r.id))
+		}
+	}
+	c.mu.Unlock()
+	for i, ref := range gone {
+		_ = c.answerOutcome(ids[i], acpCancelled())
+		e.PermissionWithdrawn(ref)
+	}
+}
 
 // acpChanges says an update gives one of the shown fields a value other
 // than the one announced.
@@ -722,7 +799,7 @@ func jsonEqual(a, b json.RawMessage) bool {
 // acpStep is a tool call's step: its name (the agent's name for the tool,
 // else its kind), its raw input ({} where it gives none) and its title as
 // the one line.
-func acpStep(u map[string]json.RawMessage) (name string, input []byte, summary string, fields map[string]json.RawMessage, unread bool) {
+func acpStep(u map[string]json.RawMessage, keys []string) (name string, input []byte, summary string, fields map[string]json.RawMessage, unread bool) {
 	var title, kind string
 	field(u, "name", &name)
 	field(u, "kind", &kind)
@@ -739,23 +816,50 @@ func acpStep(u map[string]json.RawMessage) (name string, input []byte, summary s
 			fields[k] = bytes.Clone(raw)
 		}
 	}
-	input = acpInput(fields)
-	unread = extraFields(u, append(append([]string{}, acpShownFields...), acpUpdateFields...))
+	input, ok := acpInput(fields)
+	unread = !ok || extraFields(u, append(append([]string{}, acpShownFields...), acpUpdateFields...)) || !rawInputRead(fields["rawInput"], keys)
 	return name, input, title, fields, unread
 }
 
-// acpInput is a call's input as the session keeps it and the person is
-// asked about: every shown field it holds, whole.
-func acpInput(fields map[string]json.RawMessage) []byte {
-	m := map[string]any{}
-	for k, raw := range fields {
-		var v any
-		if json.Unmarshal(raw, &v) == nil {
-			m[k] = v
+// rawInputRead says a call's raw input is one the client reads: none, or an
+// object whose every key the client was taught for its agent.
+func rawInputRead(raw json.RawMessage, keys []string) bool {
+	if raw == nil {
+		return true
+	}
+	m := object(raw)
+	if m == nil {
+		return false
+	}
+	for k := range m {
+		if !contains(keys, k) {
+			return false
 		}
 	}
-	b, _ := marshal(m)
-	return b
+	return true
+}
+
+// acpInput is a call's input as the session keeps it and the person is
+// asked about: every shown field it holds, whole, from the agent's own bytes
+// (keys sorted, each value as the agent wrote it, its insignificant space
+// taken out); false when a field is not JSON.
+func acpInput(fields map[string]json.RawMessage) ([]byte, bool) {
+	keys := slices.Sorted(maps.Keys(fields))
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		name, _ := json.Marshal(k)
+		b.Write(name)
+		b.WriteByte(':')
+		if err := json.Compact(&b, fields[k]); err != nil {
+			return []byte("{}"), false
+		}
+	}
+	b.WriteByte('}')
+	return b.Bytes(), true
 }
 
 func (c *ACP) announce(id string, t acpTool, summary string, e session.ProtocolEvents) {
@@ -887,20 +991,17 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 		e.Notice(NoticeDeclined, ACPDeclinedWords)
 		return
 	}
-	var options []acpOption
-	var raws []json.RawMessage
-	field(p, "options", &raws)
+	options, read := acpOptions(p["options"])
+	if !read {
+		// Options the client does not read whole: declined, never put to a
+		// person.
+		_ = c.answerOutcome(id, acpCancelled())
+		e.Notice(NoticeDeclined, ACPDeclinedWords)
+		return
+	}
 	allowOnce := false
-	for _, raw := range raws {
-		o := object(raw)
-		var opt acpOption
-		field(o, "optionId", &opt.ID)
-		field(o, "kind", &opt.Kind)
-		if opt.ID == "" {
-			continue
-		}
-		options = append(options, opt)
-		allowOnce = allowOnce || opt.Kind == "allow_once"
+	for _, o := range options {
+		allowOnce = allowOnce || o.Kind == "allow_once"
 	}
 	if !allowOnce {
 		// No way to allow it once: declined at once, never put to a person
@@ -920,7 +1021,7 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 	var call string
 	field(tc, "toolCallId", &call)
 	step, announced := c.r.tools[call]
-	if (announced && (step.unread || step.changed)) || tc == nil || extraFields(tc, append(append([]string{}, acpShownFields...), acpUpdateFields...)) {
+	if !announced || step.unread || step.changed || tc == nil || extraFields(tc, append(append([]string{}, acpShownFields...), acpUpdateFields...)) {
 		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
 		e.Notice(NoticeDeclined, ACPDeclinedWords)
 		return
@@ -947,7 +1048,12 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 			name = kind
 		}
 	}
-	input := acpInput(fields)
+	input, ok := acpInput(fields)
+	if !ok || !rawInputRead(fields["rawInput"], c.keys) {
+		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
+		e.Notice(NoticeDeclined, ACPDeclinedWords)
+		return
+	}
 	key := idKey(id)
 	c.mu.Lock()
 	if len(c.requests) >= maxACPRequests {
@@ -955,10 +1061,52 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
 		return
 	}
+	old, reused := c.byID[key]
+	if reused {
+		delete(c.requests, old)
+	}
 	c.reqSeq++
 	ref := "acp-req-" + strconv.Itoa(c.reqSeq)
-	c.requests[ref] = &acpRequest{id: bytes.Clone(id), options: options}
+	c.requests[ref] = &acpRequest{id: bytes.Clone(id), options: options, call: call}
 	c.byID[key] = ref
 	c.mu.Unlock()
+	if reused {
+		// The agent named a new request by an open one's id: the open one's
+		// card closes, its answer reaching nobody.
+		e.PermissionWithdrawn(old)
+	}
 	e.Permission(session.PermissionRequest{Ref: ref, Call: call, Tool: name, Input: input})
+}
+
+// acpOptionKinds are the kinds of a permission option protocol 1 names.
+var acpOptionKinds = []string{"allow_once", "allow_always", "reject_once", "reject_always"}
+
+// acpOptions are a request's options when the client reads them whole: each
+// an object of optionId, name and kind alone, its id not empty and given
+// once, its kind one protocol 1 names, and at most one of kind allow_once;
+// false otherwise.
+func acpOptions(raw json.RawMessage) ([]acpOption, bool) {
+	var raws []json.RawMessage
+	if json.Unmarshal(raw, &raws) != nil {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	allowOnce := 0
+	out := make([]acpOption, 0, len(raws))
+	for _, r := range raws {
+		o := object(r)
+		if o == nil || extraFields(o, []string{"optionId", "name", "kind"}) {
+			return nil, false
+		}
+		var opt acpOption
+		if !fieldIs(o, "optionId", &opt.ID) || opt.ID == "" || seen[opt.ID] || !fieldIs(o, "kind", &opt.Kind) || !contains(acpOptionKinds, opt.Kind) {
+			return nil, false
+		}
+		seen[opt.ID] = true
+		if opt.Kind == "allow_once" {
+			allowOnce++
+		}
+		out = append(out, opt)
+	}
+	return out, allowOnce <= 1
 }

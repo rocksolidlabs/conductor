@@ -37,6 +37,7 @@ type (
 	FileChange        = way.FileChange
 	Usage             = way.Usage
 	PermissionRequest = way.PermissionRequest
+	Command           = way.Command
 	Verdict           = way.Verdict
 	// ProtocolStart starts a protocol way's child and its driver on the
 	// agent's conversation ("" for a new one).
@@ -113,6 +114,7 @@ const (
 	QueuedWords         = "Sends when the turn ends."
 	TooManyQueuedWords  = "Too many messages are waiting."
 	PermissionCardWords = "Answer this request with its own buttons."
+	NoExpandWords       = "Not sent: from here a line goes to the agent as written."
 
 	// What a permission request's entry says once it is no longer open,
 	// and what the agent is told with a deny.
@@ -139,6 +141,12 @@ var (
 	ErrNotProtocol error = &wayWords{NotProtocolWords}
 	// ErrNoTurn refuses an interrupt while no turn runs.
 	ErrNoTurn error = &wayWords{NoTurnWords}
+	// ErrNoExpand refuses a line that asks to go without the as-written mark
+	// (Submission.Expand) where it cannot: from any connection but the
+	// operator's own chat connection, with a question, a decision or a
+	// relay, on a driver with no mark, on a session in its terminal.
+	// Nothing is written: the line is never sent otherwise than asked.
+	ErrNoExpand error = &wayWords{NoExpandWords}
 	// ErrTooManyQueued refuses a message while MaxQueuedMessages wait.
 	ErrTooManyQueued error = &wayWords{TooManyQueuedWords}
 	// ErrUnconfirmed is a message's word when the agent did not
@@ -237,6 +245,10 @@ type protocolWay struct {
 	showing   string
 	under     Attention
 	aside     []asideChange
+
+	// commands is the agent's own commands (commands.go): kept with the
+	// chat, gone with it, sent to the operator's own chat connections alone.
+	commands chatCommands
 }
 
 // queuedMessage is a message on its way into the conversation.
@@ -765,6 +777,18 @@ func (s *Local) submitProtocol(p *protocolWay, sub Submission) (SubmitResult, er
 		return res, ErrTooManyQueued
 	}
 	q := &queuedMessage{sub: sub, msg: Message{Ref: NewID(), Text: text}, by: "conductor", byName: CleanName(sub.ByName), state: PromptQueued}
+	// I19: the one place a message is sent without the as-written mark.
+	// Only the operator's own chat connection's typed line, naming no
+	// question or decision and relaying nobody, on a driver that has a mark.
+	// Asked anywhere else, the line is refused, never sent as something it
+	// did not ask to be (ErrNoExpand).
+	if sub.Expand {
+		if sub.Question != "" || sub.Decision != "" || sub.From != nil || !p.verbatim || !s.operatorChatLocked(sub.By) {
+			s.mu.Unlock()
+			return res, ErrNoExpand
+		}
+		q.msg.Expand = true
+	}
 	shownName := oneLine(sub.ByName, maxPromptName)
 	if from := submissionFrom(sub); from != nil {
 		q.by = "person"
@@ -781,7 +805,7 @@ func (s *Local) submitProtocol(p *protocolWay, sub Submission) (SubmitResult, er
 		}
 		q.claim = token
 	}
-	e := TranscriptEntry{Kind: EntryPrompt, Turn: p.turns + 1, By: q.by, ByName: shownName, State: PromptQueued}
+	e := TranscriptEntry{Kind: EntryPrompt, Turn: p.turns + 1, By: q.by, ByName: shownName, State: PromptQueued, Expanded: q.msg.Expand}
 	if sub.Question != "" {
 		// An answer carries the question it answers and never its text:
 		// its sender's own page shows it (the people's chat's rule).
@@ -1683,6 +1707,12 @@ func (s *Local) toolNameLocked(p *protocolWay, ref string) string {
 }
 
 func (e protocolEvents) Permission(r PermissionRequest) {
+	// The walk of a call's strings is for calls that come in an agent's
+	// stream, and is made here, on the driver's goroutine, before the
+	// session's lock is taken: it reads only what does not change over the
+	// session, and is bounded (streamFloored). The lock is then held for
+	// the bound and the binding alone.
+	walked := len(r.Input) <= MaxTranscriptPart && e.s.streamFloored(r.Input)
 	if !e.begin() {
 		return
 	}
@@ -1715,7 +1745,7 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 		why = TooManyRequestsWords
 	default:
 		call, why = s.bindInStreamLocked(p, r.Call, r.Tool, digest)
-		if why == "" && s.flooredLocked(r.Tool, r.Input) {
+		if why == "" && (walked || s.flooredLocked(r.Tool, r.Input)) {
 			why = FloorWords
 		}
 	}

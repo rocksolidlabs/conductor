@@ -641,7 +641,7 @@ async function submit() {
                 <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
               </UFormField>
               <UFormField v-if="takesAccount" label="Model" name="model" :error="modelError || undefined" data-launch-model>
-                <ModelField v-model="model" :agent="selected ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" placeholder="The agent's choice" autocapitalize="off" autocorrect="off" spellcheck="false" :list="modelNames.length ? modelListId : undefined" data-launch-model-input />
+                <ModelField v-model="model" :agent="selected ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :recent="modelNames" placeholder="The agent's choice" autocapitalize="off" autocorrect="off" spellcheck="false" :list="modelNames.length ? modelListId : undefined" data-launch-model-input />
                 <datalist v-if="modelNames.length" :id="modelListId" data-launch-model-names>
                   <option v-for="n in modelNames" :key="n" :value="n" />
                 </datalist>
@@ -656,7 +656,7 @@ async function submit() {
                 :error="modelTwice || undefined"
                 data-launch-args-field
               >
-                <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" :yolo-args="recipeArgs" autocapitalize="off" autocorrect="off" spellcheck="false" data-launch-args />
+                <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" :yolo-args="recipeArgs" :cwd="state.cwd" autocapitalize="off" autocorrect="off" spellcheck="false" data-launch-args />
               </UFormField>
               <p v-if="selected?.allowArgs && runsView.argv.length" class="text-xs text-muted [overflow-wrap:anywhere]" data-launch-runs>
                 Runs: <code class="font-mono" data-mono="command">{{ runsView.argv.join(' ') }}</code><template v-if="takesAccount && model.trim()"> · model {{ model.trim() }}</template>

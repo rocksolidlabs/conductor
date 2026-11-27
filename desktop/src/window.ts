@@ -170,17 +170,7 @@ export function createWindow(o: WindowOptions): BrowserWindow {
     show: false,
     webPreferences: { ...workbenchPreferences(o.preload), spellcheck: false },
   })
-  w.webContents.on('will-navigate', (e, url) => {
-    if (!sameOrigin(url, o.origin())) {
-      e.preventDefault()
-      if (external(url)) void shell.openExternal(url)
-    }
-  })
-  w.webContents.setWindowOpenHandler(({ url }) => {
-    if (sameOrigin(url, o.origin())) return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: workbenchPreferences(o.preload) } }
-    if (external(url)) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
+  fenceWorkbench(w.webContents as unknown as FenceContents, { origin: o.origin, preload: o.preload, openExternal: (url) => void shell.openExternal(url) })
   // The bounds are kept as the window closes (hidden to the tray or not) and as the app quits with it shown. The app's quit (the
   // tray's Quit, Cmd+Q, the menu) stops the server in main.ts's before-quit and then calls app.exit, which destroys every window
   // without a 'close': so the window keeps them on before-quit itself, shown or minimized. One hidden to the tray kept them as it
@@ -213,6 +203,129 @@ export function createWindow(o: WindowOptions): BrowserWindow {
     w.show()
   })
   return w
+}
+
+/** The part of a window's webContents the fences use. */
+export interface FenceContents {
+  on(event: 'will-navigate' | 'will-redirect', fn: (e: { preventDefault(): void; isMainFrame?: boolean }, url: string) => void): unknown
+  on(event: 'did-create-window', fn: (child: { webContents: FenceContents }) => void): unknown
+  setWindowOpenHandler(fn: (d: { url: string }) => { action: 'allow'; overrideBrowserWindowOptions?: BrowserWindowConstructorOptions } | { action: 'deny' }): void
+}
+
+/**
+ * fenceWorkbench puts the workbench's fences on a window of it, and on every window it opens, and on theirs, however deep: it
+ * navigates and is redirected only within the server's origin, a link elsewhere opening outside the app (http(s) alone, and
+ * nothing else); it opens a window only at the server's origin, as a workbench window with the bridge and these same fences, and
+ * anything else outside the app. While the app trusts no origin (its server not running), it navigates nowhere and opens nothing.
+ */
+export function fenceWorkbench(wc: FenceContents, o: { origin: () => string; preload: string; openExternal: (url: string) => void }): void {
+  const away = (e: { preventDefault(): void; isMainFrame?: boolean }, url: string, hand: boolean) => {
+    // A frame's own redirect (a preview's) is the frame's: the window's page is what is fenced.
+    const trusted = o.origin()
+    if (e.isMainFrame === false || sameOrigin(url, trusted)) return
+    e.preventDefault()
+    // While no origin is trusted (the server restarting), a link is held, not handed outside: it may be the workbench's own.
+    if (hand && trusted && external(url)) o.openExternal(url)
+  }
+  wc.on('will-navigate', (e, url) => away(e, url, true))
+  wc.on('will-redirect', (e, url) => away(e, url, false))
+  wc.setWindowOpenHandler(({ url }) => {
+    const trusted = o.origin()
+    if (sameOrigin(url, trusted)) return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: workbenchPreferences(o.preload) } }
+    if (trusted && external(url)) o.openExternal(url)
+    return { action: 'deny' }
+  })
+  wc.on('did-create-window', (child) => fenceWorkbench(child.webContents, o))
+}
+
+/**
+ * fenceLocalPage puts the fences of one of the app's own local pages (the server log, the Windows setup screen) on its window: it
+ * stays on its page, and a link from it opens outside the app (http(s) alone), never in a window of the app.
+ */
+export function fenceLocalPage(wc: FenceContents, openExternal: (url: string) => void): void {
+  const away = (e: { preventDefault(): void; isMainFrame?: boolean }, url: string, hand: boolean) => {
+    if (e.isMainFrame === false) return
+    e.preventDefault()
+    if (hand && external(url)) openExternal(url)
+  }
+  wc.on('will-navigate', (e, url) => away(e, url, true))
+  wc.on('will-redirect', (e, url) => away(e, url, false))
+  wc.setWindowOpenHandler(({ url }) => {
+    if (external(url)) openExternal(url)
+    return { action: 'deny' }
+  })
+}
+
+/** A window as the app's following of its server sees it. */
+export interface ShownWindow {
+  isDestroyed(): boolean
+  webContents: { id: number; getURL(): string; loadURL(url: string): Promise<void> }
+}
+
+/**
+ * ServerWindows keeps every window that shows a page of the app's server on the server the app trusts: when the trusted origin goes
+ * (the server stops, crashes or gives up), every window on a page of it shows nothing (about:blank) and keeps where it was; when a
+ * server runs again, each goes back to its page on the new origin, the main window and every other alike. A window on another
+ * page (the splash, the log, an outside site) is left as it is.
+ */
+export class ServerWindows {
+  private on = ''
+  private held = new Map<number, string>()
+
+  constructor(private all: () => ShownWindow[]) {}
+
+  /** moved is told the origin the app trusts now ('' while none). */
+  moved(next: string): void {
+    if (next === this.on) return
+    const prev = this.on
+    this.on = next
+    for (const w of this.all()) {
+      if (w.isDestroyed()) continue
+      const wc = w.webContents
+      const url = wc.getURL()
+      if (!next) {
+        if (prev && sameOrigin(url, prev)) {
+          const u = new URL(url)
+          this.held.set(wc.id, u.pathname + u.search + u.hash)
+          void wc.loadURL('about:blank').catch(() => {})
+        }
+        continue
+      }
+      const path = this.held.get(wc.id)
+      if (path !== undefined) {
+        this.held.delete(wc.id)
+        void wc.loadURL(next + path).catch(() => {})
+        continue
+      }
+      const follow = followOrigin(url, next)
+      if (follow) void wc.loadURL(follow).catch(() => {})
+    }
+  }
+
+  /**
+   * reloadTarget is what a reload of the window shows: its page again while it is on the trusted origin (or one of the app's own
+   * file: pages), the page it was on once a server runs again, and nothing at all otherwise.
+   */
+  reloadTarget(w: ShownWindow): string | null {
+    const url = w.webContents.getURL()
+    if (url.startsWith('file:')) return url
+    if (this.on && sameOrigin(url, this.on)) return url
+    const path = this.held.get(w.webContents.id)
+    if (path !== undefined) return this.on ? this.on + path : null
+    const follow = this.on ? followOrigin(url, this.on) : null
+    return follow
+  }
+}
+
+/**
+ * mainFrameAllowed says whether a window's page may be loaded from url: a page of the server the app trusts, or anything that is
+ * not http(s) (the app's own file: pages, about:blank). A reload, a history step or a load at an address the app does not trust
+ * now is cancelled, in every window.
+ */
+export function mainFrameAllowed(resourceType: string, url: string, origin: string): boolean {
+  if (resourceType !== 'mainFrame') return true
+  if (!/^https?:/i.test(url)) return true
+  return !!origin && sameOrigin(url, origin)
 }
 
 /** restrictPermissions denies every permission request but the clipboard's. */

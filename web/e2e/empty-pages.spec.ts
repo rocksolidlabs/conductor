@@ -112,7 +112,8 @@ test('a server with nothing on it: the Yard and the Roundhouse draw the one empt
   // At the desktop the line stays the sidebar's: the welcome is the home's, and the Yard's sidebar says the list is empty.
   const desk = await dayPage(browser, { ...DESK, path: '/yard', server: srv.started })
   const line = desk.locator('#dashboard-sidebar-main [data-sidebar-empty]')
-  await expect(line).toHaveText('No sessions yet.')
+  await expect(line).toHaveText('Nothing is running.')
+  await expect(desk.locator('#dashboard-sidebar-main')).not.toContainText('No sessions yet.')
   await uncut(line)
 })
 

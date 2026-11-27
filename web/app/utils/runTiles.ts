@@ -1,9 +1,9 @@
 // How a run's tiles are drawn, kept for each crew (the run page's Members view): their layout, the member drawn large in One large,
-// and whether the run's Activity shows beside the tiles.
+// the sizes a person dragged each layout's gaps to, and whether the run's Activity shows beside the tiles.
 // One record in the page's storage, `conductor.runTiles`: a choice for each crew the person set one for, the latest first and at most
 // RUN_TILES_CREWS of them, and the last choice made anywhere, which a crew opened for the first time takes. Pure: the storage is
 // handed in.
-import { isRunLayout, type RunLayout } from './wall'
+import { isRunLayout, RUN_LAYOUTS, SHARES_MAX, type RunLayout, type WallShares } from './wall'
 
 /** The key of the record in the page's storage. */
 export const RUN_TILES_KEY = 'conductor.runTiles'
@@ -18,6 +18,8 @@ export interface RunTilesChoice {
   activity: boolean
   /** The member One large draws large, by name; none for the first. */
   large?: string
+  /** The shares each layout's tracks were dragged to, for the crew. */
+  sizes?: Partial<Record<RunLayout, WallShares>>
 }
 
 export interface RunTilesRecord {
@@ -45,12 +47,33 @@ function choiceOf(v: unknown): RunTilesChoice | null {
   if (typeof o.activity !== 'boolean') return null
   const c: RunTilesChoice = { layout: isRunLayout(o.layout) ? o.layout : FIRST_CHOICE.layout, activity: o.activity }
   if (typeof o.large === 'string' && MEMBER.test(o.large)) c.large = o.large
+  const sizes = sizesOf(o.sizes)
+  if (sizes) c.sizes = sizes
   return c
+}
+
+/** An axis's shares as stored: at most SHARES_MAX positive numbers, else none. */
+function sharesOf(v: unknown): number[] | undefined {
+  return Array.isArray(v) && v.length >= 2 && v.length <= SHARES_MAX && v.every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0) ? (v as number[]) : undefined
+}
+
+/** Each layout's sizes as stored; a layout or an axis that does not read is left out. */
+function sizesOf(v: unknown): RunTilesChoice['sizes'] {
+  if (!v || typeof v !== 'object') return undefined
+  const out: NonNullable<RunTilesChoice['sizes']> = {}
+  for (const l of RUN_LAYOUTS) {
+    const s = (v as Record<string, unknown>)[l] as Record<string, unknown> | undefined
+    if (!s || typeof s !== 'object') continue
+    const cols = sharesOf(s.cols)
+    const rows = sharesOf(s.rows)
+    if (cols || rows) out[l] = { ...(cols ? { cols } : {}), ...(rows ? { rows } : {}) }
+  }
+  return Object.keys(out).length ? out : undefined
 }
 
 /** The choice alone, without the crew it is kept for. */
 function onlyChoice(c: RunTilesChoice): RunTilesChoice {
-  return { layout: c.layout, activity: c.activity, ...(c.large ? { large: c.large } : {}) }
+  return { layout: c.layout, activity: c.activity, ...(c.large ? { large: c.large } : {}), ...(c.sizes ? { sizes: c.sizes } : {}) }
 }
 
 /** The record from its stored text: one that does not read is an empty record, and an entry that does not read is left out. */
@@ -93,6 +116,24 @@ export function choose(record: RunTilesRecord, crew: string, change: Partial<Run
   if (!CREW.test(crew)) return { ...record, last: next }
   const crews = [{ crew, ...next }, ...record.crews.filter((e) => e.crew !== crew)].slice(0, RUN_TILES_CREWS)
   return { last: next, crews }
+}
+
+/** The change that sets one axis of one layout's tracks to `shares` (a drag of a gap), the layout's other axis kept. */
+export function withShares(choice: RunTilesChoice, layout: RunLayout, axis: 'cols' | 'rows', shares: number[]): Partial<RunTilesChoice> {
+  return { sizes: { ...choice.sizes, [layout]: { ...choice.sizes?.[layout], [axis]: shares.map((s) => +s.toFixed(4)) } } }
+}
+
+/**
+ * The record with the server's copy of the last choice taken up (the layout document's `runTiles`, R88): what the page's storage
+ * lost at a restart of the server comes back, and a crew with a choice of its own keeps it. A layout this page does not draw is
+ * left as it was.
+ */
+export function takeLast(record: RunTilesRecord, kept: { layout?: string; activity?: boolean } | undefined): RunTilesRecord {
+  if (!kept) return record
+  const last = { ...record.last }
+  if (isRunLayout(kept.layout)) last.layout = kept.layout
+  if (typeof kept.activity === 'boolean') last.activity = kept.activity
+  return last.layout === record.last.layout && last.activity === record.last.activity ? record : { ...record, last }
 }
 
 /** The member One large draws large among `names` (the run's order): the one chosen while it is still a member, else the first. */

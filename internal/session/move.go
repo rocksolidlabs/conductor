@@ -290,10 +290,11 @@ func (s *Local) clearNotedLocked() {
 // beginMoveLocked marks the session moving. The caller holds s.mu.
 func (s *Local) beginMoveLocked() { s.moveDone = make(chan struct{}) }
 
-// wayFrameLocked is the way message as the session stands. The caller
+// wayFrameLocked is the way message as the session stands, expands its
+// word to the operator's own chat connection (Way.Expands). The caller
 // holds s.mu.
-func (s *Local) wayFrameLocked(why string) []byte {
-	m := proto.Way{Way: s.wayLocked(), Noted: s.noted}
+func (s *Local) wayFrameLocked(why string, expands bool) []byte {
+	m := proto.Way{Way: s.wayLocked(), Noted: s.noted, Expands: expands}
 	if p := s.way.Load(); p != nil {
 		m.Protocol = p.name
 	}
@@ -311,7 +312,41 @@ func (s *Local) wayFrameLocked(why string) []byte {
 
 // broadcastWayLocked tells every viewer the way and the noted move. The
 // caller holds s.mu.
-func (s *Local) broadcastWayLocked() { s.hub.Broadcast(s.wayFrameLocked("")) }
+func (s *Local) broadcastWayLocked() { s.sendWayLocked("") }
+
+// standingChangedLocked tells every viewer of a chat its way again after
+// the session's standing changed (a crew formed around it): the way
+// message's expand as it now is, to each connection. The caller holds s.mu.
+func (s *Local) standingChangedLocked() { s.sendWayLocked("") }
+
+// sendWayLocked tells every viewer the way, the noted move and why, and,
+// on a chat whose driver has a mark, the operator's own chat connection
+// alone that its typed line goes for the agent to expand (Way.Expands,
+// I19): said again after a move, so its page never stands in with a word
+// of its own; on a chat, that connection is sent the agent's commands
+// after it. The caller holds s.mu.
+func (s *Local) sendWayLocked(why string) {
+	plain := s.wayFrameLocked(why, false)
+	p := s.way.Load()
+	if p == nil {
+		s.hub.Broadcast(plain)
+		return
+	}
+	own := s.wayFrameLocked(why, p.verbatim)
+	// The agent's own commands follow the way to a chat, to the operator's
+	// own chat connection alone (commands.go).
+	commands := s.commandsFrameLocked(p)
+	s.hub.Each(func(sub *Subscription) {
+		if s.operatorChatLocked(sub) {
+			sub.send(own)
+			if commands != nil {
+				sub.send(commands)
+			}
+		} else {
+			sub.send(plain)
+		}
+	})
+}
 
 // tryNoted makes the noted move once the session is at rest, or tells
 // viewers the new reason it waits: called after the events that may end
@@ -365,7 +400,7 @@ func (s *Local) move(from, to string, m MoveStarts, cause string) {
 		done := s.moveDone
 		s.moveDone, s.moveCancel = nil, nil
 		if !ended && !s.info.Status.Ended() {
-			s.hub.Broadcast(s.wayFrameLocked(why))
+			s.sendWayLocked(why)
 		}
 		p := s.way.Load()
 		s.mu.Unlock()

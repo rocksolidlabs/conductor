@@ -15,7 +15,9 @@ and shows its log.
 | `src/server.ts` | `ServerSupervisor`: spawn, the handshake line, health polling, restart with backoff, stop by closing stdin |
 | `src/handshake.ts` | the `--print-listen` line, read out of chunked output past a shell's noise |
 | `src/launcher.ts`, `src/launcher-wsl.ts`, `src/wsl.ts` | where the binary runs: on this machine, or inside a WSL 2 distribution on Windows |
-| `src/env.ts`, `src/shellPath.ts` | the server's environment: the login shell's PATH, the settings as `CONDUCTOR_*`, the token, and the app's own directory (`CONDUCTOR_DESKTOP_DIR`, under `/mnt` inside WSL), which the server's sessions never read |
+| `src/env.ts`, `src/shellPath.ts` | the server's environment: the login shell's PATH, the settings as `CONDUCTOR_*`, and the app's own directory (`CONDUCTOR_DESKTOP_DIR`, under `/mnt` inside WSL), which the server's sessions never read |
+| `src/env.ts` `secretsLine`, `src/server.ts` | the workbench token and the run's key, handed to the server as the first line of its stdin (`serve --secrets-stdin`), in no environment or argument |
+| `src/allow.ts` | Allow this folder: the server asked with the token and the key (`POST /api/roots`), the folder kept in the settings (apart from the typed ones, judged again by the server at every start) with no restart, one press at a time and never beside a Settings save; off on Windows until its switch is on. The folders agents may use are where Conductor starts agents and what its own pages read; they are not a sandbox: an agent runs as the person, with the person's own reach, governed by its own permission prompts |
 | `src/settings.ts` | `userData/settings.json`: data directory, allowed roots, default directory, yolo, reach, close to tray, the WSL distribution |
 | `src/install.ts` | the stable copy of the binary the server runs from (the hook assets name it) |
 | `src/window.ts`, `src/ipc.ts`, `src/preload.ts` | the window's fences, the bridge the workbench calls (`window.conductorDesktop`), the sender checks |

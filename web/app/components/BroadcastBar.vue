@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { broadcastByName, broadcastSelection, messageToast, MESSAGE_ALL_TIP, togglePick, type BroadcastMember, type MessageChip, type RecipientPick } from '~/utils/crews'
+import { broadcastByName, broadcastSelection, messageCount, messageToast, MESSAGE_ALL_TIP, MESSAGE_MAX, sendOutcome, sentWords, togglePick, type BroadcastMember, type MessageChip, type RecipientPick } from '~/utils/crews'
 import { STATUS_LOOK, statusOfKey } from '~/utils/status'
 
 /**
@@ -7,8 +7,11 @@ import { STATUS_LOOK, statusOfKey } from '~/utils/status'
  * tick (POST /api/runs/{run}/broadcast), recorded as input by the display name, or by the server's OS user when none is set
  * (broadcastByName). The chips are the one place a person picks who gets the line (broadcastSelection): `All` and each member that
  * can get a line now, ticked or not, and each one that cannot, saying why (it waits on a question, ended, is starting, has not
- * started). The pick is the page's (`v-model:pick`), so its command palette sends to the same members. A line that reached nobody,
- * or failed, toasts `Not sent` and stays in the field. On a stopped run the bar says so, with no field.
+ * started). The pick is the page's (`v-model:pick`), so its command palette sends to the same members. A line every member it named
+ * got is said in the bar alone: the field reads `Sent to lead and core.` for SENT_SHOWN ms, and a polite live region says it once. One
+ * that reached only some toasts who was skipped and why; one that reached nobody, or failed, toasts `Not sent` and stays in the field.
+ * From MESSAGE_COUNT_FROM bytes the field counts them; past MESSAGE_MAX the count is red and Send is off. On a stopped run the bar says
+ * so, with no field.
  */
 const props = defineProps<{ runId: string; members: readonly BroadcastMember[]; pick: RecipientPick; ended?: boolean; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:pick': [pick: RecipientPick] }>()
@@ -20,9 +23,28 @@ const text = ref('')
 const sending = ref(false)
 
 const selection = computed(() => broadcastSelection(props.members, props.pick))
-/** The server's limit, in bytes. */
-const MAX = 4096
-const tooLong = computed(() => new TextEncoder().encode(text.value).length > MAX)
+const bytes = computed(() => new TextEncoder().encode(text.value).length)
+const tooLong = computed(() => bytes.value > MESSAGE_MAX)
+const count = computed(() => messageCount(bytes.value))
+
+/** How long the field says who got the last line, in ms. */
+const SENT_SHOWN = 4000
+/** The field's words after a line everyone it named got (`Sent to lead and core.`), for SENT_SHOWN ms; else who gets the next. */
+const sent = ref('')
+/** What the polite live region says: the same words, once. */
+const said = ref('')
+let sentTimer: ReturnType<typeof setTimeout> | undefined
+function showSent(words: string) {
+  clearTimeout(sentTimer)
+  sent.value = words
+  said.value = words
+  sentTimer = setTimeout(() => {
+    sent.value = ''
+    said.value = ''
+  }, SENT_SHOWN)
+}
+onBeforeUnmount(() => clearTimeout(sentTimer))
+const placeholder = computed(() => sent.value || selection.value.placeholder)
 const canSend = computed(() => !props.disabled && !props.ended && !sending.value && selection.value.to.length > 0 && !!text.value.trim() && !tooLong.value)
 
 /** A chip that cannot be ticked: amber for one that waits on a person (the status language's needs), grey for the rest. */
@@ -41,8 +63,10 @@ async function send() {
   try {
     const byName = await broadcastByName(identity.name.value, api.whoami)
     const r = await api.broadcastRun(props.runId, { text: text.value, members: to, byName })
-    toast.add({ ...messageToast(r), icon: 'i-lucide-megaphone' })
-    if (r.sent.length) text.value = ''
+    const outcome = sendOutcome(r, to)
+    if (outcome === 'all') showSent(sentWords(r.sent))
+    else toast.add({ ...messageToast(r), icon: 'i-lucide-megaphone' })
+    if (outcome !== 'none') text.value = ''
   } catch (e) {
     toast.add({ title: 'Not sent', description: (e as Error).message, color: 'error', icon: 'i-lucide-triangle-alert' })
   } finally {
@@ -103,14 +127,20 @@ async function send() {
     <UInput
       v-model="text"
       size="sm"
-      :placeholder="selection.placeholder"
+      :placeholder="placeholder"
       aria-label="Message text"
       :color="tooLong ? 'error' : undefined"
       :highlight="tooLong"
+      :aria-invalid="tooLong || undefined"
       class="min-w-48 flex-1"
       :disabled="disabled"
       data-message-field
-    />
+    >
+      <template v-if="count" #trailing>
+        <span class="text-xs tabular-nums" :class="tooLong ? 'text-error' : 'text-muted'" :data-message-count="tooLong ? 'over' : 'under'">{{ count }}</span>
+      </template>
+    </UInput>
+    <span class="sr-only" aria-live="polite" data-message-said>{{ said }}</span>
     <UButton type="submit" size="sm" :label="selection.button" trailing-icon="i-lucide-corner-down-left" :loading="sending" :disabled="!canSend" data-broadcast-send />
   </form>
 </template>

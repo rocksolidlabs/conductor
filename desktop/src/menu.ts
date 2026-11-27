@@ -6,6 +6,8 @@ export interface MenuDeps {
   openInBrowser: () => void
   restart: () => void
   showLog: () => void
+  /** Reloads the focused window, to what the app trusts now (ServerWindows.reloadTarget). */
+  reload: () => void
   /** Zooms the workbench (the app keeps the level); the keys are taken before the page sees them, see zoom.ts. */
   zoom: (move: ZoomMove) => void
   /** The workbench's zoom level now, which the View menu shows: the menu is built again after each move. */
@@ -42,7 +44,7 @@ export function buildMenu(d: MenuDeps): Menu {
       ],
     },
     { role: 'editMenu' },
-    { label: 'View', submenu: [{ role: 'reload' }, ...(d.dev ? [{ role: 'toggleDevTools' as const }] : []), { type: 'separator' }, ...zoomMenuItems(d.zoomLevel, d.zoom), { type: 'separator' }, { role: 'togglefullscreen' }] },
+    { label: 'View', submenu: [{ label: 'Reload', accelerator: 'CmdOrCtrl+R', click: d.reload }, ...(d.dev ? [{ role: 'toggleDevTools' as const }] : []), { type: 'separator' }, ...zoomMenuItems(d.zoomLevel, d.zoom), { type: 'separator' }, { role: 'togglefullscreen' }] },
     // Minimize and Zoom (and Front on a Mac), never Close: Electron's windowMenu role binds Close to Ctrl+W on Windows and
     // Linux, which the editor takes for its tab (#312).
     { role: 'window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(mac ? [{ type: 'separator' as const }, { role: 'front' as const }] : [])] },

@@ -34,11 +34,12 @@ describe("the View menu's zoom items", () => {
 })
 
 describe('buildMenu', () => {
-  const deps = (zoomLevel: number) => ({ settings: () => {}, openInBrowser: () => {}, restart: () => {}, showLog: () => {}, zoom: () => {}, zoomLevel, dev: false })
+  const deps = (zoomLevel: number) => ({ settings: () => {}, openInBrowser: () => {}, restart: () => {}, showLog: () => {}, reload: () => {}, zoom: () => {}, zoomLevel, dev: false })
   const view = (t: MenuItemConstructorOptions[]) => (t.find((i) => i.label === 'View')!.submenu as MenuItemConstructorOptions[]).map((i) => i.label ?? i.role ?? i.type)
   it("puts the zoom items in View, with the level it was built at, and leaves Window's Zoom as it was", () => {
     const t = buildMenu(deps(1)) as unknown as MenuItemConstructorOptions[]
-    expect(view(t)).toEqual(['reload', 'separator', 'Zoom: 120%', 'Reset Zoom to 100%', 'Zoom In', 'Zoom Out', 'separator', 'togglefullscreen'])
+    // Reload is the app's own item (what the app trusts now), not Electron's role.
+    expect(view(t)).toEqual(['Reload', 'separator', 'Zoom: 120%', 'Reset Zoom to 100%', 'Zoom In', 'Zoom Out', 'separator', 'togglefullscreen'])
     expect(view(buildMenu(deps(-0.5)) as unknown as MenuItemConstructorOptions[])).toContain('Zoom: 91%')
     expect(view(t)).not.toContain('Actual Size')
     const win = t.find((i) => i.role === 'window')!.submenu as MenuItemConstructorOptions[]
