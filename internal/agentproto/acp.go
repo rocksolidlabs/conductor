@@ -870,11 +870,24 @@ func (c *ACP) announce(id string, t acpTool, summary string, e session.ProtocolE
 	}
 	r.toolSeq = append(r.toolSeq, id)
 	if len(r.toolSeq) > maxOpenTools {
-		delete(r.tools, r.toolSeq[0])
+		// The oldest open call is no longer followed: a request about it
+		// is withdrawn, never left open for a call the client forgot.
+		gone := r.toolSeq[0]
+		delete(r.tools, gone)
 		r.toolSeq = r.toolSeq[1:]
+		c.withdrawAbout(gone, e)
 	}
 	r.tools[id] = t
 	e.ToolStarted(session.ToolStep{Ref: id, Name: name, Input: bytes.Clone(input), Summary: summary})
+}
+
+// forgetTool is the call id no longer followed: it leaves the calls
+// counted toward maxOpenTools.
+func (c *ACP) forgetTool(id string) {
+	delete(c.r.tools, id)
+	if i := slices.Index(c.r.toolSeq, id); i >= 0 {
+		c.r.toolSeq = slices.Delete(c.r.toolSeq, i, i+1)
+	}
 }
 
 // toolStatus ends a step whose status is completed or failed: its output
@@ -885,7 +898,7 @@ func (c *ACP) toolStatus(id string, u map[string]json.RawMessage, e session.Prot
 	if status != "completed" && status != "failed" {
 		return
 	}
-	delete(c.r.tools, id)
+	c.forgetTool(id)
 	res := session.ToolResult{Status: session.ToolOK}
 	if status == "failed" {
 		res.Status = session.ToolError

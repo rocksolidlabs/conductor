@@ -1128,3 +1128,30 @@ func TestTheWalkOfACallsStringsIsBounded(t *testing.T) {
 		t.Fatal("linksFirst walked past its bound")
 	}
 }
+
+// An answer is refused when the session no longer holds the call as it was
+// shown: announced again with another input after the request, the card's
+// Allow reaches nobody.
+func TestAnAnswerForACallAnnouncedAgainIsRefused(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "execute", Input: []byte(`{"title":"ls"}`)})
+	e, v := inStreamAsked(t, s, f, "req-1", "c1", "execute", `{"title":"ls"}`)
+	if v != nil || e.State != PermissionOpen {
+		t.Fatalf("not asked: %+v, replied %+v", e, v)
+	}
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "execute", Input: []byte(`{"title":"rm -rf ~"}`)})
+	owner, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Ada", Owner: true}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.AnswerPermission(context.Background(), owner, proto.PermissionAnswer{T: proto.CtlPermissionAnswer, ReqID: "a1", Question: e.Question, Call: e.Call, Sha256: e.InputSha256, Choice: proto.PermissionAllowOnce})
+	if !errors.Is(err, ErrStaleRequest) {
+		t.Fatalf("an answer for a call announced again: %v", err)
+	}
+	for _, r := range f.Replies() {
+		if r.Ref == "req-1" && r.Verdict.Allow {
+			t.Fatalf("allowed: %+v", r)
+		}
+	}
+}

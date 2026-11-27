@@ -604,9 +604,11 @@ func askAbout(t *testing.T, s *acpServer, rec *recorder, n int, id, input string
 }
 
 // A call that changes closes its card: an update after the request that
-// gives a shown field another value, a repeated announcement with other
-// fields, an update that sets the call running, and a line the client
-// could not read each withdraw the open request (the session is told, the
+// gives a shown field another value (a number written another way too) or
+// holds only a field the client does not read, a repeated announcement with
+// other fields, an update that sets the call running, and a line the client
+// could not read (too long, a key twice, not UTF-8, a lone surrogate) each
+// withdraw the open request (the session is told, the
 // agent answered cancelled), and a later verdict on it writes nothing, so
 // allow_once is never selected; a later request about a changed call is
 // declined.
@@ -614,14 +616,19 @@ func TestACPACallThatChangesClosesItsCard(t *testing.T) {
 	c, s, rec := begun(t, ACPOptions{})
 	changes := []struct {
 		name, id, line string
+		input          string
 	}{
-		{"an update after the request", "c1", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c1","rawInput":{"command":"cat /etc/passwd"}}`)},
-		{"a repeated announcement", "c2", acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"c2","title":"t","kind":"execute","status":"pending","rawInput":{"command":"cat /etc/passwd"}}`)},
-		{"the call set running", "c3", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c3","status":"in_progress"}`)},
-		{"a line too long to read", "c4", `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + acpSession + `","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"` + strings.Repeat("a", session.MaxProtocolLine) + `"}}}}`},
+		{"an update after the request", "c1", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c1","rawInput":{"command":"cat /etc/passwd"}}`), ""},
+		{"a repeated announcement", "c2", acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"c2","title":"t","kind":"execute","status":"pending","rawInput":{"command":"cat /etc/passwd"}}`), ""},
+		{"the call set running", "c3", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c3","status":"in_progress"}`), ""},
+		{"a line too long to read", "c4", `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + acpSession + `","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"` + strings.Repeat("a", session.MaxProtocolLine) + `"}}}}`, ""},
 	}
 	for i, tc := range changes {
-		p := askAbout(t, s, rec, 80+i, tc.id, `{"command":"ls"}`, i)
+		input := tc.input
+		if input == "" {
+			input = `{"command":"ls"}`
+		}
+		p := askAbout(t, s, rec, 80+i, tc.id, input, i)
 		s.write(tc.line)
 		w := waitEvent(t, rec, "permission_withdrawn", i+1)[i]
 		if w.ref != p.ref {
@@ -747,5 +754,40 @@ func TestACPAYoloLaunchsChatSaysItAsks(t *testing.T) {
 	}
 	if n := waitEvent(t, rec, "notice", 1)[0]; n.code != "yolo_left" || n.text != ACPYoloLeftWords {
 		t.Fatalf("the notice %+v", n)
+	}
+}
+
+// A call with an open request is not forgotten: ended calls leave the
+// calls the client follows, so a thousand of them later an update of the
+// call still closes its card; and when a thousand open calls later the
+// client stops following it, its card closes, the agent answered
+// cancelled.
+func TestACPACallWithAnOpenRequestIsNotForgotten(t *testing.T) {
+	_, s, rec := begun(t, ACPOptions{})
+	p := askAbout(t, s, rec, 150, "c1", `{"command":"ls"}`, 0)
+	for i := range maxOpenTools {
+		s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"f` + itoa(i) + `","title":"t","kind":"read","status":"completed"}`))
+	}
+	// Every line before it handled once the text after them is: the card
+	// is open still.
+	texts := len(rec.kinds("text"))
+	s.write(acpUpdate(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"}}`))
+	waitEvent(t, rec, "text", texts+1)
+	if n := len(rec.kinds("permission_withdrawn")); n != 0 {
+		t.Fatalf("the card closed after %d ended calls", maxOpenTools)
+	}
+	s.write(acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c1","rawInput":{"command":"cat /etc/passwd"}}`))
+	if w := waitEvent(t, rec, "permission_withdrawn", 1)[0]; w.ref != p.ref {
+		t.Fatalf("withdrew %s, want %s", w.ref, p.ref)
+	}
+	p = askAbout(t, s, rec, 151, "c2", `{"command":"ls"}`, 1)
+	for i := range maxOpenTools {
+		s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"g` + itoa(i) + `","title":"t","kind":"read","status":"pending"}`))
+	}
+	if w := waitEvent(t, rec, "permission_withdrawn", 2)[1]; w.ref != p.ref {
+		t.Fatalf("withdrew %s, want %s", w.ref, p.ref)
+	}
+	if got := s.await(`"id":151,`); got != `{"id":151,"jsonrpc":"2.0","result":{"outcome":{"outcome":"cancelled"}}}` {
+		t.Fatalf("the agent was answered %s", got)
 	}
 }
