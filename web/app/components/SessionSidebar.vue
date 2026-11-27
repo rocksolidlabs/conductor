@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sessionPlace } from '~/utils/memberStrip'
 import { remotePins } from '~/utils/remote'
 import { cutNotice, staleNotice } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -29,6 +30,8 @@ const attention = useAttention()
 const events = useEvents()
 const route = useRoute()
 const router = useRouter()
+// A row opens its session's place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 const launch = useLaunchModal()
 const joined = useJoined()
 const foldState = useSidebarFolds()
@@ -285,7 +288,7 @@ watch(rows, async () => {
 function openRow(id: string) {
   const f = rows.value.find((r) => r.id === id)
   if (!f) return
-  if (f.kind === 'session') router.push(`/sessions/${f.sessionId}`)
+  if (f.kind === 'session') router.push(placeOf(f.sessionId))
   else if (f.kind === 'run') router.push(`/runs/${encodeURIComponent(f.runId)}`)
   else if (f.kind === 'decision') decisionModal.open(f.decision)
   else if (f.kind === 'item') router.push(`/decisions?item=${encodeURIComponent(f.ref)}`)
@@ -430,7 +433,7 @@ const sheet = computed(() => {
     meta: rowMeta(s, !!s.crew, now.value).join(' · '),
     items: rowMenuItems(
       sessionTarget(s, sessionLive(s.status)),
-      { open: () => router.push(`/sessions/${s.id}`), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), rename: () => renameModal.show(s), clone: () => cloneModal.show(s), cloneWithOptions: () => void cloneModal.withOptions(s), stop: () => askStop(`s:${s.id}`) },
+      { open: () => router.push(sessionPlace(s, s.id)), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), rename: () => renameModal.show(s), clone: () => cloneModal.show(s), cloneWithOptions: () => void cloneModal.withOptions(s), stop: () => askStop(`s:${s.id}`) },
     ),
   }
 })

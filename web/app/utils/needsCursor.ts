@@ -71,7 +71,8 @@ export function sameQuestions(sessions: readonly SessionInfo[]): SameQuestion[] 
  * (`/yard?focus=<id>`), where its bar takes a typed reply; everywhere else, the Roundhouse included (it has no focus mode), the
  * session's page.
  */
-export function pillTarget(path: string, id: string): string {
+export function pillTarget(path: string, id: string, place = `/sessions/${encodeURIComponent(id)}`): string {
   const bare = path.replace(/[?#].*$/, '')
-  return bare === '/yard' ? `/yard?focus=${encodeURIComponent(id)}` : `/sessions/${encodeURIComponent(id)}`
+  // Elsewhere the session's place (`place`): a crew's member inside its crew (UX3 R72), else its page.
+  return bare === '/yard' ? `/yard?focus=${encodeURIComponent(id)}` : place
 }

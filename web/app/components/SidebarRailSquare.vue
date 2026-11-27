@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sessionOpen } from '~/utils/sidebar'
 import type { RailShape } from '~/utils/sidebar'
 
 /**
@@ -20,7 +21,8 @@ import type { RailShape } from '~/utils/sidebar'
  */
 const props = withDefaults(defineProps<{ shape: RailShape; member?: boolean; needsDot?: boolean }>(), { member: false, needsDot: true })
 const route = useRoute()
-const current = computed(() => route.path === props.shape.to || (props.shape.kind !== 'session' && route.path.startsWith(props.shape.to)))
+// A session's square is current at its own page and, for a crew's member, at its place inside its crew (UX3 R72).
+const current = computed(() => (props.shape.kind === 'session' ? sessionOpen(route.path, props.shape.id, route.query) : route.path === props.shape.to || route.path.startsWith(props.shape.to)))
 </script>
 
 <template>

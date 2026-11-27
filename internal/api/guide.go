@@ -826,7 +826,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Bounds:  map[string]int{"body": maxCapacityBody, "reply": maxCapacityView}},
 		// A chat's permission prompts (permission.go): Claude Code calls
 		// this tool (--permission-prompt-tool), never the model. conductor
-		// mcp lists it in a chat alone (CONDUCTOR_PROTOCOL set), and the
+		// mcp lists it in Claude Code's chat alone (CONDUCTOR_PROTOCOL=1), and the
 		// guide's text to the agent leaves it out (unguided).
 		{Name: "permission", MCP: "permission", Scope: "session", Method: http.MethodPost, Path: sessions + "/permission", agentOnly: true, unguided: true,
 			Summary:     "Conductor's answer to a chat's permission prompts, which the person who runs this server gives: never a tool to call.",

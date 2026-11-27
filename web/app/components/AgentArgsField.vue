@@ -27,6 +27,12 @@ const props = defineProps<{
   baseClass?: string
   /** The placeholder while the agent has no list of flags (a narrow field's shorter words). */
   plainPlaceholder?: string
+  /**
+   * The list opens above the field (a field at a dialog's foot, as Launch agent's Extra arguments: opened below, it would cover
+   * the dialog's footer, Yolo and Launch). Otherwise it opens below, and above when the room below, inside the dialog's body
+   * when the field is in one, is too small.
+   */
+  above?: boolean
   /** The agent's own yolo recipe arguments: typed by hand, they too say to use the Yolo switch (Launch agent's R27). */
   yoloArgs?: readonly string[]
 }>()
@@ -101,6 +107,13 @@ const open = computed(() => focused.value && engaged.value && !dismissed.value &
 const items = computed(() => rows.value.map((r) => ({ ...r, value: r.text })))
 const yoloTyped = computed(() => holdsYolo(model.value, flags.value) || argsHoldYolo(splitArgs(model.value), props.yoloArgs))
 const placeholder = computed(() => (flags.value.length ? 'Type -- to see its flags' : props.plainPlaceholder || 'Flags, as you would type them in a terminal'))
+
+// Inside a dialog, the list keeps to its body: it opens above rather than over the footer.
+const boundary = shallowRef<Element | null>(null)
+onMounted(() => {
+  boundary.value = root.value?.closest('[role="dialog"]')?.querySelector('[data-slot="body"]') ?? null
+})
+const content = computed(() => (props.above ? { side: 'top' as const } : boundary.value ? { collisionBoundary: boundary.value } : {}))
 
 function input(): HTMLInputElement | undefined {
   return menu.value?.inputRef
@@ -209,6 +222,7 @@ function onBlur(e: FocusEvent) {
       ignore-filter
       :placeholder="placeholder"
       :size="size"
+      :content="content"
       :trailing-icon="false"
       autocapitalize="off"
       autocomplete="off"
