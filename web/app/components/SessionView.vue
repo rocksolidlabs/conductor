@@ -79,11 +79,24 @@ const tab = ref<InspectorView>('explorer')
 // in its editor's model, which outlasts the view, so it comes back unsaved.
 const kept = useState<Record<string, { tabs: TabsState; view: InspectorView }>>('sessionViewKept', () => ({}))
 const keptHere = kept.value[props.sessionId]
-if (keptHere) {
-  tabs.value = keptHere.tabs
-  tab.value = keptHere.view
-}
-watch([tabs, tab], ([t, v]) => (kept.value = { ...kept.value, [props.sessionId]: { tabs: t, view: v } }), { deep: true })
+if (keptHere) tab.value = keptHere.view
+// The tabs come back once the terminal's connection is open (a file is read over it), ahead of anything the address opens.
+let restored = !keptHere
+watch(
+  () => transport.value.state === 'open',
+  (open) => {
+    if (!open || restored || !keptHere) return
+    restored = true
+    tabs.value = keptHere.tabs
+  },
+)
+watch(
+  [tabs, tab],
+  ([t, v]) => {
+    if (restored) kept.value = { ...kept.value, [props.sessionId]: { tabs: t, view: v } }
+  },
+  { deep: true },
+)
 const attention = ref<Attention>({ state: '' })
 
 // The chat beside the terminal (design 2a, 2b): one thread per session, fed by the terminal's connection.

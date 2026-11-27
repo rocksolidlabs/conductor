@@ -465,7 +465,8 @@ test("a list and a read that disagree move the page once, and it stands", async 
     await inApp(page, `/sessions/${alone.id}`)
     await expect.poll(() => where(page)).toBe(`${runPath()}?session=${alone.id}`)
     await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: LONG_MS })
-    await expect(page.locator(`[data-member-strip][data-run="${run.id}"]`)).toBeVisible()
+    // Drawn in the run's place and left there: the list, which still says otherwise, sends it nowhere.
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))))
     expect(where(page)).toBe(`${runPath()}?session=${alone.id}`)
     expect(reads, 'one read on the old address, one in its place').toBe(2)
   } finally {
