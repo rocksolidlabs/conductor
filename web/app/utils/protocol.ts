@@ -98,6 +98,13 @@ export interface SubmitMsg {
   text: string
   reqId?: string
   unlessWaiting?: boolean
+  /**
+   * Asks that a chat's agent get the line without its as-written mark, to expand its `@path` and run its `/command` (I19): sent
+   * only by the Chat box, and only where this connection's welcome (or, after a move, its `way` message) said `expand`. The owner
+   * honours it from the operator's own chat connection alone; anywhere else it refuses the line (`not_sent`), nothing written.
+   * Absent means the mark.
+   */
+  expand?: boolean
 }
 
 /** A chat message's text, in bytes after cleaning (proto.MaxChatText); the composer counts from CHAT_COUNTER_FROM. */
@@ -575,6 +582,8 @@ export interface Welcome {
   noted?: SessionWay
   /** The owner takes this connection's `permission_answer`: a chat's welcome to the operator's own connection alone, so only it is drawn a request's buttons. */
   permissionAnswer?: boolean
+  /** The owner sends this connection's `submit` with `expand` for the agent to expand (I19): the operator's own chat connection alone, on a chat whose agent has an as-written mark. After a move, the `way` message says it again. */
+  expand?: boolean
 }
 
 export type ControlMessage =
@@ -2159,6 +2168,8 @@ export interface WayMessage {
   protocol?: string
   noted?: SessionWay
   why?: string
+  /** The welcome's `expand`, said again to the operator's own chat connection alone while the session is a chat (I19). */
+  expand?: boolean
 }
 
 /** The way message's bounds, in bytes (proto.MaxWayProtocol, proto.MaxWayWhy); the move's body (the route's). */
@@ -2171,7 +2182,7 @@ export const ERR_MOVING = 'moving'
 export const ERR_MOVE_REFUSED = 'move_refused'
 
 /** Whether m is a way message within its bounds: what a client acts on. */
-export function validWay(m: { t?: unknown; way?: unknown; protocol?: unknown; noted?: unknown; why?: unknown }): m is WayMessage {
+export function validWay(m: { t?: unknown; way?: unknown; protocol?: unknown; noted?: unknown; why?: unknown; expand?: unknown }): m is WayMessage {
   const ways = ['terminal', 'protocol']
   const bytes = (v: unknown) => new TextEncoder().encode(String(v)).length
   return (
@@ -2179,7 +2190,8 @@ export function validWay(m: { t?: unknown; way?: unknown; protocol?: unknown; no
     ways.includes(m.way as string) &&
     (m.noted === undefined || ways.includes(m.noted as string)) &&
     (m.protocol === undefined || (typeof m.protocol === 'string' && bytes(m.protocol) <= MAX_WAY_PROTOCOL)) &&
-    (m.why === undefined || (typeof m.why === 'string' && bytes(m.why) <= MAX_WAY_WHY))
+    (m.why === undefined || (typeof m.why === 'string' && bytes(m.why) <= MAX_WAY_WHY)) &&
+    (m.expand === undefined || typeof m.expand === 'boolean')
   )
 }
 
@@ -2203,6 +2215,8 @@ export interface TranscriptEntry {
   state?: string
   answers?: string
   final?: boolean
+  /** A prompt sent without the as-written mark, for the agent to expand (I19): the operator's own typed line. */
+  expanded?: boolean
   /** A tool step, and a permission request. */
   tool?: string
   summary?: string
@@ -2247,6 +2261,65 @@ export type TranscriptMessage =
   | { t: 'entry'; entry: TranscriptEntry }
   | { t: 'page'; reqId?: string; entries: TranscriptEntry[]; first: number; last: number; more?: boolean }
   | { t: 'part'; reqId: string; seq: number; name: TranscriptPartName; offset: number; total: number; kept: number; data: string; cut?: boolean }
+  | TranscriptCommands
+
+/**
+ * One of the agent's own commands (proto.Command): its name without the slash, the agent's own words for it, its argument hint,
+ * its aliases.
+ */
+export interface AgentCommand {
+  name: string
+  words?: string
+  hint?: string
+  aliases?: string[]
+}
+
+/**
+ * The agent's own commands (owner -> client, a TRANSCRIPT message, row 12 of the chat plan): the whole list as the session keeps
+ * it, `rev` raised by each change, `more` when the agent listed more than MAX_COMMANDS. Sent to the operator's own chat connection
+ * alone; a link's viewer and a peer are never sent it.
+ */
+export interface TranscriptCommands {
+  t: 'commands'
+  rev: number
+  commands: AgentCommand[]
+  more?: boolean
+}
+
+/** The commands message's bounds (proto.MaxCommands, MaxCommandName, MaxCommandAliases, MaxCommandAlias, MaxCommandWords, MaxCommandHint), in bytes but the counts. */
+export const MAX_COMMANDS = 200
+export const MAX_COMMAND_NAME = 64
+export const MAX_COMMAND_ALIASES = 2
+export const MAX_COMMAND_ALIAS = 32
+export const MAX_COMMAND_WORDS = 120
+export const MAX_COMMAND_HINT = 64
+
+/** What a command's name and an alias are made of (proto.CommandNameShape). */
+export const COMMAND_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/
+
+/**
+ * Whether m is a commands message within its bounds (proto.TranscriptCommandsMsg.Valid): what a client acts on. A field it does not
+ * know, on the message or on a command, refuses the whole message: nothing is taken without what it did not read.
+ */
+export function commandsValid(m: { t?: unknown; rev?: unknown; commands?: unknown; more?: unknown }): m is TranscriptCommands {
+  const bytes = (v: string) => new TextEncoder().encode(v).length
+  // eslint-disable-next-line no-control-regex
+  const control = /[\u0000-\u001f\u007f-\u009f]/
+  const text = (v: unknown, max: number) => v === undefined || (typeof v === 'string' && bytes(v) <= max && !control.test(v))
+  const name = (v: unknown, max: number) => typeof v === 'string' && bytes(v) <= max && COMMAND_NAME.test(v)
+  const known = (o: object, keys: string[]) => Object.keys(o).every((k) => keys.includes(k))
+  if (m.t !== 'commands' || typeof m.rev !== 'number' || !Array.isArray(m.commands) || m.commands.length > MAX_COMMANDS) return false
+  if (!known(m, ['t', 'rev', 'commands', 'more'])) return false
+  if (m.more !== undefined && typeof m.more !== 'boolean') return false
+  const seen = new Set<string>()
+  for (const c of m.commands as AgentCommand[]) {
+    if (!c || typeof c !== 'object' || !known(c, ['name', 'words', 'hint', 'aliases']) || !name(c.name, MAX_COMMAND_NAME) || seen.has(c.name)) return false
+    seen.add(c.name)
+    if (!text(c.words, MAX_COMMAND_WORDS) || !text(c.hint, MAX_COMMAND_HINT)) return false
+    if (c.aliases !== undefined && (!Array.isArray(c.aliases) || c.aliases.length > MAX_COMMAND_ALIASES || !c.aliases.every((a) => name(a, MAX_COMMAND_ALIAS)))) return false
+  }
+  return true
+}
 
 /** A read of the transcript: entries after `after`, or the newest before `before`, at most `limit`; or a piece of a part. */
 export interface TranscriptRequest {
@@ -2271,7 +2344,7 @@ export function transcriptRequestValid(r: TranscriptRequest): boolean {
   return true
 }
 
-/** Decodes a TRANSCRIPT frame's payload; null for one past MAX_TRANSCRIPT or not a message of the three. */
+/** Decodes a TRANSCRIPT frame's payload; null for one past MAX_TRANSCRIPT or not a message of the four within its bounds. */
 export function decodeTranscript(payload: Uint8Array): TranscriptMessage | null {
   if (payload.length > MAX_TRANSCRIPT) return null
   const m = parseJSON<TranscriptMessage>(payload)
@@ -2283,6 +2356,8 @@ export function decodeTranscript(payload: Uint8Array): TranscriptMessage | null 
       return Array.isArray(m.entries) ? m : null
     case 'part':
       return typeof m.reqId === 'string' && typeof m.data === 'string' ? m : null
+    case 'commands':
+      return commandsValid(m) ? m : null
   }
   return null
 }

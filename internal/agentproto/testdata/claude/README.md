@@ -61,6 +61,23 @@ https://code.claude.com/docs/en/headless.md), not recorded:
   `background_tasks_changed`, `task_updated`, `task_notification`, an
   ambient task). The run's 150-second MCP call was not moved to the
   background in print mode, so no recorded run showed these events.
+- `hand-built-expand.jsonl` (row 12 of `docs/plans/chat-or-terminal.md`):
+  three messages written without `client_composed`, built from the shapes
+  of a recorded run of Claude Code 2.1.332 that was not taken through this
+  driver, with every word, id and path made up: an `@notes.txt` the
+  program attached and the model answered with no tool call; `/compact`,
+  which the program ran itself (its `<local-command-stdout>` replay under
+  an id of its own before the message's replay, and a result with no model
+  turn); and a command the session cannot run, answered by the program's
+  own sentence in a synthetic assistant line, with no replay of the
+  message and a result naming it (`user_message_uuid`). Row 12's by-hand
+  check records the real lines through this driver; they replace these.
+- `hand-built-commands.jsonl` (row 12): the agent's own commands as the
+  recorded run's shapes give them, with a made-up list in this project's
+  own words, never a person's list or the program's own descriptions: the
+  initialize answer's `commands` (name, description, argument hint,
+  aliases, builtin), `system/init`'s `slash_commands` names, and a
+  `system/commands_changed` carrying the whole new list.
 - `hand-built-not-signed-in.jsonl`: a start whose first answer says the
   agent is not signed in (`error: "authentication_failed"`, a result with
   `is_error` and `api_error_status` 401). A real run of it would need the
