@@ -116,7 +116,8 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
 test("a call with its description, as every real one has, is allowed with one press; one whose end shows with its top out of view waits", async ({ browser }) => {
   const api = own.api
   const { s, conv } = await launch(api, sessions, 'e2e chat permission described', 'asker-proto')
-  const page = await dayPage(browser, { server: own.started, width: 1440, height: 420 })
+  // A window short enough that the seven lines' call cannot lie whole in the chat's pane above the box (one row since UX3 R4).
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 360 })
   try {
     const view = await openSession(page, s.id)
     await firstTurn(page, api, s.id)
