@@ -86,6 +86,8 @@ describe("the agent's box", () => {
     expect(src).toMatch(/if \(e\.key === 'Enter' \|\| e\.key === 'Tab'\) \{[\s\S]*?e\.preventDefault\(\)\s*pick\(active\.value\)\s*return true/)
     // Escape closes the list and keeps the text: it is the list's, not the box's.
     expect(src).toMatch(/if \(e\.key === 'Escape'\) \{\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)\s*dismissed\.value = mentionKey\.value\s*return true/)
+    // Closed with Escape, it opens again for the next @ word, even one typed the same.
+    expect(src).toMatch(/if \(!m\) \{[\s\S]*?dismissed\.value = ''/)
     // One read on its way at a time, and a late answer dropped.
     expect(src).toContain('if (n !== asked || mention.value?.words !== words) return')
     expect(src).toMatch(/if \(inFlight\) \{\s*pending = words\s*return/)

@@ -189,6 +189,8 @@ watch(mentionKey, () => {
   if (!m) {
     fileList.value = null
     finding.value = false
+    // A list closed with Escape opens again for the next @ word, even one typed the same.
+    dismissed.value = ''
     asked++
     return
   }
