@@ -48,7 +48,10 @@ import (
 // (AddWorktree), and Run refuses a worktree add that checks out.
 //
 // The person's own identity and settings in the global configuration still
-// apply; Conductor commits nothing and signs nothing.
+// apply. Conductor commits only a new project's first commit (Alone,
+// crew.EnsureFirstCommit), in a folder whose own configuration names no
+// program (or in a repository it built itself), signed as the person's
+// global or system settings say; it signs nothing else.
 
 // safeConfig is set with -c on every git Conductor runs.
 var safeConfig = []string{
@@ -71,7 +74,8 @@ var safeConfig = []string{
 	// No transport by configuration either (safeEnv's GIT_ALLOW_PROTOCOL
 	// overrides the per-protocol settings).
 	"protocol.allow=never",
-	// No signature check, so no gpg.program.
+	// No signature check, so no gpg.program for a read. A first commit
+	// signs as the person's own settings say (Alone).
 	"log.showSignature=false",
 	// No automatic maintenance or garbage collection.
 	"gc.auto=0",
@@ -548,10 +552,18 @@ func ExitStatus(err error) int {
 // process filter the configuration where loc points names (and that none
 // is required), read there just before the command.
 func filterArgs(ctx context.Context, cwd string, loc []string, env map[string]string, args []string) ([]string, error) {
+	return filterArgsBy(ctx, loc, args, func(argv []string, stdout, stderr io.Writer) error {
+		return execGitTo(ctx, cwd, argv, env, stdout, stderr)
+	})
+}
+
+// filterArgsBy is filterArgs with the configuration's look-up run by ex
+// (Alone's runs it as its command runs).
+func filterArgsBy(ctx context.Context, loc, args []string, ex func(argv []string, stdout, stderr io.Writer) error) ([]string, error) {
 	if noFilters[args[0]] {
 		return nil, nil
 	}
-	names, err := filterNamesEnv(ctx, cwd, loc, env)
+	names, err := filterNamesBy(ctx, loc, ex)
 	if err != nil {
 		return nil, err
 	}
@@ -590,10 +602,17 @@ func filterNames(ctx context.Context, cwd string, loc []string) ([]string, error
 
 // filterNamesEnv is filterNames with env set in git's environment.
 func filterNamesEnv(ctx context.Context, cwd string, loc []string, env map[string]string) ([]string, error) {
+	return filterNamesBy(ctx, loc, func(argv []string, stdout, stderr io.Writer) error {
+		return execGitTo(ctx, cwd, argv, env, stdout, stderr)
+	})
+}
+
+// filterNamesBy is filterNames with git run by ex.
+func filterNamesBy(ctx context.Context, loc []string, ex func(argv []string, stdout, stderr io.Writer) error) ([]string, error) {
 	argv := append(baseArgs(), loc...)
 	argv = append(argv, "config", "-z", "--name-only", "--get-regexp", filterKeys)
 	answer, errs := &Head{N: maxFilterAnswer + 1}, &Head{N: maxStderr}
-	err := execGitTo(ctx, cwd, argv, env, answer, errs)
+	err := ex(argv, answer, errs)
 	out, stderr := answer.String(), errs.String()
 	var exit *exec.ExitError
 	switch {
