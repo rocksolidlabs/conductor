@@ -133,8 +133,10 @@ type rootList struct {
 	stores atomic.Int64
 	// stat, when a test sets it before its request, stands in for os.Stat
 	// where a folder is judged by what it is (identities): a second name
-	// for a folder is made so without a mount.
-	stat func(path string) (os.FileInfo, error)
+	// for a folder is made so without a mount. mounts stands in for the
+	// system's mount points (systemMounts).
+	stat   func(path string) (os.FileInfo, error)
+	mounts func() []string
 	// beforeAdd, when a test sets it before its request, runs under mu
 	// between a folder's judgement and the last look before it is added;
 	// beforeLock runs as an add asks for mu, before anything is judged.
@@ -282,7 +284,7 @@ func lookState(err error) string {
 // deny list judges by identity too. "" for none.
 func (s *Server) refusedKind(real string) string {
 	switch {
-	case filepath.Dir(real) == real || s.sameFolder(real, string(filepath.Separator)):
+	case filepath.Dir(real) == real || s.sameFolder(real, string(filepath.Separator)) || s.holdsBelow(real, s.statsOf(string(filepath.Separator))):
 		return refusedWholeDisk
 	case unsavableName(real):
 		return refusedName
@@ -326,7 +328,7 @@ func (s *Server) wideKind(real string) string {
 		if hf, err := s.statOf(home); err == nil && os.SameFile(fi, hf) {
 			return wideHome
 		}
-		if s.holds(fi, home) {
+		if s.holds(fi, home) || s.holdsBelow(real, s.above(home)) {
 			return wideAboveHome
 		}
 	}
@@ -334,8 +336,10 @@ func (s *Server) wideKind(real string) string {
 		if n := filepath.Base(e); len(n) > 1 && strings.HasPrefix(n, "*") && strings.HasSuffix(n, "*") {
 			e = filepath.Dir(e)
 		}
-		// The entry itself is refused (refusedKind); a folder above it is wide.
-		if s.holds(fi, resolvedPath(e)) {
+		// The entry itself is refused (refusedKind); a folder above it is wide,
+		// and so is one that holds a second name of it, or of a folder above
+		// it, below.
+		if s.holds(fi, resolvedPath(e)) || s.holdsBelow(real, s.above(resolvedPath(e))) {
 			return wideHoldsData
 		}
 	}
@@ -369,6 +373,43 @@ func (s *Server) holds(fi os.FileInfo, p string) bool {
 			continue
 		}
 		if os.SameFile(fi, a) {
+			return true
+		}
+	}
+	return false
+}
+
+// statsOf is the identity of p alone, as a list for holdsBelow; none when p
+// cannot be looked at.
+func (s *Server) statsOf(p string) []os.FileInfo {
+	if fi, err := s.statOf(p); err == nil {
+		return []os.FileInfo{fi}
+	}
+	return nil
+}
+
+// holdsBelow reports whether a mount point below real (real itself not
+// counted) is one of the folders of ids, by identity: a folder that holds a
+// second name of the whole disk, of the home folder or of a folder above it
+// mounted somewhere below it holds that folder.
+func (s *Server) holdsBelow(real string, ids []os.FileInfo) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	mounts := systemMounts
+	if s.roots != nil && s.roots.mounts != nil {
+		mounts = s.roots.mounts
+	}
+	prefix := strings.TrimSuffix(real, string(filepath.Separator)) + string(filepath.Separator)
+	for _, m := range mounts() {
+		if !strings.HasPrefix(m, prefix) {
+			continue
+		}
+		fi, err := s.statOf(m)
+		if err != nil {
+			continue
+		}
+		if slices.ContainsFunc(ids, func(id os.FileInfo) bool { return os.SameFile(fi, id) }) {
 			return true
 		}
 	}

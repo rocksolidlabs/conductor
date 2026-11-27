@@ -358,3 +358,59 @@ func TestAFolderIsRefusedByWhatItIs(t *testing.T) {
 		t.Fatalf("a folder was added: %v", got)
 	}
 }
+
+// A folder that holds a second name of the whole disk, of the home folder
+// or of a folder above it below it, mounted there, is refused, or as wide
+// as the folder it holds: the mount points come from the system's mount
+// table (here its stand-in) and are judged by what they are.
+func TestAFolderThatHoldsTheDiskBelowItIsRefused(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) {
+		c.Paths.Browse = config.BrowseAny
+		withDesktopKey(c)
+	})
+	home := realRoot(t, e.srv.home)
+	parent := realRoot(t, t.TempDir())
+	holdsDisk := mkdir(t, filepath.Join(parent, "holds-disk"))
+	disk := mkdir(t, filepath.Join(holdsDisk, "deep", "distro"))
+	holdsHome := mkdir(t, filepath.Join(parent, "holds-home"))
+	homeAgain := mkdir(t, filepath.Join(holdsHome, "home"))
+	holdsAbove := mkdir(t, filepath.Join(parent, "holds-above"))
+	aboveAgain := mkdir(t, filepath.Join(holdsAbove, "up"))
+	plain := mkdir(t, filepath.Join(parent, "plain"))
+	mkdir(t, filepath.Join(plain, "sub"))
+	secondName(e, map[string]string{disk: "/", homeAgain: home, aboveAgain: filepath.Dir(home)})
+	e.srv.roots.mounts = func() []string {
+		return []string{"/", disk, homeAgain, aboveAgain, filepath.Join(plain, "sub"), holdsDisk + "x"}
+	}
+	for _, c := range []struct{ path, refused, wide string }{
+		{holdsDisk, "whole_disk", ""},
+		{filepath.Join(holdsDisk, "deep"), "whole_disk", ""},
+		{holdsHome, "", "above_home"},
+		{holdsAbove, "", "above_home"},
+		{plain, "", ""},
+	} {
+		out := e.checkRoot(c.path)
+		if out["state"] != "outside" || str(out["refused"]) != c.refused || str(out["wide"]) != c.wide {
+			t.Errorf("%s: %v, want refused %q wide %q", c.path, out, c.refused, c.wide)
+		}
+	}
+	if status, out := e.allow(holdsDisk, ""); status != http.StatusForbidden || errorField(out, "reason") != "whole_disk" {
+		t.Errorf("a folder that holds the disk below it: %d %v", status, out)
+	}
+	if status, out := e.allow(holdsHome, ""); status != http.StatusConflict || errorField(out, "wide") != "above_home" {
+		t.Errorf("a folder that holds home below it, unconfirmed: %d %v", status, out)
+	}
+	if got := e.srv.roots.paths(); len(got) != 1 {
+		t.Fatalf("a folder was added: %v", got)
+	}
+}
+
+// The system's mount table is read as the kernel writes it, its escapes
+// undone.
+func TestTheMountTableIsReadAsWritten(t *testing.T) {
+	got := parseMountinfo("153 140 8:64 / / rw - ext4 /dev/sde rw\n171 170 8:64 / /mnt/wslg/distro ro - ext4 /dev/sde rw\n172 170 0:1 / /mnt/a\\040b rw - tmpfs none rw\nshort line\n")
+	want := []string{"/", "/mnt/wslg/distro", "/mnt/a b"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("%q", got)
+	}
+}
