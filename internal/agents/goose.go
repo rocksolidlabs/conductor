@@ -40,5 +40,15 @@ func gooseAdapter() Adapter {
 			return snippetOf(gooseAssets, hooksDir, "goose/hooks/hooks.json")
 		},
 		Events: []string{"done", "tool_use"},
+		Flags:  gooseFlags,
 	}
+}
+
+// gooseFlags is how Goose's flags are read: a launch is its `session`
+// sub-command (the catalog's session recipe), whose flags `goose session
+// --help` prints in clap's form (1.54.0, and the recipes tier). Its yolo
+// recipe is a variable, so no flag of it is left to the switch.
+var gooseFlags = &FlagsRecipe{
+	Sub:  []string{"session"},
+	Args: []string{"--help"},
 }

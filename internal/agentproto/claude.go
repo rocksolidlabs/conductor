@@ -72,14 +72,14 @@ var (
 	// ErrNotQualified is Begin's answer for a version below
 	// ClaudeMinVersion, or one the agent does not say: the session stays in
 	// its terminal.
-	ErrNotQualified error = &words{s: NotQualifiedWords}
+	ErrNotQualified error = &words{s: NotQualifiedWords, kind: kindNotQualified}
 	// ErrNotStarted is Begin's answer for an initialize answer that is
 	// missing or fails the shape check.
-	ErrNotStarted error = &words{s: NotStartedWords}
+	ErrNotStarted error = &words{s: NotStartedWords, kind: kindNotStarted}
 	// ErrNotSignedIn is Read's answer when the agent says, before its first
 	// answer, that it is not signed in: the child is ended and the session
 	// goes back to its terminal.
-	ErrNotSignedIn error = &words{s: NotSignedInWords}
+	ErrNotSignedIn error = &words{s: NotSignedInWords, kind: kindNotSignedIn}
 	// ErrUnreadable is Read's answer for a line that is not the protocol's.
 	ErrUnreadable error = &words{s: UnreadableWords, code: "unreadable"}
 	// errInputClosed is a write after CloseInput.
@@ -87,16 +87,24 @@ var (
 )
 
 // words is an error whose words are a person's to read: one sentence, as
-// the plan gives it (design 13).
-type words struct{ s, code string }
+// the plan gives it (design 13). kind says which of a start's answers it
+// is, the same for every driver.
+type words struct{ s, code, kind string }
+
+// The kinds of a start's answer (StartWords).
+const (
+	kindNotQualified = "not_qualified"
+	kindNotStarted   = "not_started"
+	kindNotSignedIn  = "not_signed_in"
+)
 
 func (e *words) Error() string { return e.s }
 
 // BackToTerminal says a Read that ended with this error leaves the
 // session's terminal able to go on where the chat cannot: an agent not
-// signed in (ErrNotSignedIn) goes back to its terminal on the same
-// conversation, where the person signs in (design 4).
-func (e *words) BackToTerminal() bool { return e == ErrNotSignedIn }
+// signed in (ErrNotSignedIn, ErrCodexNotSignedIn) goes back to its terminal
+// on the same conversation, where the person signs in (design 4).
+func (e *words) BackToTerminal() bool { return e.kind == kindNotSignedIn }
 
 // EndNotice is the notice a session ends a Read with this error by: its
 // code and words, or none ("") where the driver has told the session.

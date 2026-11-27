@@ -1,0 +1,8 @@
+conversation 019a0000-0000-7000-8000-000000000001
+accepted m1
+turn_started
+tool_started call_fixture_1 parent="" commandExecution summary="/bin/bash -lc 'wc -l notes.txt'" input={"command":"/bin/bash -lc 'wc -l notes.txt'","cwd":"/work"}
+tool_ended call_fixture_1 ok exit=0 cut=false output="2 notes.txt\n"
+text msg_fixture_1 3 call(s) final=true "notes.txt has 2 lines."
+turn_ended done in=12000 out=80 cost=0.00000000
+--- written

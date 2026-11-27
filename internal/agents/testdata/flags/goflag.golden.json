@@ -1,0 +1,76 @@
+[
+  {
+    "name": "--add-dir",
+    "value": "unknown",
+    "about": "Adds a folder it may read (repeatable) (default [])",
+    "kind": "folder"
+  },
+  {
+    "name": "--continue",
+    "aliases": [
+      "-c"
+    ],
+    "value": "unknown",
+    "about": "Goes on with the last talk"
+  },
+  {
+    "name": "--dangerously-skip-permissions",
+    "value": "unknown",
+    "about": "Asks nothing at all",
+    "set": "yolo"
+  },
+  {
+    "name": "--effort",
+    "value": "unknown",
+    "about": "How hard it thinks (low|medium|high)",
+    "choices": [
+      {
+        "value": "low"
+      },
+      {
+        "value": "medium"
+      },
+      {
+        "value": "high"
+      }
+    ],
+    "kind": "choice"
+  },
+  {
+    "name": "--mode",
+    "value": "unknown",
+    "about": "How it works (edit, plan, review)",
+    "choices": [
+      {
+        "value": "edit"
+      },
+      {
+        "value": "plan"
+      },
+      {
+        "value": "review"
+      }
+    ],
+    "kind": "choice"
+  },
+  {
+    "name": "--model",
+    "value": "unknown",
+    "about": "The model for this run",
+    "kind": "model"
+  },
+  {
+    "name": "--print",
+    "aliases": [
+      "-p",
+      "--prompt"
+    ],
+    "value": "unknown",
+    "about": "Prints one answer and ends"
+  },
+  {
+    "name": "--output-format",
+    "value": "unknown",
+    "about": "How the answer is printed (text, json) (default text)"
+  }
+]

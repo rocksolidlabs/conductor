@@ -56,5 +56,15 @@ func agyAdapter() Adapter {
 		// The Antigravity CLI reads its global skills from ~/.gemini/antigravity-cli/skills and a workspace's .agents/skills, not ~/.agents/skills (antigravity.google/docs/skills).
 		SkillPath: agySkill,
 		Events:    []string{"done", "tool_use"},
+		Flags:     agyFlags,
 	}
+}
+
+// agyFlags is how Antigravity's flags are read (`agy --help`, 1.4.0, and
+// the recipes tier): Go's flag form under "Usage of agy:", printed on
+// standard error, with no value placeholder on any row (so whether a flag
+// takes a value is unknown), and a short spelling a row of its own whose
+// words name its long one ("Short alias for --continue").
+var agyFlags = &FlagsRecipe{
+	Args: []string{"--help"},
 }
