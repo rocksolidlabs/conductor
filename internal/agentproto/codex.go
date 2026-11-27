@@ -441,7 +441,9 @@ func (c *Codex) Reply(_ context.Context, ref string, v session.Verdict) error {
 	}
 	c.mu.Unlock()
 	if r == nil {
-		return nil
+		// Answered, resolved or replaced already: the verdict reaches no
+		// request.
+		return ErrNoRequest
 	}
 	decision := "decline"
 	if v.Allow && !v.Cancel {
@@ -1226,7 +1228,8 @@ func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.Ra
 		c.decline(id)
 		return
 	}
-	if old, ok := c.byID[key]; ok {
+	old, reused := c.byID[key]
+	if reused {
 		delete(c.requests, old)
 	}
 	c.reqSeq++
@@ -1234,6 +1237,11 @@ func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.Ra
 	c.requests[ref] = &codexRequest{id: bytes.Clone(id), method: method}
 	c.byID[key] = ref
 	c.mu.Unlock()
+	if reused {
+		// The server named a new request by an open one's id: the open
+		// one's card closes, its answer reaching nobody.
+		e.PermissionWithdrawn(old)
+	}
 	e.Permission(session.PermissionRequest{Ref: ref, Call: item, Tool: tool, Input: input, Cwd: cwd})
 }
 

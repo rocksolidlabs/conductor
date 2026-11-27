@@ -115,6 +115,11 @@ func NotStartedFor(name string) error {
 	return ErrNotStarted
 }
 
+// ErrNoRequest is a driver's Reply for a request it no longer holds (one
+// answered, taken back, resolved or replaced): the verdict reached nobody,
+// and the session records it so.
+var ErrNoRequest = errors.New("agentproto: the agent holds no such request")
+
 // StartWords is the sentence a person reads for a chat's start that err
 // ended, by its kind: a version not qualified, a child that did not start
 // a chat, an agent not signed in, in its driver's own words; "" for any

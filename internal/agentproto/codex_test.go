@@ -577,8 +577,8 @@ func TestCodexResolvedWithdraws(t *testing.T) {
 		t.Fatalf("withdrawn %+v, want %s alone", w, perms[0].ref)
 	}
 	n := len(s.written())
-	if err := c.Reply(ctx, perms[0].ref, session.Verdict{Allow: true}); err != nil {
-		t.Fatal(err)
+	if err := c.Reply(ctx, perms[0].ref, session.Verdict{Allow: true}); !errors.Is(err, ErrNoRequest) {
+		t.Fatalf("a verdict on a resolved request: %v, want ErrNoRequest", err)
 	}
 	syncLine(t, c, s)
 	for _, l := range s.written()[n:] {
@@ -938,5 +938,34 @@ func TestCodexWhatTheDriverDoesNotReadIsDeclined(t *testing.T) {
 	ask(15, "commandExecution", "i6", `,"approvalId":null,"reason":null,"networkApprovalContext":null,"kind":"command","proposedExecpolicyAmendment":["ls"]`)
 	if p := waitEvent(t, rec, "permission", 1)[0].perm; p.Call != "i6" {
 		t.Fatalf("the ordinary approval %+v", p)
+	}
+}
+
+// A request named by the id of one still open closes the open one's card
+// (PermissionWithdrawn) before the new one is asked, and a verdict on the
+// old one reaches nobody (ErrNoRequest).
+func TestCodexAReusedRequestIDClosesTheOldCard(t *testing.T) {
+	rec := &recorder{}
+	c, s, _ := newCodexServer(t, rec, CodexOptions{})
+	if err := c.Begin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"c1", "c2"} {
+		s.write(`{"method":"item/started","params":{"threadId":"` + fixtureThread + `","turnId":"t","item":{"type":"commandExecution","id":"` + id + `","command":"ls","cwd":"/work","status":"inProgress","commandActions":[]}}}`)
+		s.write(`{"id":50,"method":"item/commandExecution/requestApproval","params":{"threadId":"` + fixtureThread + `","turnId":"t","itemId":"` + id + `","startedAtMs":1}}`)
+	}
+	perms := waitEvent(t, rec, "permission", 2)
+	w := waitEvent(t, rec, "permission_withdrawn", 1)
+	if w[0].ref != perms[0].ref {
+		t.Fatalf("withdrawn %s, want the first %s", w[0].ref, perms[0].ref)
+	}
+	if err := c.Reply(context.Background(), perms[0].ref, session.Verdict{Allow: true}); !errors.Is(err, ErrNoRequest) {
+		t.Fatalf("the old card's verdict: %v", err)
+	}
+	if err := c.Reply(context.Background(), perms[1].ref, session.Verdict{Allow: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.await(`"id":50,`); got != `{"id":50,"result":{"decision":"accept"}}` {
+		t.Fatalf("answered %s", got)
 	}
 }
