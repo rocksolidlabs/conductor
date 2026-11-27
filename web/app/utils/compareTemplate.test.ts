@@ -12,9 +12,11 @@ import {
   inMore,
   nameFromTask,
   nextAgent,
+  notSavedWords,
   optionsLine,
   specCriteria,
   startingAgents,
+  trialFolderLine,
   withAgent,
   type DraftComparison,
   type TrialAgent,
@@ -292,5 +294,18 @@ describe('an agent moved to another, and the draft across a close', () => {
     const fresh = draftOnOpen(null, agents)
     expect(fresh.task).toBe('')
     expect(fresh.agents.map((a) => a.agentId)).toEqual(['claude', 'codex'])
+  })
+})
+
+describe('what the form says of the folder as it is picked, and of a save the server refused', () => {
+  it("says the server's words for a folder agents may not use, and nothing for any other answer, a new project's among them", () => {
+    expect(trialFolderLine({ code: 'invalid_cwd', message: '/etc is not under an allowed root' })).toBe('/etc is not under an allowed root.')
+    expect(trialFolderLine({ code: 'git_failed', message: 'could not run git' })).toBe('')
+    expect(trialFolderLine(null)).toBe('')
+  })
+
+  it("keeps the server's words and says what was kept", () => {
+    expect(notSavedWords('compare: a comparison has 2 to 4 candidates, not 1')).toBe('Compare: a comparison has 2 to 4 candidates, not 1. What you typed is kept.')
+    expect(notSavedWords('Crews are off here. ')).toBe('Crews are off here. What you typed is kept.')
   })
 })

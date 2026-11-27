@@ -37,18 +37,18 @@ function setReviews(on: boolean) {
   <div class="flex min-w-0 flex-col gap-6" data-trial-options>
     <section class="flex min-w-0 flex-col gap-2" data-trial-group="each">
       <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">Each agent</h3>
-      <div class="hidden gap-2 text-xs text-muted sm:grid sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,1fr)]" aria-hidden="true">
+      <div class="hidden gap-2 text-xs text-muted sm:grid sm:grid-cols-[minmax(0,8rem)_minmax(0,1fr)_minmax(0,1fr)]" aria-hidden="true">
         <span />
         <span>Approach</span>
         <span>Arguments</span>
       </div>
-      <div v-for="(a, i) in draft.agents" :key="a.key" class="grid min-w-0 items-start gap-2 sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,1fr)]" :data-compare-agent-row="i">
+      <div v-for="(a, i) in draft.agents" :key="a.key" class="grid min-w-0 items-start gap-2 sm:grid-cols-[minmax(0,8rem)_minmax(0,1fr)_minmax(0,1fr)]" :data-compare-agent-row="i">
         <span class="flex min-h-8 min-w-0 items-center gap-2"><b class="font-semibold text-highlighted">{{ agentLetter(i) }}</b><span class="min-w-0 [overflow-wrap:anywhere]">{{ nameOf(a.agentId) }}</span></span>
         <UFormField :error="marked(`approach-${i}`)">
           <UInput :model-value="a.approach" :maxlength="COMPARE_LIMITS.approach" placeholder="Optional: a way to try it" :aria-label="`Approach of agent ${agentLetter(i)}`" class="w-full" :data-compare-agent-approach="i" @update:model-value="setAgent(i, { approach: String($event ?? '') })" />
         </UFormField>
         <UFormField :error="marked(`args-${i}`)">
-          <UInput v-if="takesArgs(a.agentId)" :model-value="a.args" placeholder="Flags, as you would type them in a terminal" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" :aria-label="`Arguments of agent ${agentLetter(i)}`" class="w-full" :data-compare-agent-args="i" @update:model-value="setAgent(i, { args: String($event ?? '') })" />
+          <UInput v-if="takesArgs(a.agentId)" :model-value="a.args" placeholder="Flags, as typed in a terminal" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono placeholder:font-sans' }" :aria-label="`Arguments of agent ${agentLetter(i)}`" class="w-full" :data-compare-agent-args="i" @update:model-value="setAgent(i, { args: String($event ?? '') })" />
           <span v-else class="flex min-h-8 items-center text-xs text-muted" :data-compare-agent-no-args="i">Takes no arguments.</span>
         </UFormField>
       </div>

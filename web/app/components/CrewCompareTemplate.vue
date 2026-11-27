@@ -6,11 +6,15 @@ import {
   compareProblems,
   compareSpec,
   draftOnOpen,
+  FOLDER_CHECK_MS,
+  notSavedWords,
+  trialFolderLine,
   inMore,
   optionsLine,
   type DraftComparison,
   type TrialField,
 } from '~/utils/compareTemplate'
+import { ApiError } from '~/composables/useApi'
 import { effectiveYolo } from '~/utils/yolo'
 
 /**
@@ -39,13 +43,32 @@ const formRef = useTemplateRef<HTMLFormElement>('form')
  * The dialog's top edge, fixed once it has opened where the modal centred it: More options then opens downward, its button staying
  * under the pointer, and the dialog grows to the window's bottom before its body scrolls.
  */
-function pinTop() {
+async function pinTop() {
+  // The dialog's content once it is drawn, then its opening animation ended: its box is then where the modal centred it.
+  for (let i = 0; i < 120 && open.value && !formRef.value; i++) await frame()
   const content = formRef.value?.closest<HTMLElement>('[data-slot="content"]')
   if (!content) return
+  await frame()
+  await Promise.all(content.getAnimations({ subtree: true }).map((a) => a.finished.catch(() => undefined)))
+  if (!open.value || !content.isConnected) return
   const top = Math.round(content.getBoundingClientRect().top)
   content.style.top = `${top}px`
   content.style.setProperty('--tw-translate-y', '0px')
   content.style.maxHeight = `calc(100dvh - ${top}px - 1rem)`
+}
+
+const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()))
+
+/** Puts the cursor in the element `selector` names once it is drawn (a field of More options is drawn as the fold opens). */
+async function focusWhenDrawn(selector: string) {
+  for (let i = 0; i < 120 && open.value; i++) {
+    const el = formRef.value?.querySelector<HTMLElement>(selector)
+    if (el?.checkVisibility()) {
+      el.focus()
+      if (document.activeElement === el) return
+    }
+    await frame()
+  }
 }
 
 /** Whether `draft` is one being made, kept across a close; false once Cancel or a save ended it. */
@@ -59,11 +82,44 @@ watch(open, (o) => {
   draft.value = draftOnOpen(kept ? draft.value : null, props.agents)
   kept = true
   error.value = ''
+  void pinTop()
 })
 function cancel() {
   kept = false
   open.value = false
 }
+
+// The folder, asked of the server FOLDER_CHECK_MS after it last changed; only the latest answer counts.
+const folderLine = ref('')
+let folderTimer: number | undefined
+let folderSeq = 0
+async function checkFolder(folder: string) {
+  const n = ++folderSeq
+  if (!folder) {
+    folderLine.value = ''
+    return
+  }
+  let line = ''
+  try {
+    await api.gitCheck(folder)
+  } catch (e) {
+    line = trialFolderLine(e instanceof ApiError ? { code: e.code, message: e.message } : null)
+  }
+  if (n === folderSeq) folderLine.value = line
+}
+watch(
+  () => draft.value.folder.trim(),
+  (folder) => {
+    window.clearTimeout(folderTimer)
+    if (!folder) {
+      folderSeq++
+      folderLine.value = ''
+      return
+    }
+    folderTimer = window.setTimeout(() => void checkFolder(folder), FOLDER_CHECK_MS)
+  },
+)
+onBeforeUnmount(() => window.clearTimeout(folderTimer))
 
 const problems = computed(() => compareProblems(draft.value, props.agents))
 /** The words under a field, once the button was pressed. */
@@ -99,13 +155,13 @@ function fieldTarget(field: TrialField): string {
 
 /** The press: a draft with problems marks them and puts the cursor in the first; one without is posted. */
 async function press() {
-  if (creating.value) return
+  if (creating.value || folderLine.value) return
   pressed.value = true
   const first = problems.value[0]
   if (first) {
     if (inMore(first.field)) moreOpen.value = true
     await nextTick()
-    formRef.value?.querySelector<HTMLElement>(fieldTarget(first.field))?.focus()
+    await focusWhenDrawn(fieldTarget(first.field))
     return
   }
   creating.value = true
@@ -116,7 +172,7 @@ async function press() {
     open.value = false
     emit('created', crew)
   } catch (e) {
-    error.value = (e as Error).message
+    error.value = notSavedWords((e as Error).message)
   } finally {
     creating.value = false
   }
@@ -135,9 +191,8 @@ function onKey(e: KeyboardEvent) {
     v-model:open="open"
     title="New agent trial"
     description="Two to four agents each try the same task on their own copy. You keep the best result."
-    :ui="{ content: 'sm:max-w-2xl', wrapper: 'min-w-0 pe-10' }"
+    :ui="{ content: 'sm:max-w-2xl', wrapper: 'min-w-0 pe-10', header: 'shrink-0', body: 'min-h-0', footer: 'shrink-0' }"
     data-compare-template-dialog
-    @after:enter="pinTop"
   >
     <template #body>
       <form ref="form" class="text-sm" data-compare-template :aria-busy="creating" @submit.prevent="press" @keydown="onKey">
@@ -162,10 +217,10 @@ function onKey(e: KeyboardEvent) {
           </UFormField>
 
           <div class="grid gap-4 sm:grid-cols-2">
-            <UFormField label="Check" name="check" :error="marked('check')" :help="note || 'A command each result must pass, such as npm test.'">
+            <UFormField label="Check" name="check" :error="marked('check')" :help="note || undefined">
               <UInput :model-value="draft.check" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" data-compare-check @update:model-value="patch({ check: String($event ?? '') })" />
             </UFormField>
-            <UFormField label="Folder" name="folder" :error="marked('folder')">
+            <UFormField label="Folder" name="folder" :error="folderLine || marked('folder')">
               <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" data-compare-cwd @update:model-value="patch({ folder: $event })" />
             </UFormField>
           </div>
@@ -188,7 +243,7 @@ function onKey(e: KeyboardEvent) {
         </UTooltip>
         <div class="flex-1" />
         <UButton label="Cancel" color="neutral" variant="ghost" :disabled="creating" data-compare-cancel @click="cancel" />
-        <UButton label="Save trial" icon="i-lucide-save" :loading="creating" data-compare-create @click="press" />
+        <UButton label="Save trial" icon="i-lucide-save" :loading="creating" :disabled="!!folderLine" :aria-busy="creating" data-compare-create @click="press" />
       </div>
     </template>
   </UModal>

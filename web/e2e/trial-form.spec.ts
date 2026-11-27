@@ -1,11 +1,16 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { DAILY, atRest, budget, expect, openMore, test, useTheme, type Api } from './fixtures'
+import { DAILY, atRest, budget, expect, git, openMore, standingRoute, test, useTheme, type Api } from './fixtures'
 import { noSideways, probeColour } from './layout'
 
 // New agent trial, the form on Crews (CP1, docs/plans/compare-crew.md, "The template", where it is called New comparison): it opens on
 // its task with the cursor in it, two agents picked, the Check line and the folder, Yolo beside its one filled button, nothing marked;
 // a press with nothing typed marks each field in its words and puts the cursor in the first; Ctrl with Enter presses it; the body it
-// posts is read on its way to the server's template route; the draft lives across Escape and the X and ends with Cancel.
+// posts is read on its way to the server's template route; the draft lives across Escape and the X and ends with Cancel; More options
+// opens downward in five groups; a folder agents may not use is marked as it is picked, a new project's folder says nothing; a press
+// holds the form until its answer, and a refusal keeps what was typed.
 
 const DESK = { width: 1440, height: 900 }
 const PHONE = { width: 390, height: 844 }
@@ -172,12 +177,13 @@ test("the draft lives across Escape and the X and ends with Cancel; an agent's a
   await expect(form.locator('[data-trial-agent-args]')).toHaveCount(0)
 })
 
-/** Whether an input's placeholder fits its box whole, measured in the input's own font. */
+/** Whether an input's placeholder fits its box whole, measured in the placeholder's own font. */
 async function placeholderFits(input: Locator): Promise<{ text: number; room: number }> {
   return input.evaluate((el: HTMLInputElement) => {
     const s = getComputedStyle(el)
+    const ph = getComputedStyle(el, '::placeholder')
     const ctx = document.createElement('canvas').getContext('2d')!
-    ctx.font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`
+    ctx.font = `${ph.fontStyle} ${ph.fontWeight} ${ph.fontSize} ${ph.fontFamily}`
     const room = el.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight)
     return { text: ctx.measureText(el.placeholder).width, room }
   })
@@ -211,7 +217,7 @@ test('More options opens downward in five groups, the button staying where it wa
       const fit = await placeholderFits(input)
       expect(fit.text, `${sel}'s placeholder is ${fit.text} px in ${fit.room} px (${at})`).toBeLessThanOrEqual(fit.room)
     }
-    await expect(more.locator('[data-compare-agent-args="0"]')).toHaveAttribute('placeholder', 'Flags, as you would type them in a terminal')
+    await expect(more.locator('[data-compare-agent-args="0"]')).toHaveAttribute('placeholder', 'Flags, as typed in a terminal')
     await expect(more.locator('[data-compare-agent-approach="0"]')).toHaveAttribute('placeholder', 'Optional: a way to try it')
     await expect(more.locator('[data-compare-criterion="0"]')).toHaveValue('Does what the task asks')
     await expect(more.locator('[data-compare-instructions]')).toHaveAttribute('placeholder', 'Extra instructions, the same for each')
@@ -251,5 +257,78 @@ test('a press whose first problem is under More options opens it and puts the cu
   await expect(form.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'true')
   await expect(more.locator('[data-compare-agent-args="0"]')).toBeFocused()
   await expect(more).toContainText('Agent A: close the quote in its arguments.')
+  await dialog.locator('[data-compare-cancel]').click()
+})
+
+test("a folder agents may not use is marked as it is picked and holds the button; a new project's folder says nothing", async ({ page, state }) => {
+  test.setTimeout(120_000)
+  // A folder outside the server's allowed root, and a new project inside it: a repository with no commit yet.
+  const outside = mkdtempSync(join(tmpdir(), 'e2e-trial-outside-'))
+  const fresh = mkdtempSync(join(state.root, 'e2e-trial-new-'))
+  git(fresh, 'init', '--quiet')
+  try {
+    await page.setViewportSize(DAILY)
+    await page.goto('/crews')
+    const { dialog, form } = await openForm(page)
+    const folder = form.locator('[data-compare-cwd]').getByRole('combobox')
+    const checked = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === outside)
+    await folder.fill(outside)
+    await folder.press('Tab')
+    expect((await checked).status()).toBe(400)
+    await expect(folder).toHaveAttribute('aria-invalid', 'true')
+    await expect(dialog.locator('[data-compare-create]')).toBeDisabled()
+    // A new project: the server's answer comes and the form says nothing of it.
+    const again = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === fresh)
+    await folder.fill(fresh)
+    await folder.press('Tab')
+    expect((await again).status()).toBe(200)
+    await expect(folder).not.toHaveAttribute('aria-invalid', 'true')
+    await expect(dialog.locator('[data-compare-create]')).toBeEnabled()
+    for (const words of ['No commits', 'Not a git repository', 'first commit']) await expect(dialog).not.toContainText(words)
+    await dialog.locator('[data-compare-cancel]').click()
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+    rmSync(fresh, { recursive: true, force: true })
+  }
+})
+
+test('a press holds the form while its save is out, sends once, and a save the server refuses keeps what was typed', async ({ page, state }) => {
+  test.setTimeout(120_000)
+  const seen = posted(page)
+  // The save is held at the spec's own route until judged, then answered as the server refuses a crew.
+  let release: () => void = () => {}
+  const held = new Promise<void>((done) => (release = done))
+  // A route kept on the page from before it loads, the spec's own on top (AGENTS.md: switching interception on and off).
+  await standingRoute(page.context())
+  await page.route('**/api/crews/templates/compare', async (route) => {
+    await held
+    await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_crew', message: 'e2e: crews are off here' } }) })
+  })
+  await page.setViewportSize(DESK)
+  await page.goto('/crews')
+  const { dialog, form } = await openForm(page)
+  await form.locator('[data-compare-goal]').fill('Add rate limiting to the login route')
+  await form.locator('[data-compare-check]').fill('true')
+  const folder = form.locator('[data-compare-cwd]').getByRole('combobox')
+  await folder.fill(state.repo)
+  await folder.press('Tab')
+  const save = dialog.locator('[data-compare-create]')
+  await save.click()
+  await expect(save).toHaveAttribute('aria-busy', 'true')
+  await expect(form).toHaveAttribute('aria-busy', 'true')
+  await expect(form.locator('[data-compare-goal]')).toBeDisabled()
+  await expect(dialog.locator('[data-compare-cancel]')).toBeDisabled()
+  // A second press and Ctrl with Enter send nothing more.
+  await save.click({ force: true })
+  await page.keyboard.press('Control+Enter')
+  await expect.poll(() => seen.length).toBe(1)
+  release()
+  const alert = dialog.locator('[data-compare-template-error]')
+  await expect(alert).toContainText('Not saved')
+  await expect(alert).toContainText('E2e: crews are off here. What you typed is kept.')
+  await expect(form.locator('[data-compare-goal]')).toHaveValue('Add rate limiting to the login route')
+  await expect(save).toBeEnabled()
+  await expect(save).not.toHaveAttribute('aria-busy', 'true')
+  expect(seen).toHaveLength(1)
   await dialog.locator('[data-compare-cancel]').click()
 })

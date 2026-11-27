@@ -216,6 +216,9 @@ test("New agent trial is the name on Crews and in the palette, on a phone too, a
       const tip = (name: string) => page.locator('[data-slot="content"]').filter({ has: page.getByRole('tooltip', { name, exact: true, includeHidden: true }) })
       await page.locator('[data-new-comparison]').hover()
       await expect(tip('Agents each try the same task. You keep the best result.')).toBeVisible()
+      // Away from the button, its tooltip goes, and the next one is a new one.
+      await page.mouse.move(0, size.height - 1)
+      await expect(tip('Agents each try the same task. You keep the best result.')).toHaveCount(0)
       await page.locator('[data-new-crew]').hover()
       await expect(tip('Agents that work together on one goal.')).toBeVisible()
       await page.keyboard.press('Control+k')

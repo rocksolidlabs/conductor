@@ -305,6 +305,24 @@ export function checkNote(line: string): string {
   return /(^|\s)(&&|\|\||\||;)(?=\s|$)/.test(line) ? 'This runs as one command, not in a shell. Add a second check under More options.' : ''
 }
 
+/** How long the form waits after the folder last changed before it asks the server about it (as the crew editor does). */
+export const FOLDER_CHECK_MS = 300
+
+/**
+ * What the form says under Folder once the server has looked at it (GET /api/git/check): its refusal of a folder agents may not use
+ * (`invalid_cwd`), in its words, which holds the button; '' for any other answer. A folder with no repository or no commit yet says
+ * nothing: a new project is a folder like any other.
+ */
+export function trialFolderLine(answer: { code?: string; message?: string } | null): string {
+  return answer?.code === 'invalid_cwd' ? sentence(answer.message ?? '') : ''
+}
+
+/** The words of a press the server refused, with what the form kept. */
+export function notSavedWords(server: string): string {
+  const t = server.trim().replace(/[.\s]+$/, '')
+  return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}. What you typed is kept.` : 'What you typed is kept.'
+}
+
 /** How many characters of an agent's arguments its chip shows before it cuts them in the middle; the whole line is the chip's title. */
 export const CHIP_ARGS = 24
 
