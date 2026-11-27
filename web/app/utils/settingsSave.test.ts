@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DesktopSettings } from './desktop'
-import { answer, configForm, draftBack, followSaved, StaleRefusal, formMove, newer, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
+import { answer, configForm, draftBack, followOutside, followSaved, rootsFollow, StaleRefusal, formMove, newer, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
 
 /** A part that records its call in `calls` and answers `value`, or throws `fail`. */
 function part<T>(calls: string[], name: string, value: T, fail?: string) {
@@ -369,5 +369,54 @@ describe('a draft kept while another page is open (UX3 R81)', () => {
     const other = harness({ rev: 1, reads: 300, turns: 5 }, { now: 1 })
     expect(other.ctl.restore(kept)).toBe(false)
     expect(other.ctl.form.value!.reads).toBe(300)
+  })
+})
+
+describe('a folder allowed from a dialog while Settings is open (UX3 R62)', () => {
+  const read = { ...settings, allowedRoots: ['/r'] }
+  const allowed = { ...read, allowedRoots: ['/r', '/p'] }
+
+  it('joins an untouched form, which then holds no change', () => {
+    const form = { ...read, allowedRoots: [...read.allowedRoots] }
+    followOutside(form, read, allowed)
+    expect(form.allowedRoots).toEqual(['/r', '/p'])
+    expect(holds(form, allowed)).toBe(true)
+  })
+
+  it('joins a form being edited, its edits kept, the folders list edited too', () => {
+    const form = { ...read, yolo: true, allowedRoots: ['/r', '/mine'] }
+    followOutside(form, read, allowed)
+    expect(form.yolo).toBe(true)
+    expect(form.allowedRoots).toEqual(['/r', '/mine', '/p'])
+    // The next Save sends the list whole: the folder allowed meanwhile with it.
+    expect(form.allowedRoots).toContain('/p')
+    // What Save would change is the edits alone: the folder allowed is saved already.
+    const changed = (Object.keys(form) as Array<keyof typeof form>).filter((k) => JSON.stringify(form[k]) !== JSON.stringify(allowed[k]))
+    expect(changed).toEqual(['allowedRoots', 'yolo'])
+    expect(rootsFollow(['/r', '/mine'], read.allowedRoots, allowed.allowedRoots).filter((r) => !allowed.allowedRoots.includes(r))).toEqual(['/mine'])
+  })
+
+  it('keeps a folder taken out here taken out, and Discard keeps the folder allowed (it was never this form\'s change)', () => {
+    const before = { ...settings, allowedRoots: ['/r', '/s'] }
+    const form = { ...before, allowedRoots: ['/r'] }
+    const now = { ...before, allowedRoots: ['/r', '/s', '/p'] }
+    followOutside(form, before, now)
+    expect(form.allowedRoots).toEqual(['/r', '/p'])
+    // Discard puts the form back to what is saved now: the folder allowed stays.
+    const discarded = { ...form }
+    followSaved(discarded, null, now)
+    expect(discarded.allowedRoots).toEqual(['/r', '/s', '/p'])
+  })
+
+  it('follows a setting saved meanwhile in a field not edited, and keeps one edited', () => {
+    const form = { ...read, closeToTray: false }
+    const now = { ...allowed, closeToTray: true, reach: 'auto' as const }
+    followOutside(form, read, now)
+    expect(form.reach).toBe('auto')
+    expect(form.closeToTray).toBe(false)
+  })
+
+  it('drops a folder taken out of what is saved meanwhile, unless this page added it', () => {
+    expect(rootsFollow(['/r', '/s', '/mine'], ['/r', '/s'], ['/r'])).toEqual(['/r', '/mine'])
   })
 })
