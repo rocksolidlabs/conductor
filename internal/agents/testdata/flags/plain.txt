@@ -1,0 +1,10 @@
+Usage: stub-agent.sh [options] [resume ID]
+
+Options:
+  --session-id ID    name the agent's own session
+  --resume ID        continue a session
+  -c KEY=VALUE       a configuration override (projects=... trusts the folder)
+  --settings FILE    extra settings (ignored)
+  --dangerously-skip-permissions
+  --dangerously-bypass-approvals-and-sandbox
+  --version          print the version
