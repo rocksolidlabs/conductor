@@ -5,7 +5,8 @@ import { MAX_SUBMIT } from '~/utils/protocol'
 import { giveFocusBack, type ReplyTaken } from '~/utils/reply'
 import { OwnLines, RowDrafts } from '~/utils/rowDrafts'
 import { afterPick, expandsLine, freeHeld, listsOpen, markInput } from '~/utils/boxLine'
-import { fileRows, mentionAt, outsideMention, pickMention, type Mention, type MenuRow } from '~/utils/chatBoxMenu'
+import { boxKey, commandAt, commandRows, fileRows, mentionAt, offeredCommands, outsideMention, pickCommand, pickMention, type CommandWord, type Mention, type MenuRow } from '~/utils/chatBoxMenu'
+import type { AgentCommand } from '~/utils/protocol'
 
 /**
  * Where a message is written (design 2a, 2c, 2e): Enter sends, Shift+Enter is
@@ -48,6 +49,11 @@ const props = withDefaults(
      * no list then.
      */
     files?: (words: string) => Promise<{ paths: string[]; more: boolean }>
+    /**
+     * The agent's own commands for `/` (UX3 R11), as the server sent them to this connection; given only where the server said this
+     * connection may expand a line. None: no list.
+     */
+    commands?: { list: AgentCommand[]; more: boolean } | null
   }>(),
   {
     disabled: false,
@@ -58,6 +64,7 @@ const props = withDefaults(
     scopeItems: undefined,
     agent: undefined,
     files: undefined,
+    commands: null,
   },
 )
 /** `to` is '' for the chat alone, `agent` for this session's agent, else a run member's name. */
@@ -273,8 +280,31 @@ onBeforeUnmount(() => {
   clearTimeout(findTimer)
   clearTimeout(slowTimer)
 })
-const menuRows = computed(() => (fileList.value && fileList.value.words === mention.value?.words ? fileList.value.rows : []))
+/**
+ * The list for `/` (UX3 R11): while the line begins with `/` and the cursor is in its first word, the agent's own commands that
+ * match, on the person's own line alone. Enter and Tab complete the highlighted row; a line goes only by an Enter with the list closed.
+ */
+/** The commands offered now: the server's, where this box may expand a line and is not answering a question (offeredCommands). */
+const commandList = computed(() => offeredCommands({ canExpand: !!props.agent?.expand && !!props.commands, answering: answering.value || !!props.agent?.asked?.reply, list: props.commands?.list }))
+const command = computed<CommandWord | null>(() => (props.agent && commandList.value && listsOn.value ? commandAt(draft.value, caret.value) : null))
+const commandKey = computed(() => (command.value ? `/:${command.value.typed}` : ''))
+watch(commandKey, (k) => {
+  if (!k) dismissed.value = ''
+})
+const fileShown = computed(() => (fileList.value && fileList.value.words === mention.value?.words ? fileList.value.rows : []))
+const menuKind = computed<'file' | 'command'>(() => (command.value ? 'command' : 'file'))
+const menuRows = computed(() => (command.value && commandList.value ? commandRows(commandList.value, command.value.typed) : fileShown.value))
+// A change of the commands' rows (the list sent again, more typed) keeps the highlighted name where it is still there; the file list
+// places its own highlight as each read comes.
+watch(menuRows, (rows, before) => {
+  if (!command.value) return
+  const name = before?.[active.value]?.value
+  const i = name ? rows.findIndex((r) => r.value === name) : -1
+  active.value = i >= 0 ? i : Math.max(0, rows.findIndex((r) => r.pickable))
+})
 const menuFoot = computed(() => {
+  // The commands' list says nothing of its own: its rows are the agent's.
+  if (command.value) return ''
   const row = menuRows.value[active.value]
   if (row && !row.pickable) return 'Type this path yourself: its name has a space or a mark.'
   if (finding.value && !menuRows.value.length) return 'Finding…'
@@ -284,17 +314,25 @@ const menuFoot = computed(() => {
   }
   return ''
 })
-const menuOpen = computed(() => !!mention.value && dismissed.value !== mentionKey.value && (menuRows.value.length > 0 || !!menuFoot.value))
+const openKey = computed(() => commandKey.value || mentionKey.value)
+/** Whether the box has the cursor: a list shows, and takes a press, only then. */
+const focused = ref(false)
+const menuOpen = computed(
+  () =>
+    focused.value &&
+    (command.value ? dismissed.value !== commandKey.value && menuRows.value.length > 0 : !!mention.value && dismissed.value !== mentionKey.value && (menuRows.value.length > 0 || !!menuFoot.value)),
+)
 const menuId = useId()
 const activeId = computed(() => (menuOpen.value && menuRows.value.length ? `${menuId}-${active.value}` : undefined))
 
 /** The person's pick: the `@` word becomes `@<path> `, the cursor after it, the list closed. Their own act, when the press is theirs. */
 function pick(i: number, trusted: boolean) {
+  const c = command.value
   const m = mention.value
   const row = menuRows.value[i]
-  if (!m || !row?.pickable) return
+  if ((!c && !m) || !row?.pickable) return
   const wasMine = mineNow.value
-  const put = pickMention(draft.value, m, row.value)
+  const put = c ? pickCommand(draft.value, c, row.value) : pickMention(draft.value, m!, row.value)
   draft.value = put.text
   afterPick(own, lineKey.value, put.text, { trusted, wasMine })
   caret.value = put.caret
@@ -306,42 +344,35 @@ function pick(i: number, trusted: boolean) {
   })
 }
 
-/** The list's keys, while it is open: the arrows move, Enter and Tab pick, Escape closes; true when the key was the list's. */
-function menuKey(e: KeyboardEvent): boolean {
-  if (!menuOpen.value || e.isComposing) return false
+/**
+ * The box's keys, by boxKey (utils/chatBoxMenu.ts): while the list is open the arrows move, Enter and Tab complete the highlighted
+ * row, Escape closes it; a line is sent only by the person's own Enter, not held down, with the list closed.
+ */
+function onKeydown(e: KeyboardEvent) {
+  const act = boxKey(
+    { key: e.key, shift: e.shiftKey, repeat: e.repeat, trusted: e.isTrusted, composing: e.isComposing, phone: props.phone },
+    { open: menuOpen.value, rows: menuRows.value.length },
+  )
   const n = menuRows.value.length
-  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    if (!n) return false
+  if (act === 'move') {
     e.preventDefault()
     active.value = (active.value + (e.key === 'ArrowDown' ? 1 : n - 1)) % n
-    return true
-  }
-  if (e.key === 'Enter' || e.key === 'Tab') {
-    if (e.shiftKey && e.key === 'Enter') return false
+  } else if (act === 'complete') {
     e.preventDefault()
-    pick(active.value, e.isTrusted)
-    return true
-  }
-  if (e.key === 'Escape') {
+    pick(active.value, true)
+  } else if (act === 'close') {
     e.preventDefault()
     e.stopPropagation()
-    dismissed.value = mentionKey.value
-    return true
-  }
-  return false
-}
-
-function onKeydown(e: KeyboardEvent) {
-  if (menuKey(e)) return
-  // Escape leaves the agent's box, so that the page's keys (a choice's number, S, X) work again.
-  if (e.key === 'Escape' && props.agent) {
+    dismissed.value = openKey.value
+  } else if (act === 'none') {
+    e.preventDefault()
+  } else if (act === 'send') {
+    e.preventDefault()
+    send(scope.value)
+  } else if (e.key === 'Escape' && props.agent) {
+    // Escape leaves the agent's box, so that the page's keys (a choice's number, S, X) work again.
     ;(e.target as HTMLElement | null)?.blur()
-    return
   }
-  if (e.key !== 'Enter' || e.isComposing) return
-  if (e.shiftKey && !props.phone) return
-  e.preventDefault()
-  send(scope.value)
 }
 
 defineExpose({ focus })
@@ -356,7 +387,7 @@ function keepTyping(e: Event) {
 <template>
   <!-- The agent's box: one row, the field, Stop turn while a turn runs, Send; under it only what the person must know now. -->
   <form v-if="agent" ref="form" class="relative flex flex-col gap-1.5 px-3 py-2.5" data-chat-composer @submit.prevent="(e: Event) => e.isTrusted && send('')">
-    <ChatBoxMenu v-if="menuOpen" :id="menuId" kind="file" :rows="menuRows" :active="active" :foot="menuFoot" @pick="(i, trusted) => pick(i, trusted)" @hover="(i) => (active = i)" />
+    <ChatBoxMenu v-if="menuOpen" :id="menuId" :kind="menuKind" :rows="menuRows" :active="active" :foot="menuFoot" @pick="(i, trusted) => pick(i, trusted)" @hover="(i) => (active = i)" />
     <div class="flex items-end gap-2">
       <UTextarea
         ref="input"
@@ -372,10 +403,12 @@ function keepTyping(e: Event) {
         :ui="{ base: 'text-sm' }"
         :aria-controls="menuOpen && menuRows.length ? menuId : undefined"
         :aria-activedescendant="activeId"
-        :aria-autocomplete="files ? 'list' : undefined"
+        :aria-autocomplete="files || commands ? 'list' : undefined"
         data-chat-input
         @keydown="onKeydown"
         @input="onInput"
+        @focus="focused = true"
+        @blur="focused = false"
         @keyup="noteCaret"
         @click="noteCaret"
         @select="noteCaret"

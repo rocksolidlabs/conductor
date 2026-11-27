@@ -129,3 +129,31 @@ describe('useSessionConnection, the server\'s word on expand (UX3 R10)', () => {
     expect(conn.expand.value).toBe(false)
   })
 })
+
+describe("useSessionConnection, the agent's commands (UX3 R11)", () => {
+  it('keepsTheServersListAlone: a higher rev replaces it, an empty one means none, a welcome and a move to the terminal clear it', async () => {
+    const made: ReturnType<typeof fakeTransport>[] = []
+    const conn = useSessionConnection(() => {
+      const f = fakeTransport()
+      made.push(f)
+      return f.transport
+    })
+    await conn.connect({ cols: 80, rows: 24 })
+    const f = made[0]!
+    f.owner.control({ t: 'welcome', role: 'control', fileView: true, way: 'protocol', expand: true } as unknown as Welcome)
+    expect(conn.commands.value).toBeNull()
+    f.owner.transcript({ t: 'commands', rev: 2, commands: [{ name: 'compact' }] })
+    expect(conn.commands.value?.list.map((c) => c.name)).toEqual(['compact'])
+    // An older rev is not taken; a higher one replaces, an empty list among them.
+    f.owner.transcript({ t: 'commands', rev: 1, commands: [{ name: 'old' }] })
+    expect(conn.commands.value?.rev).toBe(2)
+    f.owner.transcript({ t: 'commands', rev: 3, commands: [], more: false })
+    expect(conn.commands.value).toEqual({ rev: 3, list: [], more: false })
+    f.owner.transcript({ t: 'commands', rev: 4, commands: [{ name: 'model' }], more: true })
+    f.owner.control({ t: 'way', way: 'terminal' } as unknown as ControlMessage)
+    expect(conn.commands.value).toBeNull()
+    f.owner.transcript({ t: 'commands', rev: 5, commands: [{ name: 'model' }] })
+    f.owner.control({ t: 'welcome', role: 'control', fileView: true, way: 'protocol' } as unknown as Welcome)
+    expect(conn.commands.value).toBeNull()
+  })
+})

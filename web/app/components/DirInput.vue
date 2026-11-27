@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { PathEntry } from '~/composables/useSessions'
-import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, homeExpanded, matchingEntries, moreNote, movesHighlight } from '~/utils/dirInput'
+import { ApiError } from '~/composables/useApi'
+import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, homeExpanded, listingProblem, matchingEntries, moreNote, movesHighlight } from '~/utils/dirInput'
 
 /**
  * A working-directory field completed from the server: as the text changes,
@@ -22,6 +23,8 @@ import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, homeExp
  */
 const model = defineModel<string>({ default: '' })
 const props = defineProps<{
+  /** A line under the field says what is wrong with the folder (FolderAllowLine): a refused listing then opens no list at all. */
+  lined?: boolean
   placeholder?: string
   name?: string
   /** The folder picker's title; the button beside the field opens it. */
@@ -61,7 +64,11 @@ const note = computed(() => moreNote({ truncated: truncated.value, ...more.value
 const loading = ref(false)
 // A listing is due after the pause.
 const pending = ref(false)
-const problem = ref('')
+// The listing refused the text (a place outside the folders agents may use, or another error of the route): no list is shown at all,
+// and the line under the field, where there is one (FolderAllowLine), says it in plain words.
+const unlisted = ref(false)
+/** Without a line under the field, the listing's refusal in plain words, as the list's content. */
+const failure = ref('')
 let timer: number | undefined
 // Replies may come back out of order, or after the text changed again: only the reply to the latest text counts.
 let seq = 0
@@ -89,7 +96,8 @@ async function fetchNow() {
     entries.value = r.entries
     truncated.value = r.truncated
     more.value = { more: r.more, moreUnknown: r.moreUnknown }
-    problem.value = ''
+    unlisted.value = false
+    failure.value = ''
     listedFor = query
     // The listing changed under the highlight: an arrow pressed while it was on its way no longer counts.
     moved = false
@@ -98,7 +106,10 @@ async function fetchNow() {
     listedFor = undefined
     entries.value = []
     truncated.value = false
-    problem.value = (e as Error).message
+    const code = e instanceof ApiError ? e.code : ''
+    // A field with a line under it says a folder's refusal there; a server that did not answer is said in the list all the same.
+    unlisted.value = !!props.lined && code !== 'network'
+    failure.value = listingProblem(code, (e as Error).message)
   } finally {
     if (n === seq) {
       // A pick closes the list: it opens again on the picked directory's children, the focus back in the field
@@ -216,7 +227,8 @@ onBeforeUnmount(() => {
     <UInputMenu
       ref="menu"
       :model-value="model"
-      v-model:open="open"
+      :open="open && !unlisted"
+      @update:open="(v: boolean) => (open = v)"
       mode="autocomplete"
       :items="entries"
       value-key="path"
@@ -244,7 +256,7 @@ onBeforeUnmount(() => {
         <UBadge v-if="gitMark(item.git).label" :label="gitMark(item.git).label" :color="gitMark(item.git).tone" variant="subtle" size="sm" />
       </template>
       <template #empty>
-        <span aria-live="polite" :class="{ 'text-warning': problem && !pending && !loading }">{{ pending || loading ? 'Looking…' : problem || 'No directory here.' }}</span>
+        <span aria-live="polite" :class="{ 'text-warning': failure && !pending && !loading }" data-dir-failure>{{ pending || loading ? 'Looking…' : failure || 'No directory here.' }}</span>
       </template>
       <template #content-bottom>
         <div aria-live="polite">

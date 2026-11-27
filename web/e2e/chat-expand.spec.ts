@@ -107,17 +107,19 @@ test('a line the page put in the box goes as written: text set by code, and a pi
     await page.keyboard.type('x')
     await page.keyboard.press('Backspace')
     await expect(box(page)).toHaveValue('')
-    // Text set by code (an input event no person made), then sent with a person's Enter: as written.
+    // Text set by code (an input event no person made), a command and a file in it, then sent with a person's Enter: as written.
+    // (The cursor ends past the command's word, so no list of commands is open to take the Enter.)
     await box(page).evaluate((el: HTMLTextAreaElement) => {
-      el.value = '/compact'
+      el.value = '/compact @notes.txt now'
       el.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    await expect(box(page)).toHaveValue('/compact')
+    await expect(box(page)).toHaveValue('/compact @notes.txt now')
+    await box(page).press('End')
     await box(page).press('Enter')
     expect(await markOf(conv, ++n)).toBe('marked')
-    await expect(turnWith(page, 'stub chat: /compact')).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
+    await expect(turnWith(page, 'stub chat: /compact @notes.txt now')).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
     // A line with a command and a file, sent as written, draws no chip: chips are the expanded entries' alone.
-    const plain = page.locator('[data-chat-prompt-text]').filter({ hasText: '/compact' }).last()
+    const plain = page.locator('[data-chat-prompt-text]').filter({ hasText: '/compact @notes.txt now' }).last()
     await expect(plain).toBeVisible({ timeout: LONG_MS })
     await expect(plain.locator('[data-chat-chip]')).toHaveCount(0)
     // The person types an @ word, and a pick no person pressed fills it: the page's line, as written.
