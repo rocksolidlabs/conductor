@@ -98,6 +98,9 @@ func (a Adapter) clone() Adapter {
 		p := *a.Probe
 		a.Probe = &p
 	}
+	if a.Flags != nil {
+		a.Flags = &FlagsRecipe{Sub: slices.Clone(a.Flags.Sub), Args: slices.Clone(a.Flags.Args), Taken: slices.Clone(a.Flags.Taken), Skips: slices.Clone(a.Flags.Skips)}
+	}
 	return a
 }
 

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { RUN_AS_CHAT_LINE, RUN_AS_KEPT, RUN_AS_KEY, RUN_AS_SIDES, offersRunAs, readRunAs, sideForKey, writeRunAs } from './launchWay'
+import { RUN_AS_KEPT, RUN_AS_KEY, RUN_AS_SIDES, offersRunAs, readRunAs, sideForKey, writeRunAs } from './launchWay'
 import { AFTER_FIRST_REPLY, MOVES_TO_CHAT, pressFor, switchState, type SwitchFacts } from './switchState'
 
 // The Launch agent dialog's Run as: Terminal | Chat (issue 1174). The app's vitest mounts no component: the choice's keys and what it
@@ -22,11 +22,10 @@ function store(init: Record<string, string> = {}) {
 }
 
 describe('Run as', () => {
-  it('has the two sides in the header switch’s order, Terminal first, and its one line', () => {
+  it('has the two sides in the header switch’s order, Terminal first', () => {
     expect(RUN_AS_SIDES.map((s) => s.label)).toEqual(['Terminal', 'Chat'])
     expect(RUN_AS_SIDES.map((s) => s.way)).toEqual(['terminal', 'protocol'])
     expect(header).toContain("{ way: 'terminal', label: 'Terminal' },\n  { way: 'protocol', label: 'Chat' },")
-    expect(RUN_AS_CHAT_LINE).toBe('Starts in its terminal, then moves to Chat.')
   })
 
   it('is offered only for an agent whose catalog entry has a protocol', () => {
@@ -76,7 +75,7 @@ describe('Run as', () => {
     expect(readRunAs(s, `agent-${RUN_AS_KEPT}`)).toBe('protocol')
   })
 
-  it('the component: the label, the sides as radios moved by the keys, and the line only while Chat is picked', () => {
+  it('the component: the label and the sides as radios moved by the keys, and nothing else: no line under them for either side', () => {
     expect(choice).toContain('<UFormField label="Run as"')
     expect(choice).toMatch(/role="radiogroup"[^>]*@keydown="onKey"/)
     expect(choice).toContain('v-for="side in RUN_AS_SIDES"')
@@ -84,7 +83,10 @@ describe('Run as', () => {
     expect(choice).toContain(':aria-checked="side.way === way"')
     expect(choice).toContain(":variant=\"side.way === way ? 'soft' : 'ghost'\"")
     expect(choice).toContain('const next = sideForKey(way.value, e.key)')
-    expect(choice).toMatch(/<p v-if="way === 'protocol'"[^>]*data-run-as-line>\{\{ RUN_AS_CHAT_LINE \}\}<\/p>/)
+    // The dialog shows the choice alone: the picked side, with no words of how it is carried out, so it does not grow with Chat.
+    expect(choice).not.toMatch(/<p\b/)
+    expect(choice).not.toContain("v-if=\"way === 'protocol'\"")
+    expect(choice.match(/<template>[\s\S]*<\/template>/)?.[0].match(/\{\{/g) ?? []).toHaveLength(0)
   })
 
   it('the dialog: shown for an agent that runs as a chat on this server, never a clone; read at each opening and pick; written at Launch', () => {

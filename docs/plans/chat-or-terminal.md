@@ -1425,7 +1425,6 @@ Every string is one short sentence.
 | a full queue (`too_many_requests` on `submit`) | "Too many messages are waiting." |
 | a move pressed during a turn | "Moves to Chat when this turn ends." / "Moves to the terminal when this turn ends." |
 | a move to Chat noted at the launch, before the first reply (#1174) | "Moves to Chat after the agent's first reply." |
-| the Launch agent dialog's Run as, Chat picked (#1174) | "Starts in its terminal, then moves to Chat." |
 | a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." / "Sessions launched with an added folder stay in their terminal." / "This session's arguments hold <flag>, which a chat sets itself; it stays in its terminal." |
 | the session moving (`moving`) | "The session is moving; try again in a moment." |
 | a permission answer from a non-answerer (`not_answerer`) | "Only the person who runs this server can answer." |
@@ -2818,8 +2817,10 @@ and `chat-layout`, each on a server of its own with `claude-proto` and
 - The Launch agent dialog offers **Run as: Terminal | Chat** for an agent
   whose catalog entry has a protocol, on this server, never for a clone:
   the header switch's two sides in its order, one press, the arrow keys
-  moving between them, and under it while Chat is picked "Starts in its
-  terminal, then moves to Chat." It comes back as that agent was last
+  moving between them, and nothing else: the dialog shows the choice
+  alone, and no line says how a launch as a chat is carried out (a
+  maintainer's word: only what is needed is shown; the session's switch
+  says it while the move waits). It comes back as that agent was last
   launched in this browser (its storage, a per-viewer convenience: the
   dialog kept nothing per agent before), written at Launch alone; the
   first time it is Terminal.

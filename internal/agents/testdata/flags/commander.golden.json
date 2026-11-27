@@ -1,0 +1,170 @@
+[
+  {
+    "name": "--add-dir",
+    "value": "required",
+    "placeholder": "directories",
+    "repeat": true,
+    "about": "More folders the agent may read",
+    "kind": "folder"
+  },
+  {
+    "name": "--allow-dangerously-skip-permissions",
+    "value": "none",
+    "about": "Lets a key turn every question off later on",
+    "set": "yolo"
+  },
+  {
+    "name": "--allowedTools",
+    "aliases": [
+      "--allowed-tools"
+    ],
+    "value": "required",
+    "placeholder": "tools",
+    "repeat": true,
+    "about": "Tools that run without a question (e.g. \"Bash(git *) Edit\")"
+  },
+  {
+    "name": "--autocompact",
+    "value": "required",
+    "placeholder": "auto|tokens",
+    "about": "When to shorten the talk (auto, or at least 100k tokens)"
+  },
+  {
+    "name": "--dangerously-skip-permissions",
+    "value": "none",
+    "about": "Asks nothing at all",
+    "set": "yolo"
+  },
+  {
+    "name": "--effort",
+    "value": "required",
+    "placeholder": "level",
+    "about": "How hard to think (low, medium, high)",
+    "choices": [
+      {
+        "value": "low"
+      },
+      {
+        "value": "medium"
+      },
+      {
+        "value": "high"
+      }
+    ],
+    "kind": "choice"
+  },
+  {
+    "name": "--fallback-model",
+    "value": "required",
+    "placeholder": "model",
+    "about": "Models to try next (comma-separated, in order)",
+    "kind": "model"
+  },
+  {
+    "name": "--help",
+    "aliases": [
+      "-h"
+    ],
+    "value": "none",
+    "about": "Shows this help",
+    "set": "exit"
+  },
+  {
+    "name": "--input-format",
+    "value": "required",
+    "placeholder": "format",
+    "about": "How input comes: \"text\" (default) or \"stream-json\" (choices: \"text\", \"stream-json\")",
+    "choices": [
+      {
+        "value": "text"
+      },
+      {
+        "value": "stream-json"
+      }
+    ],
+    "kind": "choice"
+  },
+  {
+    "name": "--model",
+    "value": "required",
+    "placeholder": "model",
+    "about": "The model to use: an alias (e.g. 'alpha', 'beta', or 'gamma') or a model's full name.",
+    "examples": [
+      "alpha",
+      "beta",
+      "gamma"
+    ],
+    "kind": "model",
+    "set": "model"
+  },
+  {
+    "name": "--permission-mode",
+    "value": "required",
+    "placeholder": "mode",
+    "about": "How questions are asked (choices: \"ask\", \"bypassPermissions\", \"plan\", default: \"ask\")",
+    "choices": [
+      {
+        "value": "ask"
+      },
+      {
+        "value": "bypassPermissions",
+        "set": "yolo"
+      },
+      {
+        "value": "plan"
+      }
+    ],
+    "kind": "choice"
+  },
+  {
+    "name": "--continue",
+    "aliases": [
+      "-c"
+    ],
+    "value": "none",
+    "about": "Goes on with the last talk"
+  },
+  {
+    "name": "--session-id",
+    "value": "required",
+    "placeholder": "uuid",
+    "about": "The id the session is given",
+    "set": "session"
+  },
+  {
+    "name": "--settings",
+    "value": "required",
+    "placeholder": "file-or-json",
+    "about": "A settings file, or JSON",
+    "set": "launch"
+  },
+  {
+    "name": "--sources",
+    "value": "optional",
+    "placeholder": "names",
+    "about": "Where settings come from (default: [])"
+  },
+  {
+    "name": "--verbose",
+    "value": "none",
+    "about": "Says more"
+  },
+  {
+    "name": "--version",
+    "aliases": [
+      "-v"
+    ],
+    "value": "none",
+    "about": "Prints the version",
+    "set": "exit"
+  },
+  {
+    "name": "--worktree",
+    "aliases": [
+      "-w"
+    ],
+    "value": "optional",
+    "placeholder": "name",
+    "about": "Works in a new worktree (optionally named)"
+  }
+]

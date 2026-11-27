@@ -127,6 +127,19 @@ func claudeSteps(hooksDir string) []step {
 // claudeIdentity is Claude Code's probe, which its usage reader asks too.
 var claudeIdentity = &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(\d+\.\d+\.\d+)\s*\(Claude Code\)`), Verified: true}
 
+// claudeFlags is how Claude Code's flags are read (`claude --help`,
+// 2.1.332, and the recipes tier): its help, commander's form. A launch sets
+// --settings itself (the hooks, the yolo key), and Claude Code honours only
+// the last one, so a person's own would be lost. Two of its flags turn its
+// questions off besides the yolo recipe's: --allow-dangerously-skip-
+// permissions (bypass as an option a keypress turns on) and the
+// bypassPermissions value of --permission-mode.
+var claudeFlags = &FlagsRecipe{
+	Args:  []string{"--help"},
+	Taken: []string{"--settings"},
+	Skips: []string{"--allow-dangerously-skip-permissions", "--permission-mode=bypassPermissions"},
+}
+
 func claudeAdapter() Adapter {
 	return Adapter{
 		ID:   "claude",
@@ -199,6 +212,7 @@ func claudeAdapter() Adapter {
 			}
 			return []string{"--allowedTools=mcp__" + server}
 		},
+		Flags: claudeFlags,
 		Status: func(home string) (bool, string) {
 			return statusOf(home, claudeSettings, claudeSteps("")...)
 		},

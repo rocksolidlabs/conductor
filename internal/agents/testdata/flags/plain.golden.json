@@ -1,0 +1,17 @@
+[
+  {
+    "name": "--dangerously-skip-permissions",
+    "value": "unknown",
+    "set": "yolo"
+  },
+  {
+    "name": "--dangerously-bypass-approvals-and-sandbox",
+    "value": "unknown"
+  },
+  {
+    "name": "--version",
+    "value": "unknown",
+    "about": "print the version",
+    "set": "exit"
+  }
+]
