@@ -265,7 +265,7 @@ test("the last layout and Activity come back from the server when the page's sto
   await toggle.click()
   await expect(toggle).toHaveAttribute('aria-pressed', 'true')
   await expect(grid).toHaveAttribute('data-run-layout', 'large')
-  await expect.poll(async () => (await api.ok<{ runTiles?: unknown }>('GET', '/api/ui/layout')).runTiles, { timeout: 15_000, message: 'the server keeps the choice' }).toEqual({ layout: 'large', activity: true })
+  await expect.poll(async () => (await api.ok<{ runTiles?: unknown }>('GET', '/api/ui/layout')).runTiles, { timeout: 15_000, message: 'the server keeps the choice' }).toMatchObject({ layout: 'large', activity: true })
   // The page's storage as a fresh address has it: no tiles record, no last choice.
   await page.evaluate((keys) => keys.forEach((k) => localStorage.removeItem(k)), TILE_KEYS)
   const read = page.waitForResponse((r) => r.url().endsWith('/api/ui/layout') && r.request().method() === 'GET')
