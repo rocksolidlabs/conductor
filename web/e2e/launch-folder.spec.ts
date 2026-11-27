@@ -383,6 +383,7 @@ test("a crew's folder, an agent trial's, a Dispatch project's and Brakeman's say
   }
   // Only the crew's press was made: each line asks the app only when pressed.
   expect(asked).toHaveLength(1)
+})
 
 test('an older check answered after a newer one changes nothing: the line and its button are the newer text\'s', async ({ browser }) => {
   const { page } = await folderPage(browser, 'press')
