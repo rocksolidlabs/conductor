@@ -3,7 +3,7 @@ import { LAYOUT_KEY, SIDE_SPLIT_KEY } from './editorLayout'
 import { SPLIT_KEY } from './editorTabs'
 import { RECENT_MAX, type Recent } from './palette'
 import { SIDEBAR_FOLDS_KEY, SIDEBAR_KEY, SIDEBAR_SIZE_KEY } from './sidebar'
-import { contentOf, CREW_GRAPH_KEY, isKept, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, PROJECT_VIEW_KEY, RUN_VIEW_KEY, sameContent, type UiLayout } from './uiState'
+import { contentOf, CREW_GRAPH_KEY, isKept, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, PROJECT_VIEW_KEY, RUN_TILES_LAST_KEY, RUN_VIEW_KEY, sameContent, TILE_LAYOUTS, type UiLayout } from './uiState'
 
 function memory(init: Record<string, string> = {}) {
   const m = new Map(Object.entries(init))
@@ -15,6 +15,7 @@ const full: UiLayout = {
   editor: { layout: 'side', split: 0.4, sideSplit: 0.6 },
   sidebar: { mode: 'rail', width: 18.5, folds: { pinned: true, exited: false } },
   crewGraph: { direction: 'TB', handoffs: false, members: true },
+  runTiles: { layout: 'large', activity: false },
   runView: 'timeline',
   projectView: 'board',
 }
@@ -30,6 +31,7 @@ describe('the layout in local storage', () => {
     expect(s.map.get(SIDEBAR_SIZE_KEY)).toBe('18.5')
     expect(JSON.parse(s.map.get(SIDEBAR_FOLDS_KEY)!)).toEqual({ pinned: true, exited: false })
     expect(JSON.parse(s.map.get(CREW_GRAPH_KEY)!)).toEqual({ direction: 'TB', handoffs: false, members: true })
+    expect(JSON.parse(s.map.get(RUN_TILES_LAST_KEY)!)).toEqual({ layout: 'large', activity: false })
     expect(s.map.get(RUN_VIEW_KEY)).toBe('timeline')
     expect(s.map.get(PROJECT_VIEW_KEY)).toBe('board')
     expect(layoutFromStorage(s)).toEqual(full)
@@ -47,6 +49,22 @@ describe('the layout in local storage', () => {
   it('lays a patch over a layout one level deep', () => {
     expect(patchLayout(full, { sidebar: { mode: 'full' } }).sidebar).toEqual({ mode: 'full', width: 18.5, folds: { pinned: true, exited: false } })
     expect(patchLayout({ v: 1 }, { editor: { split: 0.3 } })).toEqual({ v: 1, editor: { split: 0.3 } })
+    expect(patchLayout(full, { runTiles: { activity: true } }).runTiles).toEqual({ layout: 'large', activity: true })
+    expect(patchLayout({ v: 1 }, { runTiles: { layout: 'rows' } })).toEqual({ v: 1, runTiles: { layout: 'rows' } })
+  })
+
+  it("keeps the run tiles' last layout and Activity, each of the four layouts, and leaves out a value that does not read", () => {
+    for (const layout of TILE_LAYOUTS) {
+      for (const activity of [true, false]) {
+        const s = memory()
+        layoutToStorage(s, { v: 1, runTiles: { layout, activity } })
+        expect(layoutFromStorage(s)).toEqual({ v: 1, runTiles: { layout, activity } })
+      }
+    }
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: '{"layout":"focus","activity":"yes"}' }))).toEqual({ v: 1 })
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: '{"layout":"rows","activity":1}' }))).toEqual({ v: 1, runTiles: { layout: 'rows' } })
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: 'not json' }))).toEqual({ v: 1 })
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: '["grid"]' }))).toEqual({ v: 1 })
   })
 })
 
