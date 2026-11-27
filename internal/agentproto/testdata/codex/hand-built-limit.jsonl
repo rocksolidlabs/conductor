@@ -1,0 +1,4 @@
+{"id":3,"result":{"turn":{"id":"turn-fixture-6","items":[],"status":"inProgress","error":null,"startedAt":1764000001,"completedAt":null,"durationMs":null}}}
+{"method":"turn/started","params":{"threadId":"019a0000-0000-7000-8000-000000000001","turn":{"id":"turn-fixture-6","items":[],"status":"inProgress","error":null,"startedAt":1764000001,"completedAt":null,"durationMs":null}}}
+{"method":"error","params":{"threadId":"019a0000-0000-7000-8000-000000000001","turnId":"turn-fixture-6","willRetry":true,"error":{"message":"reconnecting","codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":null}}}}}
+{"method":"turn/completed","params":{"threadId":"019a0000-0000-7000-8000-000000000001","turn":{"id":"turn-fixture-6","items":[],"status":"failed","error":{"message":"You've hit your usage limit.","codexErrorInfo":"usageLimitExceeded"},"startedAt":1764000001,"completedAt":1764000009,"durationMs":8000}}}

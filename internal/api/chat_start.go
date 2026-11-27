@@ -119,7 +119,10 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 	if !ok {
 		return nil, errNoPipes
 	}
-	if l.agent.Protocol.Name != agentproto.ClaudeStreamJSON {
+	name := l.agent.Protocol.Name
+	switch name {
+	case agentproto.ClaudeStreamJSON, agentproto.CodexAppServer:
+	default:
 		return nil, errNoChat
 	}
 	hooks := agents.HooksDir(s.cfg.DataDir)
@@ -137,12 +140,12 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 			if id := s.identityNow(ctx)(l.agent); id != nil && id.Identified {
 				version = id.Version
 			}
-			if !agentproto.Qualified(l.agent.Protocol.Name, version) {
-				return nil, nil, fmt.Errorf("%w (version %q)", agentproto.ErrNotQualified, version)
+			if !agentproto.Qualified(name, version) {
+				return nil, nil, fmt.Errorf("%w (version %q)", agentproto.NotQualifiedFor(name), version)
 			}
 			l.gate.qualified.Store(true)
 		}
-		argv, err := chatArgv(l, conversation, hooks, mcp)
+		argv, resume, err := chatArgv(l, conversation, hooks, mcp)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -154,7 +157,10 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 		dirFile.Close()
 		if err != nil {
 			s.log.Warn("a chat's child did not start", "session", local.Info().ID, "agent", l.agent.ID, "err", err)
-			return nil, nil, fmt.Errorf("%w (its Runtime did not start it)", agentproto.ErrNotStarted)
+			return nil, nil, fmt.Errorf("%w (its Runtime did not start it)", agentproto.NotStartedFor(name))
+		}
+		if name == agentproto.CodexAppServer {
+			return session.PipesChild(pipes), agentproto.NewCodex(pipes.Stdin(), pipes.Stdout(), agentproto.CodexOptions{Resume: resume, InitWait: initWait}), nil
 		}
 		driver := agentproto.NewClaude(pipes.Stdin(), pipes.Stdout(), agentproto.ClaudeOptions{
 			Restart:  func() { _ = local.RestartProtocol("restarted", restartedInputWords) },
@@ -166,25 +172,40 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 }
 
 // chatArgv is the argv of l's chat's child on conversation (design 4),
-// with the hooks directory and whether the server's MCP is on.
-func chatArgv(l *chatLaunch, conversation, hooks string, mcp bool) ([]string, error) {
+// with the hooks directory and whether the server's MCP is on, and, for
+// Codex, what its thread is resumed with.
+func chatArgv(l *chatLaunch, conversation, hooks string, mcp bool) ([]string, agentproto.CodexResume, error) {
 	var yoloArgs []string
 	if l.yolo && l.agent.Yolo != nil {
 		yoloArgs = slices.Clone(l.agent.Yolo.Args)
 	}
-	return agentproto.ClaudeArgs(agentproto.ClaudeLaunch{
+	if l.agent.Protocol.Name == agentproto.CodexAppServer {
+		// Conductor's MCP server as the terminal's launch gave it (its
+		// configuration overrides, the variables it is handed among them);
+		// none with the server's MCP off.
+		var server []string
+		if mcp {
+			server = agents.MCPFor(l.agent.Adapter, hooks, true)
+		}
+		return agentproto.CodexArgs(agentproto.CodexLaunch{
+			Command: l.agent.Command, Protocol: l.agent.Protocol.Args, Conversation: conversation,
+			Model: l.model, Yolo: l.yolo, YoloArgs: yoloArgs, LaunchArgs: l.args, MCP: server, Dir: l.folder.Path(),
+		})
+	}
+	argv, err := agentproto.ClaudeArgs(agentproto.ClaudeLaunch{
 		Command: l.agent.Command, Protocol: l.agent.Protocol.Args, Conversation: conversation,
 		Model: l.model, Yolo: l.yolo, YoloArgs: yoloArgs, LaunchArgs: l.args, HooksDir: hooks, NoMCP: !mcp,
 		// Conductor answers its permission prompts, its floor the one
 		// --settings (design 7).
 		PermissionHost: true,
 	})
+	return argv, agentproto.CodexResume{}, err
 }
 
 // chatArgsCheck is the refusal the chat's child's argv would meet for l's
 // arguments, asked before a move stops anything: the argv is built as the
 // start builds it, on a conversation that only has the shape of one.
 func (s *Server) chatArgsCheck(l *chatLaunch) error {
-	_, err := chatArgv(l, "00000000-0000-4000-8000-000000000000", agents.HooksDir(s.cfg.DataDir), s.cfg.MCP())
+	_, _, err := chatArgv(l, "00000000-0000-4000-8000-000000000000", agents.HooksDir(s.cfg.DataDir), s.cfg.MCP())
 	return err
 }

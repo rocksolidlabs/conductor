@@ -85,7 +85,8 @@ test("History's Feed names crew members, offers Answer, fills the last hour besi
   const chart = page.locator('[data-activity-chart]')
   await expect.poll(async () => Number(await chart.getAttribute('data-total')), { timeout: 30_000 }).toBeGreaterThanOrEqual(2)
   await expect(chart.locator('[data-activity-bar]')).toHaveCount(60)
-  await expect(page.locator('[data-routing-readout]')).toContainText('Browser notification')
+  await expect(page.locator('[data-routing-readout]')).toContainText('Notification on this device')
+  await expect(page.locator('[data-routing-readout]')).not.toContainText('Browser notification')
   // Which agents report is set-up, not history: folded until asked for.
   await expect(page.locator('[data-reporting-agent="claude"]')).toBeHidden()
   await page.locator('[data-reporting-toggle]').click()

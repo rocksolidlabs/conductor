@@ -16,6 +16,8 @@ defineSlots<{
   default(): unknown
   /** The closed line drawn by the caller (a part in the code font), in place of `line`. */
   line?(): unknown
+  /** A control kept on the form's face at the right end of the fold's row (Launch agent's Run as), open or closed. */
+  end?(): unknown
 }>()
 
 const bodyId = useId()
@@ -39,6 +41,9 @@ const bodyId = useId()
       <span v-if="!open && ($slots.line || props.line)" class="min-w-0 text-xs text-muted [overflow-wrap:anywhere]" data-more-line>
         <slot name="line">{{ props.line }}</slot>
       </span>
+      <div v-if="$slots.end" class="ms-auto flex-none">
+        <slot name="end" />
+      </div>
     </div>
     <UCollapsible v-model:open="open" :unmount-on-hide="false" :ui="{ content: 'pt-3' }">
       <template #content>

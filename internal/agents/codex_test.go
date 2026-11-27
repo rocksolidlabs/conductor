@@ -22,6 +22,15 @@ func TestCodexMCPEnvNamesBrakeman(t *testing.T) {
 	}
 }
 
+// A chat's child of Codex (the protocol way, CONDUCTOR_PROTOCOL set) starts
+// Conductor's MCP server with that variable too, so the server knows it
+// serves a chat (docs/plans/chat-or-terminal.md, row 10).
+func TestCodexMCPEnvNamesTheProtocol(t *testing.T) {
+	if !strings.Contains(codexMCPEnv, `"CONDUCTOR_PROTOCOL"`) {
+		t.Fatalf("Codex's MCP server is not given CONDUCTOR_PROTOCOL: %s", codexMCPEnv)
+	}
+}
+
 // Codex gives an MCP tool 60 s unless its server says otherwise; Brakeman's
 // act can wait longer for a launch, so the registration Codex is launched
 // with gives Conductor's tools MCPToolTimeout, in Codex's seconds.

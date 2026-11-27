@@ -187,7 +187,7 @@ describe("a share's words", () => {
     )
     expect(SHARE_NONE).toBe("This brief names no run with a crew's people: it goes with no names.")
     expect(shareNoTicket('api')).toBe("api's run was launched from no ticket: pick the ticket to comment on.")
-    expect(SHARE_UNCOPIED).toBe('The browser did not let the page copy: select the text below and copy it by hand.')
+    expect(SHARE_UNCOPIED).toBe('The page could not copy: select the text below and copy it by hand.')
   })
 })
 

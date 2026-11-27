@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { effectiveYolo, hasYoloRecipe, resumeLabel, yoloChoice, yoloFromChoice, yoloSummary } from './yolo'
+import { effectiveYolo, hasYoloRecipe, resumeLabel, yoloChoice, yoloFromChoice, yoloSummary, yoloUnavailable } from './yolo'
 
 describe('the crew editor yolo select', () => {
   it('round-trips the default, on and off', () => {
@@ -28,8 +28,23 @@ describe('yoloSummary', () => {
   })
   it('says so for an agent without a recipe, or with an empty one', () => {
     expect(hasYoloRecipe({ yolo: {} })).toBe(false)
-    expect(yoloSummary({ name: 'Shell', command: ['/bin/bash', '-l'] }, true)).toMatchObject({ applies: false, notice: expect.stringContaining('Shell has no yolo recipe') })
+    expect(yoloSummary({ id: 'shell', name: 'Shell', command: ['/bin/bash', '-l'] }, true)).toMatchObject({ applies: false, notice: 'does not apply to a shell' })
+    expect(yoloSummary({ id: 'pi', name: 'pi', command: ['pi'] }, true)).toMatchObject({ applies: false, notice: 'pi cannot skip its prompts' })
     expect(yoloSummary({ name: 'X', command: ['x'], yolo: {} }, true).applies).toBe(false)
+    expect(yoloSummary({ name: 'X', command: ['x'] }, false).notice).toBe('')
+  })
+})
+
+describe('yoloUnavailable', () => {
+  it("says why the Launch dialog's switch is off and disabled, and nothing for an agent with a recipe or none picked", () => {
+    expect(yoloUnavailable({ name: 'Claude Code', yolo: { args: ['--dangerously-skip-permissions'] } })).toBe('')
+    expect(yoloUnavailable({ name: 'Copilot CLI', yolo: { env: { COPILOT_ALLOW_ALL: 'true' } } })).toBe('')
+    expect(yoloUnavailable({ id: 'pi', name: 'pi' })).toBe('pi cannot skip its prompts')
+    expect(yoloUnavailable({ id: 'x', name: 'Goose', yolo: {} })).toBe('Goose cannot skip its prompts')
+    expect(yoloUnavailable({ id: 'shell', name: 'Shell' })).toBe('does not apply to a shell')
+    expect(yoloUnavailable(undefined)).toBe('')
+    // The old words are gone.
+    expect(yoloUnavailable({ id: 'pi', name: 'pi' })).not.toContain('has no yolo recipe')
   })
 })
 
