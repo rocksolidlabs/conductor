@@ -456,6 +456,8 @@ type Server struct {
 	// Changing one in place, with slices.Delete or an append into its spare
 	// capacity, would race with those readers.
 	catalogMu sync.Mutex
+	// lastLaunchMu serialises the record of the last launch (last_launch.go).
+	lastLaunchMu sync.Mutex
 	base      catalog.Catalog // the configured catalog, before the overlay; never changed after New
 	overlay   catalog.Overlay // the UI-managed layer, as saved in catalog.json
 	catalog   catalog.Catalog
@@ -1276,6 +1278,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/remote", s.requireAdmin(s.handleRemote))
 	mux.HandleFunc("GET /api/hosts", s.requireAdmin(s.handleHosts))
 	mux.HandleFunc("GET /api/sync", s.requireAdmin(s.handleSyncStatus))
+	mux.HandleFunc("GET /api/launch/last", s.launching(s.handleLastLaunch))
 	mux.HandleFunc("GET /api/ui/{name}", s.requireAdmin(s.handleUIGet))
 	mux.HandleFunc("PUT /api/ui/{name}", s.requireAdmin(s.handleUIPut))
 	mux.HandleFunc("GET /api/signin", s.requireAdmin(s.handleSignIn))
