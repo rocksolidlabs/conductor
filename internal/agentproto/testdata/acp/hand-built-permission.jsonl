@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_0123456789abcdef","update":{"sessionUpdate":"tool_call","toolCallId":"call_5","title":"curl -s https://example.com","kind":"execute","status":"pending","rawInput":{"command":"curl -s https://example.com"}}}}
+{"jsonrpc":"2.0","id":0,"method":"session/request_permission","params":{"sessionId":"ses_0123456789abcdef","toolCall":{"toolCallId":"call_5","status":"pending"},"options":[{"optionId":"once","name":"Allow once","kind":"allow_once"},{"optionId":"always","name":"Always allow","kind":"allow_always"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_0123456789abcdef","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_5","status":"completed","content":[{"type":"content","content":{"type":"text","text":"<html>"}}]}}}
+{"jsonrpc":"2.0","id":7,"method":"fs/read_text_file","params":{"sessionId":"ses_0123456789abcdef","path":"/work/notes.txt"}}
+{"jsonrpc":"2.0","id":8,"method":"terminal/create","params":{"sessionId":"ses_0123456789abcdef","command":"ls"}}
+{"jsonrpc":"2.0","id":2,"result":{"stopReason":"max_turn_requests"}}

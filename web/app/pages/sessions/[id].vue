@@ -22,6 +22,7 @@ import type { SessionConnection } from '~/composables/useSessionConnection'
 import { ENDS_TERMINAL_WORK, firstReplyOf, refusalStands, switchState, type Refusal, type RefusalBasis, type SwitchFacts } from '~/utils/switchState'
 import { joinTop } from '~/utils/changes'
 import { ApiError } from '~/composables/useApi'
+import { stripRunOf } from '~/utils/memberStrip'
 
 const route = useRoute()
 // The question bar's Answer on a durable decision's question opens its card (Program item DR1).
@@ -185,6 +186,13 @@ const status = computed(() => {
   return s ? sessionStatus(s, clock.value) : undefined
 })
 const ended = computed(() => !!current.value && (current.value.status === 'exited' || current.value.status === 'stopped'))
+// A crew member carries its crew (UX3 R12): the strip above the header, from the moment the session says it is a member, until the
+// run turns out gone (no longer held by the server, or a Brakeman turn's).
+const stripGone = ref('')
+const memberRun = computed(() => {
+  const r = stripRunOf(current.value)
+  return r && r !== stripGone.value ? r : ''
+})
 /** A hosted session whose machine is away: its files cannot be read until it returns (design 4f). */
 const hostAway = computed(() => (current.value?.kind === 'hosted' && current.value.status === 'host_disconnected' ? current.value.hostName || 'The host' : undefined))
 const copy = useCopy()
@@ -226,11 +234,11 @@ const menu = computed(() => [
           ...(canFullscreen ? [{ label: fullscreen.fullscreen.value ? 'Exit fullscreen' : 'Enter fullscreen', icon: fullscreen.fullscreen.value ? 'i-lucide-minimize' : 'i-lucide-maximize', onSelect: fullscreen.toggle }] : []),
         ],
       ]),
-  [
-    { label: 'Mark as needs input', icon: 'i-lucide-hand', onSelect: () => signal('needs_input') },
-    { label: 'Mark as working', icon: 'i-lucide-loader-circle', onSelect: () => signal('working') },
-    { label: 'Clear signal', icon: 'i-lucide-x', onSelect: () => signal('clear') },
-  ],
+  // Mark as (UX3 R14): the three marks in one item, a nested menu; on a phone, where a nested menu opens over its parent, a labelled
+  // group of three.
+  sm.value ? [{ label: 'Mark as', icon: 'i-lucide-tag', children: [MARKS] }] : [{ type: 'label' as const, label: 'Mark as' }, ...MARKS],
+  // Fit to my window while the terminal shows and another window sets its size, as the palette's row.
+  ...(fitOffered() ? [[{ label: 'Fit to my window', icon: 'i-lucide-maximize-2', onSelect: () => terminal.value?.takeSize() }]] : []),
   ...(renamable.value ? [[{ label: 'Rename…', icon: 'i-lucide-pencil', onSelect: renameSession }]] : []),
   [
     { label: 'Copy session id', icon: 'i-lucide-copy', onSelect: () => void copy(id.value, 'Session id copied') },
@@ -238,8 +246,15 @@ const menu = computed(() => [
       ? [{ label: "Copy the agent's session id", icon: 'i-lucide-copy', onSelect: () => void copy(current.value!.agentSession!.id, "The agent's session id copied", `Its own session (${current.value!.agentSession!.source})`) }]
       : []),
   ],
-  [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
+  // Stop session… asks first, the palette's question as X asks it (UX3 R14).
+  [{ label: 'Stop session…', icon: 'i-lucide-square', disabled: !liveNow.value, onSelect: askStop }],
 ])
+/** The three marks a person may set on the session, as the palette's rows set them. */
+const MARKS = [
+  { label: 'Needs you', icon: 'i-lucide-hand', onSelect: () => signal('needs_input') },
+  { label: 'Working', icon: 'i-lucide-loader-circle', onSelect: () => signal('working') },
+  { label: 'Clear the mark', icon: 'i-lucide-x', onSelect: () => signal('clear') },
+]
 
 const terminal = ref<{ connection: SessionConnection; showQuestion: () => void; connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply, o?: { sent?: () => void }) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean; openPaste: () => void } | null>(null)
 
@@ -272,10 +287,23 @@ const switchFacts = computed<SwitchFacts>(() => ({
   inTurn: attention.value.state === 'working',
   moving: moving.value,
   refused: refusal.value?.words || undefined,
+  // A crew's member runs the way its crew runs it (UX3 R13): its other side is drawn dimmed, with why.
+  member: !!current.value?.crew,
 }))
 const switched = computed(() => switchState(switchFacts.value))
+// A press of a side that cannot be taken shows why, for a moment, as the line; nothing is sent.
+const HELD_MS = 5000
+const heldLine = ref('')
+let heldTimer: ReturnType<typeof setTimeout> | undefined
+function showHeld(why: string) {
+  heldLine.value = why
+  clearTimeout(heldTimer)
+  heldTimer = setTimeout(() => (heldLine.value = ''), HELD_MS)
+}
+onBeforeUnmount(() => clearTimeout(heldTimer))
+watch(id, () => (heldLine.value = ''))
 /** The switch's line above the terminal: what a press did or why it waits; the at-rest line is the Chat side's own tooltip. */
-const wayLine = computed(() => (switched.value.shown && switched.value.line !== ENDS_TERMINAL_WORK ? switched.value.line : ''))
+const wayLine = computed(() => heldLine.value || (switched.value.shown && switched.value.line !== ENDS_TERMINAL_WORK ? switched.value.line : ''))
 // Every `way` message ends what a press began: the move made, noted, taken back, or gone back with its sentence (a start that failed
 // sends the way it was, unchanged, with why), so the switch never stays on "moving" after it.
 let wayMessages = 0
@@ -336,11 +364,12 @@ const wayItems = computed(() =>
     ? [
         (['terminal', 'protocol'] as const).map((w) => ({
           label: w === 'protocol' ? 'Chat' : 'Terminal',
-          // What a move to Chat ends, said on the item before it is pressed, as the switch's Chat side says it.
-          ...(w === 'protocol' && switched.value.line === ENDS_TERMINAL_WORK ? { description: ENDS_TERMINAL_WORK } : {}),
+          // What a move to Chat ends, said on the item before it is pressed, as the switch's Chat side says it; a side that cannot be
+          // taken says why (UX3 R13).
+          ...(w !== switched.value.selected && switched.value.held ? { description: switched.value.held } : w === 'protocol' && switched.value.line === ENDS_TERMINAL_WORK ? { description: ENDS_TERMINAL_WORK } : {}),
           type: 'checkbox' as const,
           checked: switched.value.selected === w,
-          disabled: !switchFacts.value.canMove || (w !== switched.value.selected && !switched.value.pressable),
+          disabled: !switchFacts.value.canMove || !!switched.value.held || (w !== switched.value.selected && !switched.value.pressable),
           onSelect: () => w !== switched.value.selected && void moveTo(w),
         })),
       ]
@@ -637,6 +666,14 @@ const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
 /** A phone folds the terminal under an open file by itself: the palette offers no collapse there, as the strip offers no button (#432). */
 const phone = useIsPhone()
 /**
+ * Fit to my window is offered while the terminal shows and another window sets its size: not while the terminal is collapsed under the
+ * open editor, as EditorColumn folds it wider than a phone (#432, review round 2), where its pane has no size to give the session.
+ */
+function fitOffered(): boolean {
+  const t = tabs.value
+  return !!terminal.value?.sizerShown() && !(t.tabs.length > 0 && !t.folded && !!t.collapsed && !phone.value)
+}
+/**
  * Shows a view (#332): the inspector on it, or the chat sheet below xl; one already shown stays shown. The header's Files and
  * Chat buttons toggle (showFiles, showChat); a palette row or a session row's Open … says "open" and never hides.
  */
@@ -672,8 +709,6 @@ palette.registerPage(() => {
     ['people', `Open People${chatUnread.value ? ` · ${chatUnread.value} unread` : ''}`, 'i-lucide-users'],
   ]
   const t = tabs.value
-  /** The terminal collapsed under the open editor, as EditorColumn folds it wider than a phone (#432): its pane has no height. */
-  const terminalCollapsed = t.tabs.length > 0 && !t.folded && !!t.collapsed && !phone.value
   const tabRows = t.tabs.map((tb) => ({
     key: `page:tab:${tb.id}`,
     label: tb.title,
@@ -730,7 +765,7 @@ palette.registerPage(() => {
       { key: 'page:mark-working', label: 'Mark as working', icon: 'i-lucide-loader-circle', run: () => signal('working') },
       { key: 'page:mark-clear', label: 'Clear signal', icon: 'i-lucide-x', run: () => signal('clear') },
       // Not while the terminal is collapsed (#432, review round 2): its pane has no size to give the session.
-      ...(terminal.value?.sizerShown() && !terminalCollapsed ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
+      ...(fitOffered() ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
       ...(t.tabs.length ? [{ key: 'page:fold', label: t.folded ? 'Bring the editor back' : 'Fold the editor to its tab strip', icon: 'i-lucide-panel-bottom', kbds: ['T'], run: () => (tabs.value = toggleFold(tabs.value)) }] : []),
       // Its mirror (#432): the terminal collapses to a bar under the editor, and back; the strip's button does the same.
       ...(t.tabs.length && !phone.value ? [{ key: 'page:collapse-terminal', label: t.collapsed && !t.folded ? 'Bring the terminal back' : 'Collapse the terminal', icon: t.collapsed && !t.folded ? 'i-lucide-panel-bottom-open' : 'i-lucide-panel-bottom-close', run: () => (tabs.value = toggleCollapse(tabs.value)) }] : []),
@@ -748,9 +783,11 @@ palette.registerPage(() => {
 <template>
   <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
     <template #header>
+      <MemberStrip v-if="memberRun && !gone" :run-id="memberRun" :session-id="id" @gone="stripGone = memberRun" />
       <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }" data-session-bar>
         <template #leading>
-          <IconButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+          <!-- A member's way back is its strip's, above (UX3 R12). -->
+          <IconButton v-if="!memberRun" icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
         </template>
         <template #title>
           <div v-if="gone" class="flex min-w-0 items-center gap-2" data-session-gone-head>
@@ -772,7 +809,7 @@ palette.registerPage(() => {
               <span :id="nameHint" hidden>Show the whole name</span>
               <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
-              <WaySwitch v-if="sm" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" />
+              <WaySwitch v-if="sm" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" @held="showHeld" />
             </div>
             <span v-if="headline" class="truncate font-mono text-[11.5px] text-muted" :title="headline.title" data-session-meta>{{ headline.line }}</span>
           </div>

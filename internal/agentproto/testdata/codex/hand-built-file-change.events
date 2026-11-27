@@ -1,7 +1,7 @@
 accepted m1
 turn_started
-tool_started call_fixture_2 parent="" fileChange summary="/work/notes.txt" input={"changes":[{"diff":"@@ -1,2 +1,2 @@\n one\n-two\n+2\n","kind":"update","path":"/work/notes.txt"},{"diff":"hello\nworld\n","kind":"add","path":"/work/new.txt"}]}
-permission codex-req-1 call=call_fixture_2 fileChange cwd="" input={"changes":[{"diff":"@@ -1,2 +1,2 @@\n one\n-two\n+2\n","kind":"update","path":"/work/notes.txt"},{"diff":"hello\nworld\n","kind":"add","path":"/work/new.txt"}]}
+tool_started call_fixture_2 parent="" fileChange summary="/work/notes.txt" input={"changes":[{"diff":"@@ -1,2 +1,2 @@\n one\n-two\n+2\n","kind":{"type":"update"},"path":"/work/notes.txt"},{"diff":"hello\nworld\n","kind":{"type":"add"},"path":"/work/new.txt"}]}
+permission codex-req-1 call=call_fixture_2 fileChange cwd="" input={"changes":[{"diff":"@@ -1,2 +1,2 @@\n one\n-two\n+2\n","kind":{"type":"update"},"path":"/work/notes.txt"},{"diff":"hello\nworld\n","kind":{"type":"add"},"path":"/work/new.txt"}]}
 tool_ended call_fixture_2 ok exit=none cut=false output=""
 file_changed tool=call_fixture_2 /work/notes.txt edit +1 -1 diff="@@ -1,2 +1,2 @@\n one\n-two\n+2\n"
 file_changed tool=call_fixture_2 /work/new.txt create +2 -0 diff="hello\nworld\n"
