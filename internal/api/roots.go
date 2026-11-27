@@ -100,6 +100,10 @@ type rootList struct {
 	mu     sync.Mutex
 	held   atomic.Pointer[[]allowedRoot]
 	stores atomic.Int64
+	// stat, when a test sets it before its request, stands in for os.Stat
+	// where a folder is judged by what it is (identities): a second name
+	// for a folder is made so without a mount.
+	stat func(path string) (os.FileInfo, error)
 	// beforeAdd, when a test sets it before its request, runs under mu
 	// between a folder's judgement and the last look before it is added.
 	beforeAdd func(path string)
@@ -233,12 +237,13 @@ func lookState(err error) string {
 }
 
 // refusedKind is why real is never allowed from the app's screens: the file
-// system's root; a name the saved list cannot hold as one folder; a folder
-// the server's deny list refuses (Conductor's own data, the app's, an
-// account's sign-in folder). "" for none.
+// system's root, by what it is (whatever name reaches it); a name the saved
+// list cannot hold as one folder; a folder the server's deny list refuses
+// (Conductor's own data, the app's, an account's sign-in folder), which the
+// deny list judges by identity too. "" for none.
 func (s *Server) refusedKind(real string) string {
 	switch {
-	case filepath.Dir(real) == real:
+	case filepath.Dir(real) == real || s.sameFolder(real, string(filepath.Separator)):
 		return refusedWholeDisk
 	case unsavableName(real):
 		return refusedName
@@ -267,17 +272,22 @@ func unsavableName(p string) bool {
 	return unicode.IsSpace(first) || unicode.IsSpace(last)
 }
 
-// wideKind is how wide real is: the server user's home folder, a folder
-// the home folder is inside, or one an entry of the deny list is inside (a
-// name entry, `<dir>/*name*`, by its directory). "" for a folder of none of
-// these kinds.
+// wideKind is how wide real is, by what the folder is, whatever name
+// reaches it: the server user's home folder, a folder the home folder is
+// inside, or one an entry of the deny list is inside (a name entry,
+// `<dir>/*name*`, by its directory). "" for a folder of none of these
+// kinds.
 func (s *Server) wideKind(real string) string {
+	fi, err := s.statOf(real)
+	if err != nil {
+		return ""
+	}
 	if s.home != "" {
 		home := resolvedPath(s.home)
-		switch {
-		case real == home:
+		if hf, err := s.statOf(home); err == nil && os.SameFile(fi, hf) {
 			return wideHome
-		case isUnder(home, real):
+		}
+		if s.holds(fi, home) {
 			return wideAboveHome
 		}
 	}
@@ -285,11 +295,89 @@ func (s *Server) wideKind(real string) string {
 		if n := filepath.Base(e); len(n) > 1 && strings.HasPrefix(n, "*") && strings.HasSuffix(n, "*") {
 			e = filepath.Dir(e)
 		}
-		if isUnder(resolvedPath(e), real) {
+		// The entry itself is refused (refusedKind); a folder above it is wide.
+		if s.holds(fi, resolvedPath(e)) {
 			return wideHoldsData
 		}
 	}
 	return ""
+}
+
+// statOf is os.Stat, or the test's stand-in (rootList.stat).
+func (s *Server) statOf(p string) (os.FileInfo, error) {
+	if s.roots != nil && s.roots.stat != nil {
+		return s.roots.stat(p)
+	}
+	return os.Stat(p)
+}
+
+// sameFolder reports whether a and b are one folder, by identity.
+func (s *Server) sameFolder(a, b string) bool {
+	fa, err := s.statOf(a)
+	if err != nil {
+		return false
+	}
+	fb, err := s.statOf(b)
+	return err == nil && os.SameFile(fa, fb)
+}
+
+// holds reports whether the folder fi is above p (p itself not counted),
+// by identity.
+func (s *Server) holds(fi os.FileInfo, p string) bool {
+	self, err := s.statOf(p)
+	for _, a := range s.above(p) {
+		if err == nil && os.SameFile(a, self) {
+			continue
+		}
+		if os.SameFile(fi, a) {
+			return true
+		}
+	}
+	return false
+}
+
+// maxAbove bounds the folders above that are looked at.
+const maxAbove = 256
+
+// above is the identity of p and of every folder above it, p's first when
+// it is there: by p's own parents (p, its directory, ..., the file system's
+// root), and by the system's own way up from p (p/.., p/../.., ...), which
+// a folder reached by a second name (a mount of it elsewhere, another
+// letter case, a firmlink) takes as well. A part of p not there is left
+// out; for a p not there, the first is its nearest folder that is.
+func (s *Server) above(p string) []os.FileInfo {
+	var out []os.FileInfo
+	add := func(fi os.FileInfo) {
+		if !slices.ContainsFunc(out, func(o os.FileInfo) bool { return os.SameFile(o, fi) }) {
+			out = append(out, fi)
+		}
+	}
+	first := ""
+	for q := filepath.Clean(p); len(out) < maxAbove; q = filepath.Dir(q) {
+		if fi, err := s.statOf(q); err == nil && fi.IsDir() {
+			if first == "" {
+				first = q
+			}
+			add(fi)
+		}
+		if filepath.Dir(q) == q {
+			break
+		}
+	}
+	if first == "" {
+		return out
+	}
+	prev, err := s.statOf(first)
+	for up, i := first, 0; err == nil && i < maxAbove; i++ {
+		up += string(filepath.Separator) + ".."
+		fi, err2 := s.statOf(up)
+		if err2 != nil || os.SameFile(fi, prev) {
+			break
+		}
+		add(fi)
+		prev = fi
+	}
+	return out
 }
 
 // denyList is the server's deny list as it stands now (fileDeny).
@@ -306,14 +394,6 @@ func resolvedPath(p string) string {
 		return real
 	}
 	return filepath.Clean(p)
-}
-
-// isUnder reports whether p is strictly inside dir.
-func isUnder(p, dir string) bool {
-	if dir == string(filepath.Separator) {
-		return p != dir && strings.HasPrefix(p, dir)
-	}
-	return strings.HasPrefix(p, dir+string(filepath.Separator))
 }
 
 // rootCheckReply is GET /api/roots/check's answer.

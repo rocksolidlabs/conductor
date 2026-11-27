@@ -310,3 +310,51 @@ func TestRootRoutesDocumented(t *testing.T) {
 		}
 	}
 }
+
+// secondName makes stat answer, for each path of names, the folder it maps
+// to: a second name for that folder, as a mount of it elsewhere, another
+// letter case or a firmlink gives one.
+func secondName(e *testEnv, names map[string]string) {
+	e.srv.roots.stat = func(p string) (os.FileInfo, error) {
+		if to, ok := names[p]; ok {
+			return os.Stat(to)
+		}
+		return os.Stat(p)
+	}
+}
+
+// A folder is refused, or asked about, by what it is, whatever name reaches
+// it: a second name for the file system's root is the whole disk, one for
+// the home folder is the home folder, one for a folder above it or above
+// Conductor's data is as wide as that folder.
+func TestAFolderIsRefusedByWhatItIs(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) {
+		c.Paths.Browse = config.BrowseAny
+		withDesktopKey(c)
+	})
+	home := realRoot(t, e.srv.home)
+	data := realRoot(t, mkdir(t, e.srv.cfg.DataDir))
+	parent := realRoot(t, t.TempDir())
+	disk, homeAgain, aboveHome, aboveData := mkdir(t, filepath.Join(parent, "disk")), mkdir(t, filepath.Join(parent, "home")), mkdir(t, filepath.Join(parent, "above")), mkdir(t, filepath.Join(parent, "data"))
+	secondName(e, map[string]string{disk: "/", homeAgain: home, aboveHome: filepath.Dir(home), aboveData: filepath.Dir(data)})
+	for _, c := range []struct{ path, refused, wide string }{
+		{disk, "whole_disk", ""},
+		{homeAgain, "", "home"},
+		{aboveHome, "", "above_home"},
+		{aboveData, "", "holds_data"},
+	} {
+		out := e.checkRoot(c.path)
+		if out["state"] != "outside" || str(out["refused"]) != c.refused || str(out["wide"]) != c.wide {
+			t.Errorf("%s: %v, want refused %q wide %q", c.path, out, c.refused, c.wide)
+		}
+	}
+	if status, out := e.allow(disk, ""); status != http.StatusForbidden || errorField(out, "reason") != "whole_disk" {
+		t.Errorf("the disk by a second name: %d %v", status, out)
+	}
+	if status, out := e.allow(homeAgain, ""); status != http.StatusConflict || errorField(out, "wide") != "home" {
+		t.Errorf("home by a second name, unconfirmed: %d %v", status, out)
+	}
+	if got := e.srv.roots.paths(); len(got) != 1 {
+		t.Fatalf("a folder was added: %v", got)
+	}
+}
