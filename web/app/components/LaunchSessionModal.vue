@@ -350,6 +350,30 @@ const folderPlaceholder = computed(() => (cloning.value ? `${cloning.value.name}
 const cwdRefused = ref<(LaunchRefusal & { cwd: string }) | null>(null)
 /** The folder's refusal while the field still holds the folder refused. */
 const folderRefusal = computed(() => (cwdRefused.value && cwdRefused.value.cwd === state.cwd ? cwdRefused.value : null))
+// The line under Folder (FolderAllowLine, R30): what the server's check says of the folder, and in the desktop app Allow this folder.
+// It is checked again before every launch, and a folder it says cannot be used is not sent.
+const folderLine = useTemplateRef<{ check: () => Promise<boolean>; focusAction: () => boolean; blocks: boolean }>('folderLine')
+const folderFocused = ref(false)
+/** A clone's blank folder is its source's: nothing to check. */
+const folderUnchecked = computed(() => !open.value || (!!cloning.value && !state.cwd.trim()))
+const lineBlocks = computed(() => !!folderLine.value?.blocks)
+function onFolderBlur(e: FocusEvent) {
+  const to = e.relatedTarget as Node | null
+  if (!to || !(e.currentTarget as HTMLElement | null)?.contains(to)) folderFocused.value = false
+}
+/** One press allowed the folder: the launch goes on as if it always had been, from Launch. */
+function onFolderAllowed() {
+  cwdRefused.value = null
+  void nextTick(() => form.value?.closest('[role="dialog"]')?.querySelector<HTMLElement>('[data-launch-submit], [data-launch-clone-submit]')?.focus())
+}
+/** Whether the folder may be launched in, checked now; a folder that cannot be is not sent, and the focus goes to the way on. */
+async function folderReady(): Promise<boolean> {
+  const line = folderLine.value
+  if (!line || folderUnchecked.value) return true
+  if (await line.check()) return true
+  if (!line.focusAction()) focusFolder()
+  return false
+}
 function focusFolder() {
   void nextTick(() => form.value?.querySelector<HTMLInputElement>('[data-dir-input] input')?.focus())
 }
@@ -466,6 +490,13 @@ async function submitClone(source: NonNullable<LaunchPrefill['clone']>) {
 
 async function submit() {
   if (!launchable.value) return
+  if (state.runsOn === 'server') {
+    // The folder checked first (R30): one agents cannot use is not sent. Held as sending meanwhile, so a second press waits.
+    submitting.value = true
+    const ready = await folderReady()
+    submitting.value = false
+    if (!ready) return
+  }
   if (cloning.value) return submitClone(cloning.value)
   if (!state.agentId || state.runsOn !== 'server') return
   // The folder the server refused, still in the field: nothing is sent, and the cursor goes where it is to be changed.
@@ -503,6 +534,8 @@ async function submit() {
     const r = launchRefusal(e instanceof ApiError ? e.code : '', (e as Error).message)
     if (r.at === 'folder') {
       cwdRefused.value = { ...r, cwd: state.cwd }
+      // The line checks the folder again: where it says why, it says so in place of this refusal.
+      void folderLine.value?.check()
       focusFolder()
     } else {
       error.value = r.words
@@ -564,9 +597,10 @@ async function submit() {
         </UFormField>
 
         <template v-if="state.runsOn === 'server'">
-          <UFormField label="Folder" name="cwd" :error="folderRefusal?.words || undefined" data-launch-folder>
+          <UFormField label="Folder" name="cwd" :error="(folderRefusal && !lineBlocks ? folderRefusal.words : lineBlocks) || undefined" data-launch-folder @focusin="folderFocused = true" @focusout="onFolderBlur">
             <DirInput v-model="state.cwd" :placeholder="folderPlaceholder" name="cwd" picker-title="Where the session runs" />
-            <template v-if="folderRefusal" #error>
+            <FolderAllowLine ref="folderLine" :path="state.cwd" :focused="folderFocused" :off="folderUnchecked" @use="(p: string) => (state.cwd = p)" @allowed="onFolderAllowed" />
+            <template v-if="folderRefusal && !lineBlocks" #error>
               <span data-launch-folder-refused>{{ folderRefusal.words }}<template v-if="folderRefusal.outside && isDesktop"> <NuxtLink to="/settings?section=folders" class="underline" data-launch-folder-settings @click="open = false">Add it in Settings</NuxtLink></template></span>
             </template>
           </UFormField>

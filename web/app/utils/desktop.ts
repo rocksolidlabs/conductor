@@ -200,6 +200,14 @@ export interface DesktopBridge {
   openUrl?(url: string, browser?: AgentBrowser | null): Promise<{ outcome: string }>
   /** The browsers of the five an agent may name that are installed on this computer, for the Agents page to mark. Older apps lack it. */
   browsers?(): Promise<string[]>
+  /**
+   * Allow this folder (UX3 R30): agents may use path from now on, with nothing restarted, and the settings keep it (saved false, with
+   * why, when they could not be written); confirmed names a wide folder's kind once asked. Absent where the app does not offer it
+   * (an older app, Windows while its switch is off).
+   */
+  allowFolder?(path: string, confirmed?: string): Promise<{ ok: true; root: string; saved: boolean; error?: string } | { ok: false; code: string; message: string; real?: string; wide?: string; reason?: string }>
+  /** The settings changed outside the Settings page (a folder allowed): read them again. Older apps lack it. */
+  onSettings?(cb: () => void): () => void
   restartServer(): Promise<void>
   openInBrowser(): Promise<void>
   showLog(): Promise<void>

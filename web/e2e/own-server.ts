@@ -39,6 +39,8 @@ export interface OwnServerOptions {
   env?: Record<string, string>
   /** A host token the server accepts (CONDUCTOR_HOST_TOKENS), so that a spec can bring in a hosted session. */
   hostToken?: string
+  /** The desktop app's key (startServer's desktopKey): the server then lets the app allow a folder while it runs. */
+  desktopKey?: string
 }
 
 export interface OwnServer {
@@ -118,7 +120,7 @@ async function startOwn(o: OwnServerOptions, root: string, log: string, remove: 
     cfg.catalog.agents = cfg.catalog.agents.filter((x) => copies.has(x.id) || o.keep!.includes(x.id))
   }
   writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
-  const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log, env: o.env, hostToken: o.hostToken })
+  const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log, env: o.env, hostToken: o.hostToken, desktopKey: o.desktopKey })
   const started = await start()
   const srv: OwnServer = {
     started,
