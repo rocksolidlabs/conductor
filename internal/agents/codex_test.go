@@ -22,12 +22,11 @@ func TestCodexMCPEnvNamesBrakeman(t *testing.T) {
 	}
 }
 
-// A chat's child of Codex (the protocol way, CONDUCTOR_PROTOCOL set) starts
-// Conductor's MCP server with that variable too, so the server knows it
-// serves a chat (docs/plans/chat-or-terminal.md, row 10).
-func TestCodexMCPEnvNamesTheProtocol(t *testing.T) {
-	if !strings.Contains(codexMCPEnv, `"CONDUCTOR_PROTOCOL"`) {
-		t.Fatalf("Codex's MCP server is not given CONDUCTOR_PROTOCOL: %s", codexMCPEnv)
+// Conductor's MCP server for Codex is not handed CONDUCTOR_PROTOCOL, so it
+// lists no permission tool to Codex's model: Codex asks in its own stream.
+func TestCodexMCPServerListsNoPermissionTool(t *testing.T) {
+	if strings.Contains(codexMCPEnv, `"CONDUCTOR_PROTOCOL"`) {
+		t.Fatalf("Codex's MCP server is handed CONDUCTOR_PROTOCOL: %s", codexMCPEnv)
 	}
 }
 

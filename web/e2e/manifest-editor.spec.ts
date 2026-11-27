@@ -316,6 +316,10 @@ test('on a crew page taller than the window the unsaved-changes bar stays at the
   const crewPage = page.locator('[data-crew-page]')
   const tall = await crewPage.evaluate((el) => ({ content: el.scrollHeight, window: window.innerHeight }))
   expect(tall.content).toBeGreaterThan(tall.window)
+  // The page and the bar draw on whole pixels, so that scrolled to its end the page ends on one and the bar sits at the window's foot,
+  // whatever the page holds (the theme's line heights alone fall 1/64 px short of theirs).
+  const heights = await crewPage.evaluate((el) => [el.getBoundingClientRect().height, document.querySelector('[data-unsaved-bar]')!.parentElement!.getBoundingClientRect().height])
+  for (const h of heights) expect(h, `a height of ${heights.join(' and ')} px`).toBe(Math.round(h))
 
   /** Scrolls the body to `to` (a share of what it can scroll) and reads where the bar, the body and the page's end are. */
   const at = (to: number) =>

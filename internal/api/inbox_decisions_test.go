@@ -1313,7 +1313,7 @@ func TestASelectionsItemSaysWhatItIs(t *testing.T) {
 	}
 	it := e.itemOf(t, ledger.DecisionRef(n))
 	id := ledger.DecisionID(n)
-	if !strings.HasPrefix(it.Brief, "A comparison's selection for you, from the comparison of run "+run) || !strings.Contains(it.Brief, "or None of these, with your rationale; the answer is final") {
+	if !strings.HasPrefix(it.Brief, "A trial's selection for you, from the trial of run "+run) || !strings.Contains(it.Brief, "or None of these, with your rationale; the answer is final") {
 		t.Fatalf("the brief: %q", it.Brief)
 	}
 	for _, words := range []string{it.Brief, it.Blocking.Words} {
@@ -1334,7 +1334,7 @@ func TestASelectionsItemSaysWhatItIs(t *testing.T) {
 	if !slices.Equal(names, []string{"select", "select", "none", "comment"}) {
 		t.Fatalf("the actions: %q", names)
 	}
-	if !strings.Contains(it.Actions[2].Scope, "ends the comparison with no candidate selected") || !strings.Contains(it.Actions[0].Scope, "continues that candidate") {
+	if !strings.Contains(it.Actions[2].Scope, "ends the trial with no candidate selected") || !strings.Contains(it.Actions[0].Scope, "continues that candidate") {
 		t.Fatalf("the scopes: %q / %q", it.Actions[0].Scope, it.Actions[2].Scope)
 	}
 }
@@ -1491,14 +1491,14 @@ func TestASelectionsAnsweredBriefFollowsItsRun(t *testing.T) {
 		held bool
 		want string
 	}{
-		{true, "A comparison's selection, from the comparison of run r: it is answered, and the answer is final; Yardmaster applies it next"},
-		{false, "A comparison's selection, from the comparison of run r: it is answered, and the answer is final; it waits for its run to be continued, which applies it"},
+		{true, "A trial's selection, from the trial of run r: it is answered, and the answer is final; Yardmaster applies it next"},
+		{false, "A trial's selection, from the trial of run r: it is answered, and the answer is final; it waits for its run to be continued, which applies it"},
 	} {
-		if got := selectionBrief(ledger.DecisionAnswered, "the comparison of run r", c.held); got != c.want {
+		if got := selectionBrief(ledger.DecisionAnswered, "the trial of run r", c.held); got != c.want {
 			t.Errorf("held %v: %q", c.held, got)
 		}
 	}
-	if got := selectionBrief(ledger.DecisionApplied, "x", false); got != "A comparison's selection, from x: it is applied, and nothing more is asked of you" {
+	if got := selectionBrief(ledger.DecisionApplied, "x", false); got != "A trial's selection, from x: it is applied, and nothing more is asked of you" {
 		t.Errorf("applied: %q", got)
 	}
 }

@@ -270,7 +270,7 @@ func TestADeliveryNamesTheSelectedCandidate(t *testing.T) {
 	if st := de.waitState(t, crew.CompareSelected); st.Selected.Task != "approach-b" {
 		t.Fatalf("applied: %+v", st)
 	}
-	if out := deliver(a, http.StatusConflict); apiMessage(out) != "approach-a was not selected in "+did+": launch a new comparison to try it again" {
+	if out := deliver(a, http.StatusConflict); apiMessage(out) != "approach-a was not selected in "+did+": run a new trial to try it again" {
 		t.Fatalf("the lane not selected: %v", out)
 	}
 	deliver(b, http.StatusCreated)
@@ -289,11 +289,11 @@ func TestNoneOfTheseDeliversNothing(t *testing.T) {
 		cand := de.candidate(t, task)
 		op := opID()
 		out := de.deliver(t, "CND-1", op, "https://example.test/pull/"+op, cand, http.StatusConflict, "not_selected")
-		if apiMessage(out) != "no candidate was selected: launch a new comparison" {
+		if apiMessage(out) != "no candidate was selected: run a new trial" {
 			t.Fatalf("%s: %v", task, out)
 		}
 		out = sendReview(t, de.testEnv, "CND-1", reviewOf(cand, de.base(t), "request_changes", changeOf("Make it faster.")), http.StatusConflict, "not_selected")
-		if apiMessage(out) != "no candidate was selected: launch a new comparison" {
+		if apiMessage(out) != "no candidate was selected: run a new trial" {
 			t.Fatalf("%s's repair: %v", task, out)
 		}
 	}
@@ -345,7 +345,7 @@ func TestRequestChangesOnAnUnselectedCandidateIsRefused(t *testing.T) {
 	a, b := de.candidate(t, "approach-a"), de.candidate(t, "approach-b")
 	before := de.reviewsOnTicket(t)
 	out := sendReview(t, de.testEnv, "CND-1", reviewOf(a, de.base(t), "request_changes", changeOf("Make it faster.")), http.StatusConflict, "not_selected")
-	if apiMessage(out) != "approach-a was not selected in "+did+": launch a new comparison to try it again" {
+	if apiMessage(out) != "approach-a was not selected in "+did+": run a new trial to try it again" {
 		t.Fatalf("the refusal: %v", out)
 	}
 	if n := de.reviewsOnTicket(t); n != before {
@@ -662,8 +662,8 @@ func TestSelectFirstNamesOnlyAStandingRecord(t *testing.T) {
 		st   crew.ComparisonState
 		want string
 	}{
-		{crew.ComparisonState{State: crew.CompareRunning}, "select a candidate first: the comparison has not settled"},
-		{crew.ComparisonState{State: crew.CompareRunning, Decision: "dr-9"}, "select a candidate first: the comparison has not settled"},
+		{crew.ComparisonState{State: crew.CompareRunning}, "select a candidate first: the trial has not settled"},
+		{crew.ComparisonState{State: crew.CompareRunning, Decision: "dr-9"}, "select a candidate first: the trial has not settled"},
 		{crew.ComparisonState{State: crew.CompareSelecting, Decision: "dr-9"}, "select a candidate first: dr-9 is open"},
 		{crew.ComparisonState{State: crew.CompareAnswered, Decision: "dr-9"}, "select a candidate first: dr-9 is open"},
 	} {

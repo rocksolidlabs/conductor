@@ -183,7 +183,7 @@ func (s *Server) runHeld(id string) bool {
 // agent's attempt.
 func (rd *inboxRead) askedWhere(row ledger.DecisionRow, run inboxRun) string {
 	if row.Origin == ledger.OriginCompare {
-		w := "the comparison"
+		w := "the trial"
 		if run.ok && run.run.Ticket != nil {
 			w += " of " + run.run.Ticket.Key
 		}
@@ -220,7 +220,7 @@ func (rd *inboxRead) decisionFrom(row ledger.DecisionRow, run inboxRun, runName 
 		return "the plan of run " + runName
 	}
 	if row.Origin == ledger.OriginCompare {
-		from := "the comparison of run " + runName
+		from := "the trial of run " + runName
 		if ticket != "" {
 			from += " for " + ticket
 		}
@@ -329,12 +329,12 @@ func cmpPrefix(p, s string) string {
 func selectionBrief(state, from string, held bool) string {
 	switch state {
 	case ledger.DecisionOpen:
-		return "A comparison's selection for you, from " + from +
+		return "A trial's selection for you, from " + from +
 			": choose one of its candidates, each at its exact commit, or None of these, with your rationale; the answer is final"
 	case ledger.DecisionAnswered:
-		return "A comparison's selection, from " + from + ": it is answered, and the answer is final; " + answeredWaits(held)
+		return "A trial's selection, from " + from + ": it is answered, and the answer is final; " + answeredWaits(held)
 	default:
-		return "A comparison's selection, from " + from + ": it is " + state + ", and nothing more is asked of you"
+		return "A trial's selection, from " + from + ": it is " + state + ", and nothing more is asked of you"
 	}
 }
 
@@ -444,7 +444,7 @@ func (rd *inboxRead) decisionActions(it *inboxItem, row ledger.DecisionRow, req 
 	applies := func(choice *int) string {
 		switch {
 		case row.Origin == ledger.OriginCompare && choice != nil && *choice == len(options)-1:
-			return "Yardmaster then ends the comparison with no candidate selected; the candidates are kept and none can be continued"
+			return "Yardmaster then ends the trial with no candidate selected; the candidates are kept and none can be continued"
 		case row.Origin == ledger.OriginCompare:
 			return "Yardmaster then continues that candidate into review and delivery; the candidates not selected are kept and cannot be continued"
 		case row.Origin == ledger.OriginAgent && row.TaskID != "" && live:

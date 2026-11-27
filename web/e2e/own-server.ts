@@ -17,7 +17,9 @@ export interface AgentCopy {
   /** The copy's prompt shape (the catalog's promptShape): what the server recognises as the agent's own prompt. */
   promptShape?: string
   /** The copy's protocol (the catalog's protocol): the agent's own interface a session of it moves to as a chat. */
-  protocol?: { name: string }
+  protocol?: { name: string; args?: string[] }
+  /** The copy's name, as a person's catalog names it (`Claude Code`); `<the copied agent's name>, <id>` when not given. */
+  name?: string
 }
 
 export interface OwnServerOptions {
@@ -109,7 +111,7 @@ async function startOwn(o: OwnServerOptions, root: string, log: string, remove: 
   for (const a of o.agents ?? []) {
     const base = cfg.catalog.agents.find((x) => x.id === a.from)
     if (!base) throw new Error(`the e2e catalog has no agent ${a.from} to copy as ${a.id}`)
-    cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name}, ${a.id}`, env: { ...base.env, ...a.env }, ...(a.promptShape ? { promptShape: a.promptShape } : {}), ...(a.protocol ? { protocol: a.protocol } : {}) })
+    cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: a.name ?? `${base.name}, ${a.id}`, env: { ...base.env, ...a.env }, ...(a.promptShape ? { promptShape: a.promptShape } : {}), ...(a.protocol ? { protocol: a.protocol } : {}) })
   }
   if (o.keep) {
     const copies = new Set((o.agents ?? []).map((a) => a.id))

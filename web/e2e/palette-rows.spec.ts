@@ -251,7 +251,7 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   await page.unroute('**/api/integrations')
   // Agents: Launch opens the dialog.
   await runRow(page, 'page:launch')
-  await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByLabel('Folder', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
   // Settings in the browser is the server's file and a notice: no Save row that could never act (the desktop app's rows are
   // the app's, under the settings spec's stand-in bridge).
@@ -280,9 +280,11 @@ test("the run page: the broadcast field, the views, the run's chat, Share, Stop"
   await page.goto(`/runs/${encodeURIComponent(run.id)}`)
   await expect(page.locator('[data-palette]')).toBeHidden()
   await expect(page.locator('[data-run-chat-button]')).toBeVisible({ timeout: 30_000 })
-  // Broadcast takes a line in the row (Enter opens the field; nothing is sent without a line).
+  // Message the crew takes a line in the row (Enter opens the field; nothing is sent without a line). Its old word is gone.
   let palette = await enterRow(page, 'page:broadcast')
   await expect(palette.locator('[data-palette-row="page:broadcast"] [data-palette-field] input')).toBeFocused()
+  await expect(palette.locator('[data-palette-row="page:broadcast"]')).toContainText('Message the crew…')
+  await expect(palette.locator('[data-palette-row="page:broadcast"]')).not.toContainText('Broadcast')
   await closePalette(page)
   // The views read as on once run.
   await runRow(page, 'page:view:graph')
@@ -423,7 +425,7 @@ test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notif
   await expect(page.locator('[data-shortcuts]')).toBeVisible()
   await page.keyboard.press('Escape')
   await runRow(page, 'action:launch', '> launch an agent')
-  await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByLabel('Folder', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
   // The prefixes each pick their kind.
   for (const [prefix, chip] of [['>', 'Actions'], ['#', 'Runs and crews'], [':', 'Files'], ['@', 'People'], ['!', 'Events'], ['?', 'Shortcuts'], ['~', 'History']] as const) {

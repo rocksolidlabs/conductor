@@ -164,6 +164,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if known {
 		s.noteIdentity(local, agent)
 	}
+	// Kept for the next opening of Launch agent and the welcome, after a
+	// restart too (last_launch.go): never its arguments, name or task.
+	s.noteLaunch(req.AgentID, req.Cwd, req.Model)
 	if req.Way == session.WayProtocol {
 		// Noted before the reply, so the page's first welcome says it.
 		s.noteChatAtLaunch(req.ctx, local)

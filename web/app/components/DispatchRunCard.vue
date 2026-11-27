@@ -67,8 +67,8 @@ const selected = ref('')
       <span v-else class="min-w-0 truncate text-sm text-muted">Reading <span class="font-mono" data-mono="id">{{ runId }}</span>…</span>
       <span class="flex-none font-mono text-[11px] text-dimmed" :title="runId" data-mono="id">{{ shortRunId(runId) }}</span>
       <UBadge v-if="ticket" :label="revisionTag(ticket.planN)" color="neutral" variant="outline" size="sm" class="flex-none font-mono" :title="`Launched from ${ticket.key} at its revision ${ticket.rev}, plan revision ${ticket.planN}`" data-run-card-plan />
-      <NuxtLink v-if="comparison" :to="comparison" class="flex flex-none items-center gap-1 text-xs text-muted hover:text-default hover:underline" :title="`The comparison of ${runId}'s candidates`" data-run-card-comparison>
-        <UIcon name="i-lucide-columns-3" class="size-3.5" />Comparison
+      <NuxtLink v-if="comparison" :to="comparison" class="flex flex-none items-center gap-1 text-xs text-muted hover:text-default hover:underline" :title="`This trial's results side by side, on ${ticket?.key ?? runId}`" data-run-card-comparison>
+        <UIcon name="i-lucide-columns-3" class="size-3.5" />Trial results
       </NuxtLink>
       <UBadge v-if="run?.record || (!run && summary?.record)" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-ticket-run-record />
       <UBadge v-else-if="state" :label="state.text" :color="state.needs ? 'warning' : state.outcome === 'Failed' ? 'error' : 'neutral'" variant="subtle" size="sm" class="min-w-0 max-w-full truncate" :title="state.text" data-ticket-run-state :data-run-status-from="liveRun ? 'run' : 'summary'" />

@@ -93,20 +93,22 @@ function agentSessionOf(s: Session): string {
 }
 
 /**
- * Opens the launch dialog and picks an agent; the dialog's own radio group is drawn before the pick. The usage under the Account row
- * is one line on the dialog's face; its Details is pressed once, so that the full panel this file reads is in view.
+ * Opens the launch dialog and picks an agent; the dialog's own radio group is drawn before the pick. The usage beside the Account is
+ * its figures on the dialog's face; they are pressed once (`usage`, for an agent whose usage can be read), so that the full panel this
+ * file reads is in view under the row.
  */
-async function launchDialog(page: Page, agentName: string): Promise<Locator> {
+async function launchDialog(page: Page, agentName: string, usage = true): Promise<Locator> {
   await page.getByRole('button', { name: 'Launch agent' }).first().click()
   const dialog = page.getByRole('dialog')
   const agent = dialog.getByRole('radiogroup', { name: 'Agent' }).getByRole('radio', { name: agentName })
   await agent.click()
   await expect(agent).toHaveAttribute('aria-checked', 'true')
-  const details = dialog.locator('[data-capacity-unfold]')
-  await expect(details).toBeVisible()
-  if ((await details.getAttribute('aria-expanded')) !== 'true') await details.click()
-  await expect(details).toHaveAttribute('aria-expanded', 'true')
-  await expect(dialog.locator('[data-capacity-body]')).toBeVisible()
+  if (!usage) return dialog
+  const figures = dialog.locator('[data-launch-usage]')
+  await expect(figures).toBeVisible()
+  if ((await figures.getAttribute('aria-expanded')) !== 'true') await figures.click()
+  await expect(figures).toHaveAttribute('aria-expanded', 'true')
+  await expect(dialog.locator('[data-launch-usage-panel]')).toBeVisible()
   return dialog
 }
 
@@ -158,9 +160,9 @@ test('an account added in Settings and made the default launches a session that 
   await expect(dialog.locator('[data-more-line]')).toHaveCount(0)
   await openMore(dialog)
   await expect(dialog.locator('[data-launch-model-input]')).toHaveValue('')
-  // The empty Model field says what the panel says: no model named, never the agent's default (the Arguments field can name one).
-  await expect(dialog.locator('[data-launch-model-input]')).toHaveAttribute('placeholder', 'no model named')
-  await expect(dialog.locator('[data-launch-model]')).toContainText('empty: the agent chooses, or its arguments do')
+  // The empty Model field says the agent chooses, with no line under it; never the agent's default (the arguments can name one).
+  await expect(dialog.locator('[data-launch-model-input]')).toHaveAttribute('placeholder', "The agent's choice")
+  await expect(dialog.locator('[data-launch-model]')).not.toContainText('empty: the agent chooses, or its arguments do')
   await expect(dialog.locator('[data-launch-model]')).not.toContainText("the agent's default")
   const panel = dialog.locator('[data-capacity-panel]')
   await expect(panel).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
@@ -178,10 +180,10 @@ test('an account added in Settings and made the default launches a session that 
   // Nothing the tool printed for people, and nothing of its login, reaches the page.
   await expect(panel).not.toContainText('E2E-PEOPLE-TEXT')
   await expect(panel).not.toContainText('e2e-person@example.invalid')
-  await expect(dialog.getByRole('button', { name: 'Launch' })).toBeEnabled()
+  await expect(dialog.getByRole('button', { name: 'Launch', exact: true })).toBeEnabled()
 
   const created = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
-  await dialog.getByRole('button', { name: 'Launch' }).click()
+  await dialog.getByRole('button', { name: 'Launch', exact: true }).click()
   const answer = await created
   const first = answer.ok() ? ((await answer.json()) as Session) : null
   if (first) made.sessions.push(first.id)
@@ -264,7 +266,7 @@ test('each state the stub answers shows its words, and an agent no reader knows 
     if (c.fresh) await expect(panel.locator('[data-capacity-fresh]'), c.what).toHaveText(c.fresh)
     // A window the provider did not report is never drawn, as empty or at all.
     await expect(panel.locator('[data-capacity-window]'), c.what).toHaveCount(0)
-    await expect(dialog.getByRole('button', { name: 'Launch' })).toBeEnabled()
+    await expect(dialog.getByRole('button', { name: 'Launch', exact: true })).toBeEnabled()
   }
   // A Claude Code version the reader was not checked on offers the admin's check, in those words.
   await expect(panel.locator('[data-capacity-check]')).toHaveText('Check this version')
@@ -303,11 +305,12 @@ test('each state the stub answers shows its words, and an agent no reader knows 
   // An agent no reader knows: unknown, said so, with no account to choose and nothing read.
   await page.keyboard.press('Escape')
   await expect(codexDialog).toHaveCount(0)
-  const plain = await launchDialog(page, 'Plain (e2e stub)')
+  const plain = await launchDialog(page, 'Plain (e2e stub)', false)
   await expect(plain.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', 'unsupported', { timeout: 30_000 })
-  await expect(plain.locator('[data-capacity-words]')).toHaveText("Usage unknown: Conductor knows no way to read this agent's usage")
+  // Nothing to read: no usage beside an account, and no account to choose.
+  await expect(plain.locator('[data-launch-usage]')).toHaveCount(0)
   await expect(plain.locator('[data-launch-account]')).toHaveCount(0)
-  await expect(plain.getByRole('button', { name: 'Launch' })).toBeEnabled()
+  await expect(plain.getByRole('button', { name: 'Launch', exact: true })).toBeEnabled()
 })
 
 test('a version not yet checked: the dialog opened on it offers the check at once, and the reading shows once it is pressed', async ({ page, api, state }) => {
@@ -353,7 +356,7 @@ test('a version not yet checked: the dialog opened on it offers the check at onc
 })
 
 test.describe('on this computer', () => {
-  test('the Account and Model fields are not shown, the panel says its usage is unknown here, and the pasted command names no account', async ({ page, api, state }) => {
+  test('the Account and Model fields are not shown, no usage is shown, and the pasted command names no account', async ({ page, api, state }) => {
     const mine = label('mine')
     const dir = folder(state.home, 'ok')
     const id = await addAccount(api, 'claude', mine, dir)
@@ -361,16 +364,14 @@ test.describe('on this computer', () => {
     await page.goto(`http://conductor.test:${state.port}/`)
     const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
     await expect(dialog.locator('[data-launch-account]')).toBeVisible()
+    await openMore(dialog)
     await dialog.getByRole('button', { name: 'On this computer' }).click()
     await expect(dialog.locator('[data-launch-account]')).toHaveCount(0)
     await expect(dialog.locator('[data-launch-model]')).toHaveCount(0)
-    const panel = dialog.locator('[data-capacity-panel]')
-    await expect(panel).toHaveAttribute('data-capacity-state', 'remote')
-    await expect(panel.locator('[data-capacity-host]')).toHaveText('On this computer: your own login there, usage unknown here')
-    // The launch uses the login there: the panel names no account of this server's, and no model.
-    await expect(panel).not.toContainText(mine)
-    await expect(panel.locator('[data-capacity-account]')).toHaveCount(0)
-    await expect(panel.locator('[data-capacity-model]')).toHaveCount(0)
+    // The launch uses the login there, whose usage this server cannot read: nothing of it is shown, no account of this server's.
+    await expect(dialog.locator('[data-capacity-panel]')).toHaveCount(0)
+    await expect(dialog.locator('[data-launch-usage]')).toHaveCount(0)
+    await expect(dialog).not.toContainText(mine)
     await dialog.getByLabel('Name', { exact: true }).fill('capacity-host')
     const command = dialog.locator('[data-code-block] li').first()
     await expect(command).toContainText(' --name capacity-host ')
@@ -389,7 +390,7 @@ const isLaunch = (r: Response) => r.request().method() === 'POST' && new URL(r.u
 /** Launches what the dialog holds and answers the reply, the session it made ended after the test. */
 async function launch(page: Page, dialog: Locator): Promise<{ status: number; sent: Record<string, unknown>; session: Session | null }> {
   const answered = page.waitForResponse(isLaunch)
-  await dialog.getByRole('button', { name: 'Launch' }).click()
+  await dialog.getByRole('button', { name: 'Launch', exact: true }).click()
   const answer = await answered
   const session = answer.status() === 201 ? ((await answer.json()) as Session) : null
   if (session) made.sessions.push(session.id)
@@ -412,13 +413,17 @@ test.describe('the account a launch is sent with', () => {
     const model = dialog.locator('[data-launch-model-input]')
     await model.fill('claude-e2e-model')
     await expect(model).toHaveValue('claude-e2e-model')
-    // The arguments choose a model as well: the route refuses, in its words, and the dialog stays open with the pick as it was.
+    // The arguments choose a model as well: the dialog says so before the press and still sends; the route refuses, in its words,
+    // and the dialog stays open with the pick as it was.
     const args = dialog.locator('[data-launch-args]')
     await args.fill('--model opus')
     await expect(args).toHaveValue('--model opus')
+    await expect(dialog.locator('[data-launch-args-field]')).toContainText('The model is set here and in Model. Keep one of them.')
+    await expect(dialog.getByRole('button', { name: 'Launch', exact: true })).toBeEnabled()
     const refused = await launch(page, dialog)
     expect(refused.status).toBe(400)
-    await expect(dialog.locator('[data-launch-error]')).toHaveText('the arguments choose a model already: set the model in one place (invalid_request)')
+    await expect(dialog.locator('[data-launch-error]')).toHaveText('Not started: the arguments choose a model already: set the model in one place.')
+    await expect(dialog.locator('[data-launch-error]')).toHaveAttribute('data-launch-error-code', 'invalid_request')
     await expect(dialog.locator('[data-account-select]')).toContainText(work)
     await args.fill('')
     await expect(args).toHaveValue('')
@@ -472,14 +477,13 @@ test.describe('the account a launch is sent with', () => {
     await expect(dialog.locator('[data-launch-account]')).toHaveCount(0)
     await expect(panel.locator('[data-capacity-account]')).toHaveCount(0)
     await expect(panel).not.toContainText(work)
-    // On this computer the command runs with the login there: once the server's view of that launch is shown, the panel says so and
-    // names nothing of the entry's.
+    // On this computer the command runs with the login there, whose usage this server cannot read: no usage is shown, and nothing
+    // of the entry's. Where it runs is the first item of More options.
+    await openMore(dialog)
     await dialog.getByRole('button', { name: 'On this computer' }).click()
-    await expect(panel).toHaveAttribute('data-capacity-state', 'remote')
-    await expect(panel).toHaveAttribute('data-capacity-agent', 'own-login')
-    await expect(panel.locator('[data-capacity-host]')).toHaveText('On this computer: your own login there, usage unknown here')
-    await expect(panel.locator('[data-capacity-entry-login]')).toHaveCount(0)
-    await expect(panel).not.toContainText('ANTHROPIC_BASE_URL')
+    await expect(panel).toHaveCount(0)
+    await expect(dialog.locator('[data-launch-usage]')).toHaveCount(0)
+    await expect(dialog).not.toContainText('ANTHROPIC_BASE_URL')
     // Back on this server, the line is drawn again and the launch starts on the entry's login.
     await dialog.getByRole('button', { name: 'On this server' }).click()
     await expect(panel).not.toHaveAttribute('data-capacity-state', 'remote')

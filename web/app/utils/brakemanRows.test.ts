@@ -14,7 +14,7 @@ const names = { run: (id: string) => (id === 'fix-login-1a2b3c4d' ? 'fix-login' 
 
 describe('a kind in short', () => {
   it("is the kind's own label without the chip's ellipsis, one set of words", () => {
-    expect(KINDS.map((k) => shortKind(k.value))).toEqual(['Brief me since', 'Explain this', 'Prepare a decision', 'Draft tickets', 'Propose a crew', 'Prepare a handoff', 'Find', 'Overlapping changes', 'A question', 'Compare approaches'])
+    expect(KINDS.map((k) => shortKind(k.value))).toEqual(['Brief me since', 'Explain this', 'Prepare a decision', 'Draft tickets', 'Propose a crew', 'Prepare a handoff', 'Find', 'Overlapping changes', 'A question', 'Sum up a trial'])
     for (const k of KINDS) expect(k.label.startsWith(shortKind(k.value))).toBe(true)
     expect(shortKind('wake')).toBe('Woken by events')
     expect(shortKind('something_new')).toBe('something_new')

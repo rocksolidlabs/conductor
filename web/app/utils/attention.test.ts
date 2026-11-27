@@ -75,8 +75,8 @@ describe('a turn held for the terminal', () => {
 
   it('heads the reply bar with the terminal, else with the agent', () => {
     expect(waitingHeading({ state: 'needs_input', source: 'submit' }, 'claude')).toBe('Type in the terminal to go on')
-    expect(waitingHeading({ state: 'needs_input', source: 'api' }, 'claude')).toBe('claude is waiting on you')
-    expect(waitingHeading(undefined, 'codex')).toBe('codex is waiting on you')
+    expect(waitingHeading({ state: 'needs_input', source: 'api' }, 'claude')).toBe('claude asks')
+    expect(waitingHeading(undefined, 'codex')).toBe('codex asks')
   })
 })
 

@@ -1,48 +1,48 @@
 import { describe, expect, it } from 'vitest'
-import { SETTINGS_SECTIONS, sectionFromQuery, sectionInView, shownSections, type SectionBox, type SettingsShown } from './settingsSections'
+import { SETTINGS_SECTIONS, changedSections, changedWords, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsShown } from './settingsSections'
 
 const ids = (s: SettingsShown) => shownSections(s).map((x) => x.id)
-const desktop: SettingsShown = { desktop: true, platform: 'linux', ice: false, agents: 13, brakeman: true }
+const desktop: SettingsShown = { desktop: true, platform: 'linux', agents: 13, brakeman: true }
 
 describe('shownSections', () => {
-  it('shows every section of the desktop app on Windows with an ICE status, in page order', () => {
-    expect(ids({ ...desktop, platform: 'win32', ice: true })).toEqual(['webrtc', 'switchyard', 'folders', 'running', 'agents', 'accounts', 'github', 'brakeman', 'app'])
+  it('opens on where and how agents work, with Switchyard below Accounts, in page order (UX3 R54)', () => {
+    expect(ids(desktop)).toEqual(['folders', 'running', 'agents', 'accounts', 'switchyard', 'github', 'brakeman', 'app'])
+    // On Windows the same: the Windows firewall is a row of Switchyard, no section of its own.
+    expect(ids({ ...desktop, platform: 'win32' })).toEqual(['folders', 'running', 'agents', 'accounts', 'switchyard', 'github', 'brakeman', 'app'])
   })
 
-  it('shows WebRTC from WSL only on Windows, and only once the bridge said what it forwards', () => {
-    expect(ids(desktop)).not.toContain('webrtc')
-    expect(ids({ ...desktop, ice: true })).not.toContain('webrtc')
-    expect(ids({ ...desktop, platform: 'win32', ice: false })).not.toContain('webrtc')
-    expect(ids({ ...desktop, platform: 'win32', ice: true })[0]).toBe('webrtc')
+  it('lists WebRTC from WSL as no section any more', () => {
+    expect(SETTINGS_SECTIONS.map((s) => s.id)).not.toContain('webrtc')
+    expect(ids({ ...desktop, platform: 'win32' })).not.toContain('webrtc')
   })
 
   it('shows the agents only for a catalog that lists some', () => {
-    expect(ids({ ...desktop, agents: 0 })).toEqual(['switchyard', 'folders', 'running', 'accounts', 'github', 'brakeman', 'app'])
+    expect(ids({ ...desktop, agents: 0 })).toEqual(['folders', 'running', 'accounts', 'switchyard', 'github', 'brakeman', 'app'])
     expect(ids({ ...desktop, agents: 1 })).toContain('agents')
   })
 
   it('shows Brakeman only where the server offers it', () => {
-    expect(ids({ ...desktop, brakeman: false })).toEqual(['switchyard', 'folders', 'running', 'agents', 'accounts', 'github', 'app'])
+    expect(ids({ ...desktop, brakeman: false })).toEqual(['folders', 'running', 'agents', 'accounts', 'switchyard', 'github', 'app'])
   })
 
   it('shows the accounts unless the server offers none (a switchyard, no data directory), in the browser too', () => {
-    expect(ids({ ...desktop, accounts: false })).toEqual(['switchyard', 'folders', 'running', 'agents', 'github', 'brakeman', 'app'])
+    expect(ids({ ...desktop, accounts: false })).toEqual(['folders', 'running', 'agents', 'switchyard', 'github', 'brakeman', 'app'])
     expect(ids({ ...desktop, accounts: true })).toContain('accounts')
-    expect(ids({ desktop: false, ice: false, agents: 0, brakeman: false, accounts: true })).toEqual(['accounts', 'github', 'app'])
+    expect(ids({ desktop: false, agents: 0, brakeman: false, accounts: true })).toEqual(['accounts', 'github', 'app'])
   })
 
   it("shows only Accounts, GitHub, Brakeman and The app on the browser's page, whatever else is known", () => {
-    expect(ids({ desktop: false, platform: 'win32', ice: true, agents: 13, brakeman: true })).toEqual(['accounts', 'github', 'brakeman', 'app'])
-    expect(ids({ desktop: false, ice: false, agents: 0, brakeman: false, accounts: false, github: false })).toEqual(['app'])
+    expect(ids({ desktop: false, platform: 'win32', agents: 13, brakeman: true })).toEqual(['accounts', 'github', 'brakeman', 'app'])
+    expect(ids({ desktop: false, agents: 0, brakeman: false, accounts: false, github: false })).toEqual(['app'])
   })
 
   it('shows GitHub unless the server keeps no token (a switchyard), in the browser too', () => {
     expect(ids({ ...desktop, github: false })).not.toContain('github')
-    expect(ids({ desktop: false, ice: false, agents: 0, brakeman: false, github: true })).toContain('github')
+    expect(ids({ desktop: false, agents: 0, brakeman: false, github: true })).toContain('github')
   })
 
   it('keeps the ids and titles the address and the docs name', () => {
-    expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual(['webrtc', 'switchyard', 'folders', 'running', 'agents', 'accounts', 'github', 'brakeman', 'app'])
+    expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual(['folders', 'running', 'agents', 'accounts', 'switchyard', 'github', 'brakeman', 'app'])
     // "Settings → Switchyard" and "Settings → The app" are written in the README, the switchyard's pages and the notice.
     expect(SETTINGS_SECTIONS.find((s) => s.id === 'switchyard')!.title).toBe('Switchyard')
     expect(SETTINGS_SECTIONS.find((s) => s.id === 'app')!.title).toBe('The app')
@@ -55,9 +55,16 @@ describe('sectionFromQuery', () => {
     for (const s of SETTINGS_SECTIONS) expect(sectionFromQuery(s.id)).toBe(s.id)
   })
 
+  it('still knows webrtc, the Windows firewall row, and finds it in Switchyard', () => {
+    expect(sectionFromQuery('webrtc')).toBe('webrtc')
+    expect(sectionOf('webrtc')).toBe('switchyard')
+    for (const s of SETTINGS_SECTIONS) expect(sectionOf(s.id)).toBe(s.id)
+  })
+
   it('reads none for an unknown id, an empty one or none at all', () => {
     expect(sectionFromQuery('network')).toBeNull()
     expect(sectionFromQuery('Switchyard')).toBeNull()
+    expect(sectionFromQuery('toString')).toBeNull()
     expect(sectionFromQuery('')).toBeNull()
     expect(sectionFromQuery(undefined)).toBeNull()
     expect(sectionFromQuery(null)).toBeNull()
@@ -114,5 +121,24 @@ describe('sectionInView', () => {
   it('does not take an unscrolled body that holds all as scrolled to its end', () => {
     const short: SectionBox[] = [{ id: 'brakeman', top: 0, bottom: 200 }, { id: 'app', top: 220, bottom: 400 }]
     expect(sectionInView(short, { scrollTop: 0, clientHeight: 500, scrollHeight: 400 })).toBe('brakeman')
+  })
+})
+
+describe('changedSections (UX3 R56)', () => {
+  const saved = { dataDir: '/d', allowedRoots: ['/r'], defaultCwd: '/r', yolo: false, reach: 'off', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: false, switchyardServer: '', switchyardToken: '', switchyardName: '' }
+
+  it('names the sections that hold a change, in page order', () => {
+    expect(changedSections(saved, saved, false)).toEqual([])
+    expect(changedSections(saved, { ...saved, yolo: true }, true)).toEqual(['running', 'brakeman'])
+    expect(changedSections(saved, { ...saved, closeToTray: false, allowedRoots: ['/r', '/s'], reach: 'auto' }, false)).toEqual(['folders', 'switchyard', 'app'])
+    expect(changedSections(saved, { ...saved, wslWindowsHome: true, wslDistro: 'Ubuntu' }, false)).toEqual(['folders', 'running'])
+    // Before the app's settings were read, only Brakeman's.
+    expect(changedSections(null, saved, true)).toEqual(['brakeman'])
+  })
+
+  it('says them as the bar says them', () => {
+    expect(changedWords([])).toBe('')
+    expect(changedWords(['running', 'brakeman'])).toBe('Changed: How agents run, Brakeman.')
+    expect(changedWords(['folders'])).toBe('Changed: Where agents work.')
   })
 })

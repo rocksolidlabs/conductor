@@ -544,6 +544,9 @@ type Server struct {
 	// drafts queues a comparison's Brakeman request once its lanes settle
 	// (compare_drafts.go).
 	drafts compareDrafts
+
+	// lastLaunchMu serialises the record of the last launch (last_launch.go).
+	lastLaunchMu sync.Mutex
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -1283,6 +1286,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/remote", s.requireAdmin(s.handleRemote))
 	mux.HandleFunc("GET /api/hosts", s.requireAdmin(s.handleHosts))
 	mux.HandleFunc("GET /api/sync", s.requireAdmin(s.handleSyncStatus))
+	mux.HandleFunc("GET /api/launch/last", s.launching(s.handleLastLaunch))
 	mux.HandleFunc("GET /api/ui/{name}", s.requireAdmin(s.handleUIGet))
 	mux.HandleFunc("PUT /api/ui/{name}", s.requireAdmin(s.handleUIPut))
 	mux.HandleFunc("GET /api/signin", s.requireAdmin(s.handleSignIn))

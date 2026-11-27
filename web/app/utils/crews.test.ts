@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, CREW_NAME_MAX, crewNameProblem, memberSaveProblem, moreOptionsLine, permissionItems, SETUP_WORDS, viewLinkHoursWords, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
+import { argsFrom, CREW_NAME_MAX, crewNameProblem, memberSaveProblem, moreOptionsLine, permissionItems, SETUP_WORDS, viewLinkHoursWords, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, messageToast, MESSAGE_ALL_TIP, recipientState, togglePick, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
 import { changedFields, startSentence, startWords } from './crewWords'
 
@@ -85,7 +85,7 @@ describe("a comparison's crew in the editor", () => {
 
   it('names the comparison in what changed when only it differs', () => {
     const other = { ...comparison, compare: { ...comparison.compare!, criteria: [{ id: 'speed', text: 'The benchmark runs twice as fast' }] } }
-    expect(changedFields(other, comparison)).toEqual(['Comparison'])
+    expect(changedFields(other, comparison)).toEqual(['Agent trial'])
     expect(crewKey(other)).not.toBe(crewKey(comparison))
   })
 })
@@ -565,21 +565,106 @@ describe('joinTileStatus', () => {
 })
 
 describe('broadcastSelection', () => {
-  const m = (name: string, live = true, waiting = false) => ({ name, live, waiting })
+  type State = 'ready' | 'waiting' | 'starting' | 'ended' | 'not_started'
+  const m = (name: string, state: State = 'ready') => ({ name, state })
+  const crew = (review: State = 'ready', tests: State = 'ready') => [m('lead'), m('core'), m('review', review), m('tests', tests)]
 
-  it('selects every member whose session runs, and none that has none', () => {
-    expect(broadcastSelection([m('lead'), m('core'), m('tests', false)], {})).toEqual({ selected: ['lead', 'core'], sending: ['lead', 'core'], waiting: [] })
+  it('gives the line to everyone who can get one by default, All on', () => {
+    const s = broadcastSelection(crew(), null)
+    expect(s).toMatchObject({ all: true, to: ['lead', 'core', 'review', 'tests'], placeholder: 'Write a line for lead, core, review and tests', button: 'Send to 4' })
+    expect(s.chips.map((c) => [c.label, c.on])).toEqual([['lead', true], ['core', true], ['review', true], ['tests', true]])
   })
 
-  it('keeps an untick through every read, and selects a member that starts later', () => {
-    const choices = { core: false }
-    expect(broadcastSelection([m('lead'), m('core'), m('tests', false)], choices).selected).toEqual(['lead'])
-    expect(broadcastSelection([m('lead'), m('core'), m('tests')], choices).selected).toEqual(['lead', 'tests'])
+  it('keeps a member the person left out out across every read, and All off', () => {
+    const pick = togglePick(crew(), null, 'core')
+    expect(pick).toEqual(['lead', 'review', 'tests'])
+    for (let i = 0; i < 3; i++) expect(broadcastSelection(crew(), pick)).toMatchObject({ all: false, to: ['lead', 'review', 'tests'], button: 'Send to 3' })
+    // Ticked again, nobody is left out: All is on.
+    expect(togglePick(crew(), pick, 'core')).toBeNull()
   })
 
-  it('keeps a tick on a member with no session yet, and sends only to those the server will type into', () => {
-    const r = broadcastSelection([m('lead', true, true), m('core'), m('tests', false)], { tests: true })
-    expect(r).toEqual({ selected: ['lead', 'core', 'tests'], sending: ['core'], waiting: ['lead'] })
+  it('lets an answered member join only while All is on', () => {
+    const waiting = crew('waiting')
+    expect(broadcastSelection(waiting, null).to).toEqual(['lead', 'core', 'tests'])
+    expect(broadcastSelection(crew(), null).to).toEqual(['lead', 'core', 'review', 'tests'])
+    const pick = togglePick(waiting, null, 'tests')
+    expect(broadcastSelection(waiting, pick).to).toEqual(['lead', 'core'])
+    // review answered: it comes in not ticked, and the button stays.
+    const after = broadcastSelection(crew(), pick)
+    expect(after).toMatchObject({ all: false, to: ['lead', 'core'], button: 'Send to 2' })
+    expect(after.chips.find((c) => c.name === 'review')).toMatchObject({ label: 'review', on: false })
+  })
+
+  it('lets a member that starts later join only while All is on', () => {
+    const starting = crew('ready', 'starting')
+    expect(broadcastSelection(crew(), null).to).toContain('tests')
+    const pick = togglePick(starting, null, 'core')
+    expect(broadcastSelection(crew(), pick).to).toEqual(['lead', 'review'])
+    // All puts everyone back, tests with them.
+    expect(broadcastSelection(crew(), null).to).toEqual(['lead', 'core', 'review', 'tests'])
+  })
+
+  it('never gives the line to a member that cannot get one, ticked or not, and cannot tick it', () => {
+    const members = crew('waiting', 'ended')
+    expect(broadcastSelection(members, ['lead', 'review', 'tests']).to).toEqual(['lead'])
+    expect(togglePick(members, null, 'review')).toBeNull()
+    expect(togglePick(members, ['lead'], 'review')).toEqual(['lead'])
+  })
+
+  it("draws each chip's state in words, with its tooltip", () => {
+    const s = broadcastSelection([m('lead'), m('core'), m('review', 'waiting'), m('web', 'ended'), m('docs', 'starting'), m('tests', 'not_started')], null)
+    expect(s.chips.map(({ label, on, tip }) => ({ label, on, tip }))).toEqual([
+      { label: 'lead', on: true, tip: '' },
+      { label: 'core', on: true, tip: '' },
+      { label: 'review · answer it first', on: false, tip: 'review waits on your answer.' },
+      { label: 'web · ended', on: false, tip: 'web has ended. Resume it on its tile.' },
+      { label: 'docs · starting', on: false, tip: 'docs is starting.' },
+      { label: 'tests · not started', on: false, tip: 'tests has not started yet.' },
+    ])
+    expect(s).toMatchObject({ all: true, to: ['lead', 'core'], placeholder: 'Write a line for lead and core', button: 'Send to 2' })
+    expect(MESSAGE_ALL_TIP).toBe('Everyone who can get a line now')
+  })
+
+  it('names who gets the line in the field, a count past four, and says why when nobody does', () => {
+    const six = ['a', 'b', 'c', 'd', 'e'].map((n) => m(n))
+    expect(broadcastSelection(six, null).placeholder).toBe('Write a line for 5 members')
+    expect(broadcastSelection(six.slice(0, 1), null).placeholder).toBe('Write a line for a')
+    expect(broadcastSelection(crew(), []).placeholder).toBe('Pick who gets it')
+    expect(broadcastSelection([m('lead', 'starting'), m('core', 'not_started')], null)).toMatchObject({ to: [], placeholder: 'Nobody can get a line yet: the members are starting', button: 'Send to 0' })
+    expect(broadcastSelection([m('lead', 'waiting'), m('core', 'ended')], null).placeholder).toBe('Nobody can get a line now')
+  })
+})
+
+describe('recipientState', () => {
+  const member = (status: 'pending' | 'starting' | 'running' | 'ended', needsInput = false) => ({ status, needsInput })
+  const session = (status: 'running' | 'starting' | 'exited', waiting = false) => ({ status, attention: waiting ? { state: 'needs_input' } : undefined }) as never
+
+  it('reads a running member as one that can get a line, unless its session waits on a prompt', () => {
+    expect(recipientState(member('running'), session('running'))).toBe('ready')
+    expect(recipientState(member('running'), session('running', true))).toBe('waiting')
+    expect(recipientState(member('running', true), undefined)).toBe('waiting')
+  })
+
+  it('reads why the others cannot', () => {
+    expect(recipientState(member('starting'), session('running'))).toBe('starting')
+    expect(recipientState(member('pending'), session('starting'))).toBe('starting')
+    expect(recipientState(member('pending'), undefined)).toBe('not_started')
+    expect(recipientState(member('ended'), undefined)).toBe('ended')
+    expect(recipientState(member('running'), session('exited'))).toBe('ended')
+    // A trust question before the prompt is a question to answer first.
+    expect(recipientState(member('starting'), session('running', true))).toBe('waiting')
+  })
+
+  it('reads a session the run has not listed yet by its own status', () => {
+    expect(recipientState(undefined, session('running'))).toBe('ready')
+    expect(recipientState(undefined, session('starting'))).toBe('starting')
+  })
+})
+
+describe('messageToast', () => {
+  it('says Not sent when nobody got the line, with the reasons, and is broadcastSummary otherwise', () => {
+    expect(messageToast({ sent: [], skipped: [{ member: 'core', reason: 'not_running' }] })).toEqual({ title: 'Not sent', description: 'Skipped core (not running).', color: 'error' })
+    expect(messageToast({ sent: ['core'], skipped: [] })).toEqual(broadcastSummary({ sent: ['core'], skipped: [] }))
   })
 })
 
