@@ -328,6 +328,10 @@ type Server struct {
 	// file read may reach, even inside a session's working directory (see
 	// fileDeny). It is safe to call from many goroutines.
 	fileDeny func() []string
+	// roots are the folders agents may use, from the configuration's
+	// allowedRoots when the server is made (roots.go); every check of a
+	// working directory reads them here.
+	roots *rootList
 	// treeRoots keeps the root commits a context provider's reads found
 	// (exttree.go).
 	treeRoots rootsCache
@@ -636,6 +640,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		trackers:    newTrackers(cfg, st, log),
 		crews:       crews,
 		fileDeny:    fileDeny(cfg, st, log),
+		roots:       newRootList(cfg),
 		lookups:     newLookupCache(),
 		probes:      newProbeCache(),
 		home:        home,
@@ -1319,6 +1324,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/people", s.launching(s.handlePeople))
 	mux.HandleFunc("GET /api/people/{name}", s.launching(s.handlePerson))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
+	mux.HandleFunc("GET /api/roots/check", s.launching(s.handleCheckRoot))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
 	mux.HandleFunc("GET /api/runs/{run}", s.readable("GET /api/runs/{run}", s.launchingAny(s.handleGetRun)))
