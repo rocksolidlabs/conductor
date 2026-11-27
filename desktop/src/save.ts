@@ -1,4 +1,4 @@
-import { serverAffecting, splitRoots, validate, type DesktopSettings } from './settings'
+import { serverAffecting, splitRoots, typedDefault, validate, type DesktopSettings } from './settings'
 
 /** What became of the last save from the Settings page, for its toast: handed to the workbench once (SettingsSaver.take). */
 export type SaveOutcome = '' | 'saved' | 'restarted'
@@ -35,7 +35,7 @@ export class SettingsSaver {
     const cur = d.get()
     // The zoom is the app's own (Ctrl+= and Ctrl+-): a form saved with an older level leaves the current one. So are the updates
     // told (#290): a form loaded before one was told would tell it again.
-    const next = {
+    const next = typedDefault({
       ...cur,
       ...patch,
       zoomLevel: cur.zoomLevel,
@@ -44,7 +44,7 @@ export class SettingsSaver {
       updateFailedNoticed: cur.updateFailedNoticed,
       // The page has one list of folders: the press's stay the app's own while the list holds them (splitRoots).
       ...splitRoots(cur, (patch as { allowedRoots?: unknown }).allowedRoots),
-    } as DesktopSettings
+    } as DesktopSettings)
     const problems = validate(next, d.posix)
     if (problems.length) throw new Error(problems.join('; '))
     d.set(next)

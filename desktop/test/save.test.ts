@@ -127,4 +127,14 @@ describe('SettingsSaver', () => {
     expect(a.stored().pressedRoots).toEqual([{ path: '/srv/wide', confirmed: 'above_home' }])
     expect(a.restarts).toHaveLength(1)
   })
+
+  it('makes the folder of a default chosen inside a pressed folder a typed one, so the file loads in the release before', async () => {
+    const s = new SettingsSaver()
+    const a = app()
+    a.d.set({ ...a.stored(), pressedRoots: [{ path: '/srv/proj', confirmed: '' }] })
+    await s.save(a.d, { defaultCwd: '/srv/proj/app', allowedRoots: ['/home/me', '/srv/proj'] })
+    expect(a.stored().defaultCwd).toBe('/srv/proj/app')
+    expect(a.stored().allowedRoots).toEqual(['/home/me', '/srv/proj'])
+    expect(a.stored().pressedRoots).toEqual([])
+  })
 })
