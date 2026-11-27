@@ -33,12 +33,13 @@ const (
 )
 
 const crewsCompareUsage = `Usage:
-  conductor crews compare SPEC.json|- [--server URL] [--token T] [--insecure]
-      save a comparison's crew from its template (POST /api/crews/templates/compare):
+  conductor crews trial SPEC.json|- [--server URL] [--token T] [--insecure]
+      save an agent trial's crew from its template (POST /api/crews/templates/compare)
+      (conductor crews compare is the same command):
       SPEC.json, or - for stdin, a JSON object {name, cwd, goal, instructions,
       criteria, checks?, manifest?, candidates, reviews?, reviewAgent?,
       brakeman?, yolo?} of at most 256 KiB; prints the crew's id and its tasks.
-      It launches nothing: a comparison is launched from a ticket's approved
+      It launches nothing: an agent trial starts from a ticket's approved
       plan revision (conductor dispatch launch KEY-n --candidates N)
 `
 
@@ -137,7 +138,7 @@ func dispatchComparison(ctx context.Context, c *apiClient, key, run string, asJS
 	}
 	var v comparisonView
 	if err := json.Unmarshal(raw, &v); err != nil {
-		return 1, fmt.Errorf("the comparison from %s: %w", c.host, err)
+		return 1, fmt.Errorf("the trial from %s: %w", c.host, err)
 	}
 	writeComparison(stdout, key, v)
 	return 0, nil
@@ -184,7 +185,7 @@ func newestComparison(ctx context.Context, c *apiClient, key string) (string, er
 			cursor = page.Next
 		}
 	}
-	return "", fmt.Errorf("%s has launched no comparison: name a run of one with --run", key)
+	return "", fmt.Errorf("%s has launched no trial: name a run of one with --run", key)
 }
 
 // writeComparison prints a comparison: its base, objective and criteria,
@@ -313,7 +314,7 @@ type planCompareEntry struct {
 func compareStatement(pc planCompareEntry, agents []string, manifest string) string {
 	n := strconv.Itoa(pc.Candidates)
 	var b strings.Builder
-	fmt.Fprintf(&b, "This comparison starts %s candidates", n)
+	fmt.Fprintf(&b, "This trial starts %s candidates", n)
 	if len(agents) > 0 {
 		fmt.Fprintf(&b, " (%s)", oneLine(strings.Join(agents, ", ")))
 	}

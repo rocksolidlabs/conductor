@@ -244,7 +244,8 @@ test('a launched run under Runs: its candidates with their receipts and where th
   await expect(question.locator('[data-run-question-message]')).toHaveText(ASK, { timeout: 30_000 })
   await expect(card).toHaveAttribute('data-run-questions-count', '1')
   const asker = member(await api.run(run), 'asker').sessionId!
-  await expect(question.locator('[data-run-question-open]')).toHaveAttribute('href', `/sessions/${asker}`)
+  // Open goes to the member's place inside its crew (UX3 R72).
+  await expect(question.locator('[data-run-question-open]')).toHaveAttribute('href', `/runs/${encodeURIComponent(run)}?session=${asker}`)
   await expect(card.locator('[data-task-row="hold"]')).toHaveAttribute('data-task-state', 'running')
   expect(task(await api.run(run), 'hold').attempts).toBe(1)
 

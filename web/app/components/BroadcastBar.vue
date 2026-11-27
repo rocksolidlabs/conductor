@@ -60,10 +60,38 @@ function alone(name: string) {
   emit('update:pick', alonePick(props.members, props.pick, name))
 }
 
-/** Whether the focus is in the bar: the page rings the tiles that will get the line while it is. */
+// On a phone the bar at rest is one row: who gets the line, said short, any member that waits on a question (its amber chip, which
+// shows its tile), and the field with Send. The chips open when the person presses who gets it or puts the cursor in the field, and
+// fold again when the bar loses the focus, so the wall above keeps its room.
+const phone = useIsPhone()
+const opened = ref(false)
+const folded = computed(() => phone.value && !opened.value)
+const waiting = computed(() => selection.value.chips.filter((c) => c.state === 'waiting'))
+/** Who gets the line, short: `To all`, `To core`, `To 2`, `To nobody`. */
+const short = computed(() => {
+  const to = selection.value.to
+  if (!to.length) return 'To nobody'
+  if (selection.value.all) return 'To all'
+  return to.length === 1 ? `To ${to[0]}` : `To ${to.length}`
+})
+const form = useTemplateRef<HTMLFormElement>('form')
+async function openChips() {
+  opened.value = true
+  await nextTick()
+  form.value?.querySelector<HTMLInputElement>('input[data-message-field]')?.focus()
+}
+
+/** Whether the focus is in the bar: the page rings the tiles that will get the line while it is. The field opens the chips. */
+function focusIn(e: FocusEvent) {
+  emit('update:focused', true)
+  if ((e.target as HTMLElement | null)?.matches?.('input[data-message-field]')) opened.value = true
+}
 function focusLeft(e: FocusEvent) {
   const to = e.relatedTarget as Node | null
-  if (!to || !(e.currentTarget as HTMLElement).contains(to)) emit('update:focused', false)
+  if (!to || !(e.currentTarget as HTMLElement).contains(to)) {
+    emit('update:focused', false)
+    opened.value = false
+  }
 }
 onBeforeUnmount(() => emit('update:focused', false))
 
@@ -89,10 +117,39 @@ async function send() {
 
 <template>
   <div v-if="ended" class="rounded-md border border-default px-3.5 py-2.5 text-sm text-muted" data-broadcast data-broadcast-ended>This run has ended.</div>
-  <form v-else class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-default px-3.5 py-2.5" data-broadcast data-message-bar @submit.prevent="send" @focusin="emit('update:focused', true)" @focusout="focusLeft">
-    <span id="message-to" class="flex-none text-sm font-semibold text-highlighted">Message to</span>
+  <form
+    v-else
+    ref="form"
+    class="flex items-center rounded-md border border-default"
+    :class="folded ? 'flex-nowrap gap-2 px-2 py-1.5' : 'flex-wrap gap-x-3 gap-y-2 px-3.5 py-2.5'"
+    data-broadcast data-message-bar :data-bar-folded="folded || undefined" @submit.prevent="send" @focusin="focusIn" @focusout="focusLeft">
+    <template v-if="folded">
+      <!-- Pressed, the chips open and the cursor goes to the field (mousedown keeps the focus where it is until then). -->
+      <UButton
+        :label="short"
+        size="sm"
+        color="neutral"
+        variant="outline"
+        trailing-icon="i-lucide-chevron-up"
+        class="min-h-11 flex-none"
+        :aria-label="`Message to: ${selection.to.length ? selection.to.join(', ') : 'nobody'}. Pick who gets it`"
+        aria-expanded="false"
+        :disabled="disabled"
+        data-message-to
+        @mousedown.prevent
+        @click="openChips"
+      />
+      <UTooltip v-for="c in waiting" :key="c.name" :text="c.tip">
+        <UButton :label="c.name" size="sm" :color="STATUS_LOOK.needs.tone" variant="subtle" class="min-h-11 flex-none" :aria-label="c.label" :data-message-chip="c.name" :data-chip-state="c.state" @click="emit('show', c.name)">
+          <template #leading>
+            <StatusMark :status="needs" />
+          </template>
+        </UButton>
+      </UTooltip>
+    </template>
+    <span v-if="!folded" id="message-to" class="flex-none text-sm font-semibold text-highlighted">Message to</span>
     <!-- A press on a chip keeps the focus in the field (mousedown), so a line half written stays under the cursor. -->
-    <div class="flex flex-wrap items-center gap-1.5" role="group" aria-labelledby="message-to" data-message-chips>
+    <div v-if="!folded" class="flex flex-wrap items-center gap-1.5" role="group" aria-labelledby="message-to" data-message-chips>
       <UTooltip :text="MESSAGE_ALL_TIP">
         <UButton
           label="All"
@@ -150,7 +207,7 @@ async function send() {
       :color="tooLong ? 'error' : undefined"
       :highlight="tooLong"
       :aria-invalid="tooLong || undefined"
-      class="min-w-48 flex-1"
+      class="min-w-0 flex-1 sm:min-w-48"
       :disabled="disabled"
       data-message-field
     >
@@ -159,6 +216,7 @@ async function send() {
       </template>
     </UInput>
     <span class="sr-only" aria-live="polite" data-message-said>{{ said }}</span>
-    <UButton type="submit" size="sm" :label="selection.button" trailing-icon="i-lucide-corner-down-left" :loading="sending" :disabled="!canSend" data-broadcast-send />
+    <IconButton v-if="folded" type="submit" size="sm" :label="selection.button" icon="i-lucide-corner-down-left" class="min-h-11 min-w-11 flex-none justify-center" :loading="sending" :disabled="!canSend" data-broadcast-send />
+    <UButton v-else type="submit" size="sm" :label="selection.button" trailing-icon="i-lucide-corner-down-left" class="max-sm:min-h-11" :loading="sending" :disabled="!canSend" data-broadcast-send />
   </form>
 </template>

@@ -25,7 +25,7 @@ function pressEnd() {
 }
 const route = useRoute()
 const router = useRouter()
-const current = computed(() => runOpen(route.path, props.block.runId))
+const current = computed(() => runOpen(route.path, props.block.runId, route.query))
 const amber = computed(() => props.block.state === 'needs' && props.needsDot)
 const live = computed(() => !props.block.stoppedAt && props.block.state !== 'exited')
 const confirming = defineModel<boolean>('confirming', { default: false })

@@ -66,6 +66,15 @@ describe('the layout in local storage', () => {
     expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: 'not json' }))).toEqual({ v: 1 })
     expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: '["grid"]' }))).toEqual({ v: 1 })
   })
+
+  it("keeps each crew's tiles beside the last choice, an entry that does not read left out", () => {
+    const s = memory()
+    const crews = [{ crew: 'refunds', layout: 'large' as const, activity: true, large: 'core', sizes: { large: { cols: [0.7, 0.3] } } }]
+    layoutToStorage(s, { v: 1, runTiles: { layout: 'rows', activity: false, crews } })
+    expect(layoutFromStorage(s)).toEqual({ v: 1, runTiles: { layout: 'rows', activity: false, crews } })
+    const bad = JSON.stringify({ layout: 'grid', crews: [{ crew: 'Bad Id', layout: 'grid', activity: true }, { crew: 'docs', layout: 'grid', activity: false }] })
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: bad }))).toEqual({ v: 1, runTiles: { layout: 'grid', crews: [{ crew: 'docs', layout: 'grid', activity: false }] } })
+  })
 })
 
 describe('mergeRecents', () => {

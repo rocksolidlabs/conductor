@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { COLOR_TEXT, EVENT_INFO, feedGroups, type FeedEntry } from '~/utils/events'
 import { agentInitials } from '~/utils/sessions'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 /**
  * The live feed, newest first, in groups of one minute. Each row: its time,
@@ -47,7 +49,7 @@ function who(e: FeedEntry): { name: string; agent: string; runId?: string } {
           <UIcon :name="EVENT_INFO[e.event].icon" class="size-4" :class="COLOR_TEXT[EVENT_INFO[e.event].color]" />
           <!-- One cell on a phone (what happened, then who); two columns, who first, from 40rem. -->
           <div class="flex min-w-0 flex-col gap-0.5 @min-[40rem]:contents">
-            <NuxtLink :to="`/sessions/${e.sessionId}`" class="order-2 flex min-w-0 items-center gap-1.5 hover:underline @min-[40rem]:order-none" data-feed-who>
+            <NuxtLink :to="placeOf(e.sessionId)" class="order-2 flex min-w-0 items-center gap-1.5 hover:underline @min-[40rem]:order-none" data-feed-who>
               <span v-if="who(e).agent" class="grid h-[18px] w-5 flex-none place-items-center rounded bg-elevated font-mono text-[8.5px] font-semibold">{{ agentInitials(who(e).agent) }}</span>
               <span class="truncate font-mono text-[12.5px] font-medium text-highlighted">{{ who(e).name }}</span>
             </NuxtLink>
@@ -62,7 +64,7 @@ function who(e: FeedEntry): { name: string; agent: string; runId?: string } {
             </span>
           </div>
           <span class="flex justify-end">
-            <UButton v-if="e.event === 'needs_input'" :to="`/sessions/${e.sessionId}`" label="Answer" size="xs" data-feed-answer />
+            <UButton v-if="e.event === 'needs_input'" :to="placeOf(e.sessionId)" label="Answer" size="xs" data-feed-answer />
             <UButton v-else-if="e.event === 'handoff' && who(e).runId" :to="`/runs/${encodeURIComponent(who(e).runId!)}`" label="Open run" size="xs" color="neutral" variant="outline" />
             <UButton v-else-if="e.link" :href="e.link" target="_blank" rel="noopener noreferrer" label="Open" size="xs" color="neutral" variant="outline" />
           </span>

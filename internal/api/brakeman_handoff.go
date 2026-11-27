@@ -260,7 +260,7 @@ func (s *Server) handGoalOf(ctx context.Context, req brakeman.Request) (handGoal
 		return handRefused(http.StatusConflict, refusalNotManaged, "the run has no tasks to hand a package to"), nil
 	}
 	if run.Compare != nil {
-		return handRefused(http.StatusConflict, refusalComparison, "a comparison's lanes are handed alike: a package goes to no lane"), nil
+		return handRefused(http.StatusConflict, refusalComparison, "a trial's lanes are handed alike: a package goes to no lane"), nil
 	}
 	i := slices.IndexFunc(run.Tasks, func(t crew.TaskState) bool { return t.ID == subject.Task })
 	if i < 0 {

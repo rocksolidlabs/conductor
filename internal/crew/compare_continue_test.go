@@ -30,7 +30,7 @@ func TestAComparisonsContinuationRepairsOnlyTheSelected(t *testing.T) {
 	stopRun(t, e, runID)
 	commit := done.Result.Commit
 
-	const repaired = "a comparison's candidate is repaired once it is selected"
+	const repaired = "a trial's candidate is repaired once it is selected"
 	refused := func(what string, err error, words string) {
 		t.Helper()
 		if !errors.Is(err, ErrNotSelected) || errors.Is(err, ErrTaskState) || err.Error() != words {
@@ -46,7 +46,7 @@ func TestAComparisonsContinuationRepairsOnlyTheSelected(t *testing.T) {
 	ctx := context.Background()
 	e.beforeCompareRule = func(r *run) { r.task("approach-a").imported = "" }
 	_, err := e.ContinueRun(ctx, runID, "")
-	refused("a succeeded candidate left unimported", err, "approach-a's result, attempt 1, is not in the ledger: a comparison's candidate goes on only with its result; launch a new comparison")
+	refused("a succeeded candidate left unimported", err, "approach-a's result, attempt 1, is not in the ledger: a trial's candidate goes on only with its result; run a new trial")
 	e.beforeCompareRule = func(r *run) { r.task("approach-b").repair = &repair{summary: "make it faster", commit: commit} }
 	_, err = e.ContinueRun(ctx, runID, "")
 	refused("a candidate given a repair", err, repaired)
@@ -156,7 +156,7 @@ func TestAComparisonsChainIsBounded(t *testing.T) {
 				stopRun(t, e, next.ID)
 				return
 			}
-			want := fmt.Sprintf("this comparison has been continued %d times: launch a new comparison", maxCompareChain-1)
+			want := fmt.Sprintf("this trial has been continued %d times: run a new trial", maxCompareChain-1)
 			if !errors.Is(err, ErrChainTooLong) || err.Error() != want {
 				t.Fatalf("a chain of %d runs: %v, want %q", tc.before+1, err, want)
 			}
@@ -205,7 +205,7 @@ func TestAComparisonsChainOf256IsReadWhole(t *testing.T) {
 	}
 	last := ids[len(ids)-1]
 	_, err = e.ContinueRun(ctx, last, "")
-	if want := fmt.Sprintf("this comparison has been continued %d times: launch a new comparison", maxCompareChain-1); !errors.Is(err, ErrChainTooLong) || err.Error() != want {
+	if want := fmt.Sprintf("this trial has been continued %d times: run a new trial", maxCompareChain-1); !errors.Is(err, ErrChainTooLong) || err.Error() != want {
 		t.Fatalf("the continuation of the 256th run: %v", err)
 	}
 	if rows, err := ld.Runs(ctx); err != nil || len(rows) != maxCompareChain {

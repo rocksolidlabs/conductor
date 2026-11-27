@@ -115,7 +115,7 @@ type planCrew struct {
 func (c planCrew) launchCount(n, candidates int) error {
 	if c.Compare == nil {
 		if candidates != 0 {
-			return refuse(RefusalInvalid, "candidates is sent with the launch of a comparison: revision %d starts none", n)
+			return refuse(RefusalInvalid, "candidates is sent with the launch of a trial: revision %d starts none", n)
 		}
 		return nil
 	}

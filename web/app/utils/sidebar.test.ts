@@ -124,6 +124,11 @@ describe('the sidebars share', () => {
     expect(sessionOpen('/runs/a', 'a')).toBe(false)
     expect(runOpen('/runs/r1', 'r1')).toBe(true)
     expect(runOpen('/sessions/r1', 'r1')).toBe(false)
+    // A crew's member open in its place inside its crew (UX3 R72): its row is the page, the run's header row is not.
+    expect(sessionOpen('/runs/r1', 'a', { session: 'a' })).toBe(true)
+    expect(sessionOpen('/runs/r1', 'b', { session: 'a' })).toBe(false)
+    expect(runOpen('/runs/r1', 'r1', { session: 'a' })).toBe(false)
+    expect(runOpen('/runs/r1', 'r1', { view: 'graph' })).toBe(true)
   })
 
   it('shows the amber needs-you dot as the Events page routes needs_input to the Badge', () => {

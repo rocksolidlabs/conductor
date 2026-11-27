@@ -2,6 +2,8 @@
 import type { HostsDecisions, HostsSessions } from '~/utils/protocol'
 import { hostDecisionWords, moreWords, platformWords, sessionWords, waitingLink, hostWaitingWords, whereWords, type CardSession } from '~/utils/hosts'
 import { statusOfKey, type StatusView } from '~/utils/status'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 /**
  * A machine on the Hosts page (docs/plans/hosts.md, PR-3): its name, its platform in words, its version and user, its availability as
@@ -100,7 +102,7 @@ const decidedTo = computed(() => (props.readOnly ? undefined : waitingLink(props
         <p v-if="where.length" class="mt-1 text-xs text-muted" data-host-where>{{ whereWords(where) }}</p>
         <ul v-if="sessionList.length" class="mt-2 flex flex-col gap-0.5" data-host-session-list>
           <li v-for="s in sessionList" :key="s.id" class="min-w-0">
-            <ULink :to="`/sessions/${encodeURIComponent(s.id)}`" class="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-elevated pointer-coarse:min-h-11" :data-host-session="s.id">
+            <ULink :to="placeOf(s.id)" class="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-elevated pointer-coarse:min-h-11" :data-host-session="s.id">
               <StatusMark v-if="s.status" :status="s.status" />
               <span v-if="s.known" class="min-w-0 truncate" :title="s.name">{{ s.name }}</span>
               <span v-else class="min-w-0 truncate font-mono text-xs" data-mono="id" :title="s.id">{{ s.id }}</span>

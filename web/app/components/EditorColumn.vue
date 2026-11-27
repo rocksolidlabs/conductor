@@ -181,8 +181,10 @@ export interface EditorColumnHandle {
   setKeymap: (k: Keymap) => void
   save: () => void
   askAgent: () => void
+  /** A Neovim holds changes not written, which a move off the page would lose (UX3 R72). */
+  holdsUnsaved: () => boolean
 }
-const area = useTemplateRef<{ requestClose: (id: string) => void; closeScope: (id: string, scope: CloseScope) => void; palette: EditorPaletteState; setKeymap: (k: Keymap) => void; save: () => void; askAgent: () => void }>('area')
+const area = useTemplateRef<{ requestClose: (id: string) => void; closeScope: (id: string, scope: CloseScope) => void; palette: EditorPaletteState; setKeymap: (k: Keymap) => void; save: () => void; askAgent: () => void; holdsUnsaved: () => boolean }>('area')
 const palette = computed<EditorPaletteState | null>(() => area.value?.palette ?? null)
 defineExpose({
   requestClose: (id: string) => area.value?.requestClose(id),
@@ -191,6 +193,7 @@ defineExpose({
   setKeymap: (k: Keymap) => area.value?.setKeymap(k),
   save: () => area.value?.save(),
   askAgent: () => area.value?.askAgent(),
+  holdsUnsaved: () => area.value?.holdsUnsaved() ?? false,
 })
 </script>
 

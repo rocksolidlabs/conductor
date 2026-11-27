@@ -68,7 +68,7 @@ describe("the agent's box", () => {
     expect(src).toContain("return a.choices ? 'Pick an answer above, or type your own' : `Answer ${who.value}…`")
     // The chat hands the answer to its page, which answers through answerQuestion; the card in Chat draws no field of its own.
     expect(view).toContain(`@answer="(text, question, taken) => emit('reply', text, question, taken)"`)
-    const page = readFileSync(new URL('../pages/sessions/[id].vue', import.meta.url), 'utf8')
+    const page = readFileSync(new URL('./SessionView.vue', import.meta.url), 'utf8') // the session's whole view (UX3 R72)
     expect(page).toMatch(/:asked="chatAsked"\s*@reply="reply"/)
     expect(page).toContain('answers pastes :field="false"')
     const bar = readFileSync(new URL('./QuickReplyBar.vue', import.meta.url), 'utf8')

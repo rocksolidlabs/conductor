@@ -12,13 +12,14 @@ import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { RUN_LAYOUTS, RUN_LAYOUT_LOOK, type RunLayout, type RunWallTile } from '~/utils/wall'
-import { choiceFor, choose, crewOfRun, largeOf, readRunTiles, takeLast, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
+import { choiceFor, choose, crewOfRun, crewsForDoc, largeOf, readRunTiles, takeKept, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 import { previewPath } from '~/utils/capture'
 import type { BrakemanRequest } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
+import { carriedQuery, memberOfRun, readSaidFor, sessionPlace } from '~/utils/memberStrip'
 import { RUN_SHORTCUTS } from '~/composables/useShortcuts'
 
 // The run page: a tile for every member of one run, its activity and a
@@ -116,6 +117,41 @@ watch(
   { immediate: true },
 )
 const reviewTicket = computed(() => run.value?.ticket?.key || runTicket.value?.key || chainTicket.value)
+
+// A member opens in the run's place (UX3 R72; docs/design/system.md, "A run's member opens inside its run"): `?session=<id>` draws
+// its whole view (SessionView) where the run's views are, with its crew's strip at its top; the run's own views, tiles and message bar
+// are not mounted meanwhile, so the member has one view and one connection from this page. Only a session of this run is drawn here:
+// another goes to its own address, by replace, before anything of it is drawn.
+const openId = computed(() => (typeof route.query.session === 'string' ? route.query.session : ''))
+/** Where a session asked for here goes instead: its own page, unless it is a member of this run (a Brakeman turn never is). */
+function notThisRun(s: Pick<SessionInfo, 'id' | 'crew'>): string | undefined {
+  return memberOfRun(s, runId.value) ? undefined : ownPage(s.id)
+}
+/** A session's own page, what its address carried with it: where one that is not this run's, or cannot be read, is drawn. */
+function ownPage(id: string): string {
+  return `/sessions/${encodeURIComponent(id)}${carriedQuery(route.query)}`
+}
+// The live list's word on the session asked for, kept: while it sends the session away, nothing of it mounts here, its header and
+// keys included. An address a read moved the page to (readSaidFor) waits for its own read instead.
+const leaving = ref('')
+watch(
+  openId,
+  (sid) => {
+    const known = sid && !readSaidFor(window.history.state, sid) ? live.sessions.value.find((s) => s.id === sid) : undefined
+    leaving.value = (known && notThisRun(known)) || ''
+    if (leaving.value) void navigateTo(leaving.value, { replace: true })
+  },
+  { immediate: true },
+)
+/**
+ * Every way to a member's session: in this page's place when the live list holds it as this run's, its address naming the member alone
+ * (the run's own `decision`, `task` and the rest come back through history), else its own page, which lands a member in its crew.
+ */
+function openSession(id: string) {
+  const s = live.sessions.value.find((x) => x.id === id)
+  if (s && memberOfRun(s, runId.value)) void router.push({ path: route.path, query: { session: id } })
+  else void router.push(`/sessions/${encodeURIComponent(id)}`)
+}
 
 /** An action (add, start, stop) answered with the run as it is now. */
 function changed(r: RunInfo) {
@@ -247,16 +283,16 @@ const tilesChoice = computed(() => choiceFor(tilesRecord.value, crew.value))
 function chooseTiles(change: Partial<RunTilesChoice>) {
   tilesRecord.value = choose(tilesRecord.value, crew.value, change)
   writeRunTiles(pageStorage(), tilesRecord.value)
-  // The last choice is the layout document's too (R88): the desktop app's server starts on a fresh address, whose page storage is
-  // empty, and the server's copy brings the choice back.
-  const last = tilesRecord.value.last
-  ui.setLayout({ runTiles: { layout: last.layout, activity: last.activity } })
+  // The record is the layout document's too (R88, R73): the desktop app's server starts on a fresh address, whose page storage is
+  // empty, and the server's copy brings the choices back; another machine's arrive the same way.
+  const { last, crews } = tilesRecord.value
+  ui.setLayout({ runTiles: { layout: last.layout, activity: last.activity, crews: crewsForDoc(crews) } })
 }
-// The server's copy, taken up when it arrives: a crew with a choice of its own keeps it.
+// The server's copy, taken up when it arrives.
 watch(
   () => ui.layout.value.runTiles,
   (kept) => {
-    const next = takeLast(tilesRecord.value, kept)
+    const next = takeKept(tilesRecord.value, kept)
     if (next !== tilesRecord.value) {
       tilesRecord.value = next
       writeRunTiles(pageStorage(), next)
@@ -309,7 +345,7 @@ watch(
 /** A task opened from the graph: its attempt's session when it has one, else the task in the Tasks view. */
 function openTask(id: string) {
   const t = run.value?.tasks?.find((x) => x.id === id)
-  if (t?.attempt?.sessionId) router.push(`/sessions/${t.attempt.sessionId}`)
+  if (t?.attempt?.sessionId) openSession(t.attempt.sessionId)
   else selectTask(id, true)
 }
 const taskCommands = useTaskCommands(() => runId.value)
@@ -379,7 +415,7 @@ const selectedMember = ref('')
 /** A node opened (Enter, a double click, Open): the member's session page, as a tile's select does. */
 function openMember(name: string) {
   const t = tiles.value.find((x) => x.name === name)
-  if (t?.session) router.push(`/sessions/${t.session.id}`)
+  if (t?.session) openSession(t.session.id)
 }
 
 function transportFor(s: SessionInfo) {
@@ -448,7 +484,7 @@ palette.registerPage(() => {
   const taskRows: PaletteItem[] = (r.tasks ?? []).map((t) => {
     const a = taskActions(t, r)
     const actions: Action[] = []
-    if (a.open) actions.push({ id: 'open-attempt', kind: 'page', target: t.id, label: "Open the attempt's session", icon: 'i-lucide-terminal', run: () => router.push(`/sessions/${t.attempt!.sessionId}`) })
+    if (a.open) actions.push({ id: 'open-attempt', kind: 'page', target: t.id, label: "Open the attempt's session", icon: 'i-lucide-terminal', run: () => openSession(t.attempt!.sessionId!) })
     // The attempt's preview (EN1): in a new tab (at the label's admin URL when it names its tree's secret), or framed on the preview
     // page, Open in Conductor, where it is captured.
     const preview = a.preview
@@ -512,10 +548,10 @@ palette.registerPage(() => {
         run: () => {
           if (s && !ended) openMember(t.name)
           else if (offer === 'start') void startMember(t.name)
-          else if (offer === 'resume') void api.resumeRunMember(runId.value, t.name).then((res) => router.push(`/sessions/${res.session.id}`)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
+          else if (offer === 'resume') void api.resumeRunMember(runId.value, t.name).then((res) => openSession(res.session.id)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
           else if (s) openMember(t.name)
         },
-        href: s ? `/sessions/${s.id}` : undefined,
+        href: s ? sessionPlace(s, s.id) : undefined,
       }
     })
   const rows: PaletteItem[] = [
@@ -585,7 +621,9 @@ palette.registerPage(() => {
 </script>
 
 <template>
-  <UDashboardPanel id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
+  <!-- A member open in the run's place (UX3 R72): its whole view, keyed by its session, so one view and one connection at a time. -->
+  <SessionView v-if="openId && !leaving" :key="openId" :session-id="openId" :leave="notThisRun" :stray-to="ownPage" />
+  <UDashboardPanel v-else-if="!openId" id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
       <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :ticket="runTicket" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
     </template>
@@ -661,7 +699,7 @@ palette.registerPage(() => {
         </div>
         <!-- The tasks, with Brakeman on this run beside them; on a narrow window the panel wraps under the tasks. -->
         <div v-else-if="shownView === 'tasks' && run" class="flex min-h-0 flex-1 flex-wrap content-start items-start gap-3 overflow-y-auto p-3" data-run-tasks-view>
-          <RunTasks class="min-w-0 [flex:3_1_40rem]" :run="run" :ticket="reviewTicket" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" :answers="brakemanAbout.byTask.value" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" @asked="brakemanAsked" />
+          <RunTasks class="min-w-0 [flex:3_1_40rem]" :run="run" :ticket="reviewTicket" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" :answers="brakemanAbout.byTask.value" @select="selectTask($event, true)" @open="openSession($event)" @asked="brakemanAsked" />
           <BrakemanSubjectPanel class="[flex:1_1_300px]" :subject="`run:${run.id}`" :label="runTitle(run)" :chips="brakemanChips" :about="brakemanAbout" @asked="brakemanAsked" />
         </div>
         <div v-else-if="shownView === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
@@ -689,7 +727,7 @@ palette.registerPage(() => {
           @resize="(axis, shares) => chooseTiles(withShares(tilesChoice, tilesLayout, axis, shares))"
           @show-large="chooseTiles({ large: $event })"
           @decision="decisionModal.open($event)"
-          @open="router.push(`/sessions/${$event}`)"
+          @open="openSession($event)"
           @start="startMember"
         />
         <div class="flex-none px-3 pb-3">

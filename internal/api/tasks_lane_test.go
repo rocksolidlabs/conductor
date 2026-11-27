@@ -22,7 +22,7 @@ func TestALaneRefusalIsAnswered409Lane(t *testing.T) {
 		status int
 		code   string
 	}{
-		{fmt.Errorf("%w: cand-b is in another lane of this comparison: a message stays in its lane", crew.ErrLane), http.StatusConflict, "lane"},
+		{fmt.Errorf("%w: cand-b is in another lane of this trial: a message stays in its lane", crew.ErrLane), http.StatusConflict, "lane"},
 		{crew.ErrNotListed, http.StatusConflict, "task_state"},
 		{&crew.NotSelectedError{Words: "approach-a was not selected in dr-9: run a new trial to try it again"}, http.StatusConflict, "not_selected"},
 	} {

@@ -8,6 +8,8 @@ import { relativeTime } from '~/utils/sessions'
 import { runItems, runStatusLine, summaryStatusLine } from '~/utils/status'
 import { taskBadges } from '~/utils/tasks'
 import { comparisonLink, runCompare } from '~/utils/compare'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 /**
  * One run of a ticket's Runs (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11): its name, linked to its page, its
@@ -84,7 +86,7 @@ const selected = ref('')
         <li v-for="q in questions.waiting" :key="q.sessionId" class="flex min-w-0 flex-wrap items-center gap-2 text-xs" :data-run-question="q.member">
           <span class="flex-none font-medium">{{ q.member }}</span>
           <span class="min-w-0 flex-1 break-words text-default" data-run-question-message>{{ q.message || 'waits on a prompt' }}</span>
-          <UButton label="Open" icon="i-lucide-square-arrow-out-up-right" size="xs" color="warning" variant="soft" :to="`/sessions/${encodeURIComponent(q.sessionId)}`" data-run-question-open />
+          <UButton label="Open" icon="i-lucide-square-arrow-out-up-right" size="xs" color="warning" variant="soft" :to="placeOf(q.sessionId)" data-run-question-open />
         </li>
       </ul>
       <p v-else class="text-xs text-muted">As recorded: the server holds none of its members' sessions now.</p>
@@ -97,7 +99,7 @@ const selected = ref('')
       </li>
     </ul>
 
-    <RunTasks v-if="run" :run="run" :selected="selected" :now="now" @select="(id: string) => (selected = id)" @open="(id: string) => router.push(`/sessions/${id}`)" />
+    <RunTasks v-if="run" :run="run" :selected="selected" :now="now" @select="(id: string) => (selected = id)" @open="(id: string) => router.push(placeOf(id))" />
     <DispatchCandidates v-if="managed" :run-id="runId" :revision="liveRun?.managed?.revision" :compare="!!(runCompare(run) || runCompare(summary))" :continues="run?.resumedFrom || summary?.resumedFrom" />
   </div>
 </template>

@@ -254,6 +254,8 @@ describe("the phone's paths", () => {
     expect(notificationTarget(390, 'sess1', 'q1')).toBe(`/decisions?item=${encodeURIComponent('question:sess1/q1')}`)
     expect(notificationTarget(1440, 'sess1', 'q1')).toBe('/sessions/sess1')
     expect(notificationTarget(390, 'sess1')).toBe('/sessions/sess1')
+    // A crew's member's notification opens its place inside its crew (UX3 R72).
+    expect(notificationTarget(1440, 'sess1', 'q1', '/runs/r1?session=sess1')).toBe('/runs/r1?session=sess1')
   })
   it('counts every open item for the bar, none before the first read', () => {
     expect(barCount({ total: 212 })).toBe(212)

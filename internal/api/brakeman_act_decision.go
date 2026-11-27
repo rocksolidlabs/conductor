@@ -327,7 +327,7 @@ func (s *Server) admitVisibleRoute(ctx context.Context, o *observer, n int64, di
 		return "", newAPIError(http.StatusBadRequest, crew.CodeInvalid, "Brakeman routes a decision to the operator or a person of its run's crew, never to a grant")
 	case rec.Origin == ledger.OriginCompare:
 		// A comparison's selection is the operator's, never routed.
-		return "", newAPIError(http.StatusConflict, "stale_target", fmt.Sprintf("%s is a comparison's selection: the operator answers it, and it is routed nowhere", did))
+		return "", newAPIError(http.StatusConflict, "stale_target", fmt.Sprintf("%s is a trial's selection: the operator answers it, and it is routed nowhere", did))
 	case crew.GivenToGrant(rec.Request):
 		// Neither given nor taken back by a turn: the operator's alone.
 		return "", newAPIError(http.StatusConflict, "stale_target", fmt.Sprintf("%s is given to the decide grant: the operator may route it", did))

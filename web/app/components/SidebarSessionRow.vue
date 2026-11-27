@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sessionPlace } from '~/utils/memberStrip'
 import type { ReplyTaken } from '~/utils/reply'
 import { agentInitials, sessionMeta } from '~/utils/sessions'
 import { exitLine as exitLineOf, rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
@@ -37,7 +38,7 @@ const router = useRouter()
 
 const s = computed(() => props.row.session)
 const status = computed(() => sessionStatus(s.value, props.now))
-const current = computed(() => sessionOpen(route.path, s.value.id))
+const current = computed(() => sessionOpen(route.path, s.value.id, route.query))
 const meta = computed(() => rowMeta(s.value, props.member, props.now))
 /** The meta line after the machine (which carries the laptop), the parts joined by middle dots as text, so it reads and copies as one line. */
 const metaText = computed(() => (props.row.machine ? meta.value.slice(1).map((p) => ` · ${p}`).join('') : meta.value.join(' · ')))
@@ -69,7 +70,7 @@ const menu = computed(() =>
   rowMenuItems({ ...target.value, pinned: pinned.value }, {
     pin: () => ui.setPins(pinSession(ui.pins.value, s.value)),
     unpin: () => ui.setPins(unpinSession(ui.pins.value, s.value.id)),
-    open: () => router.push(`/sessions/${s.value.id}`),
+    open: () => router.push(sessionPlace(s.value, s.value.id)),
     openRun: () => emit('openRun', props.row),
     share: () => emit('share', props.row),
     yard: () => emit('yard', props.row),
@@ -104,7 +105,7 @@ function confirmStop() {
     >
       <div class="flex items-center gap-1">
       <NuxtLink
-        :to="`/sessions/${s.id}`"
+        :to="sessionPlace(s, s.id)"
         class="flex min-w-0 flex-1 flex-col gap-0.5 rounded-md px-2.5 py-1.5 transition-colors"
         :class="!current && 'hover:bg-canvas-hover'"
         :aria-current="current ? 'page' : undefined"

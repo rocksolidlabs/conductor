@@ -165,7 +165,7 @@ func (e *Engine) send(ctx context.Context, r *run, from *member, to, text string
 		return Message{}, fmt.Errorf("%w: a message to oneself", ErrBadMessage)
 	case r.laneOf(from) != r.laneOf(toM):
 		e.mu.Unlock()
-		return Message{}, fmt.Errorf("%w: %s is in another lane of this comparison: a message stays in its lane", ErrLane, to)
+		return Message{}, fmt.Errorf("%w: %s is in another lane of this trial: a message stays in its lane", ErrLane, to)
 	case r.stoppedAt != nil:
 		e.mu.Unlock()
 		return Message{}, ErrRunStopped

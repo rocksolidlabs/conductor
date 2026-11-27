@@ -580,7 +580,7 @@ func TestTicketCommentIsRefusedToALane(t *testing.T) {
 		for _, tok := range []string{s.tok, adminToken} {
 			op := opID()
 			out := ce.expectAs(t, tok, "POST", "/api/sessions/"+s.sid+"/ticket/comments", map[string]any{"opId": op, "body": "mine is better"}, http.StatusConflict, "lane")
-			if msg := apiMessage(out); msg != "a candidate of a comparison does not comment on its ticket before the selection: say it in your result's summary" {
+			if msg := apiMessage(out); msg != "a candidate of a trial does not comment on its ticket before the selection: say it in your result's summary" {
 				t.Fatalf("the refusal: %q", msg)
 			}
 			if _, found, err := ce.srv.dispatch.Receipt(context.Background(), s.actor, op); err != nil || found {
