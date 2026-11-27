@@ -181,11 +181,11 @@ test('a model and arguments set inside More options are named on its closed row,
 })
 
 for (const size of [DAILY, { width: 1440, height: 810 }]) {
-  test(`at ${size.width} x ${size.height} the usage is in view under the account with More options closed, and Launch with it`, async ({ browser }) => {
+  test(`at ${size.width} x ${size.height} the usage is in view beside the account with More options closed, and Launch with it`, async ({ browser }) => {
     const page = await dayPage(browser, { server: own.started, ...size })
     const dialog = await openOnPrompted(page)
     await expect(dialog.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'false')
-    const usage = dialog.locator('[data-capacity-panel] [data-capacity-line]')
+    const usage = dialog.locator('[data-launch-usage]')
     await expect(usage).toBeInViewport()
     await expect(dialog.locator('[data-launch-account]')).toBeInViewport()
     await expect(dialog.getByRole('button', { name: 'Launch', exact: true })).toBeInViewport()
@@ -333,7 +333,7 @@ for (const size of [DAILY, { width: 1440, height: 810 }]) {
     const page = await dayPage(browser, { server: own.started, ...size })
     const dialog = await openOnPrompted(page)
     await expect(dialog.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'false')
-    await expect(dialog.locator('[data-capacity-panel] [data-capacity-line]')).toBeVisible()
+    await expect(dialog.locator('[data-launch-usage]')).toBeVisible()
     const body = dialog.locator('[data-slot="body"]')
     const overflow = await body.evaluate((el) => el.scrollHeight - el.clientHeight)
     expect(overflow, "the closed dialog's body does not scroll").toBeLessThanOrEqual(0.5)
