@@ -29,6 +29,13 @@ for (const size of SIZES) {
     try {
       await expect(page.locator('[data-inspector]')).toBeVisible({ timeout: MEASURE_WAIT_MS })
       await showView(page, 'people')
+      // With the people's chat on, People's head folds the roster, share links among it: opened by its head, until it shows.
+      const head = page.locator('[data-inspector] [data-inspector-head="people"]')
+      await expect(head).toBeVisible({ timeout: MEASURE_WAIT_MS })
+      await expect(async () => {
+        if ((await head.getAttribute('aria-expanded')) === 'false') await head.click()
+        await expect(page.locator('[data-people-roster]')).toBeVisible({ timeout: 1000 })
+      }).toPass({ timeout: MEASURE_WAIT_MS })
       const empty = page.locator('[data-share-links-empty]')
       await expect(empty).toHaveText('No share links yet. A link lets someone watch this session from anywhere, or take control of it, until it expires or you revoke it.')
       await expect(empty).not.toContainText('browser')
