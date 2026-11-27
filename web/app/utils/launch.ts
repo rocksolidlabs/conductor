@@ -135,3 +135,36 @@ export function noFirstMessageLine(offered: Array<{ name: string; firstMessage?:
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
   return `${why}: ${list} here.`
 }
+
+/**
+ * The line beside Launch agent's More options while it is closed: what is set inside it, so that nothing folded away goes unseen. A
+ * typed name in quotes, the model, the extra arguments as typed, each trimmed, joined with " · "; "" when all is as it comes.
+ * The caller passes only what the picked agent takes (no arguments for an agent that takes none, no model where Model is not shown).
+ */
+export function optionsSummary(o: { name?: string; model?: string; args?: string }): string {
+  const name = o.name?.trim() ?? ''
+  return [name ? `"${name}"` : '', o.model?.trim() ?? '', o.args?.trim() ?? ''].filter(Boolean).join(' · ')
+}
+
+/** The parts of a key press the Launch dialog reads to launch (a KeyboardEvent's). */
+export interface LaunchKey {
+  key: string
+  shiftKey: boolean
+  ctrlKey: boolean
+  metaKey: boolean
+  altKey: boolean
+  isComposing: boolean
+  repeat: boolean
+  keyCode?: number
+}
+
+/**
+ * Whether a key press in the Launch dialog launches: Ctrl or Cmd+Enter from any field, and Enter alone in the task box (`inTask`).
+ * Never Shift+Enter in the task box (a new line), never while an input method is composing (its Enter takes the word), never a key
+ * held down (a repeat), never with Alt. The dialog also sends nothing while a launch is out.
+ */
+export function launchKey(e: LaunchKey, inTask: boolean): boolean {
+  if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229 || e.repeat || e.altKey) return false
+  if (e.ctrlKey || e.metaKey) return true
+  return inTask && !e.shiftKey
+}
