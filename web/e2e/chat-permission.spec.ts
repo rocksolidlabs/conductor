@@ -54,6 +54,8 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
     await expect(q.locator('[data-permission-whole][data-permission-short]')).toContainText('echo allowed')
     await expect(q.locator('[data-permission-line]')).toHaveCount(0)
     await expect(q.locator('[data-permission-hidden]')).toHaveCount(0)
+    // The reason goes with a deny alone, and its field says so.
+    await expect(q.locator('[data-permission-message]')).toHaveAttribute('placeholder', 'Why you deny, for the agent (optional)')
     // No bar repeats the question under the chat that shows it, and the sidebar's row says where it is answered, with no field.
     await expect(page.locator('[data-quick-reply]')).toHaveCount(0)
     const row = page.locator(`#dashboard-sidebar-main [data-sidebar-row="s:${s.id}"]`).first()

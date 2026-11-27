@@ -237,7 +237,7 @@ async function send(choice: 'allow_once' | 'deny') {
 
     <template v-if="open">
       <template v-if="canAnswer">
-        <UInput v-model="message" size="sm" placeholder="Why, for the agent (optional)" aria-label="What the agent is told with a deny" class="w-full" data-permission-message />
+        <UInput v-model="message" size="sm" placeholder="Why you deny, for the agent (optional)" aria-label="What the agent is told with a deny" class="w-full" data-permission-message />
         <p v-if="tooLong" class="text-xs text-muted" data-permission-message-long>The message to the agent is too long: it takes at most 500 bytes.</p>
         <div class="flex flex-wrap items-center gap-2" data-permission-buttons>
           <!-- Waiting, Allow once has the neutral look of a control that cannot be pressed, never the action's colour dimmed. -->
