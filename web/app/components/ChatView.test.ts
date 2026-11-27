@@ -94,7 +94,7 @@ describe('the chat', () => {
 
   it("noBarBesideTheQuestion: where the chat shows a permission question, no reply bar repeats it", () => {
     const pages = (p: string) => readFileSync(new URL(`../pages/${p}`, import.meta.url), 'utf8')
-    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!askInChat && !(way === 'protocol' && answersInChat(attention))"`)
+    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-else-if="!askInChat && !(way === 'protocol' && answersInChat(attention))"`)
     expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!answersInChat(attention)"`)
     expect(pages('join/[token].vue')).toContain(`<QuickReplyBar v-if="!(joinWay === 'protocol' && answersInChat(attention))"`)
     expect(pages('yard.vue')).toContain(`<QuickReplyBar v-if="!(focused.way === 'protocol' && answersInChat(focused.attention))"`)
