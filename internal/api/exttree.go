@@ -247,7 +247,7 @@ func (s *Server) treeDenied(top string) func(path string) bool {
 	deny := session.DeniedByEach(list)
 	var roots []string
 	for _, r := range s.roots.list() {
-		if real, ok := r.resolve(); ok {
+		if real, _, ok := r.resolve(); ok {
 			roots = append(roots, real)
 		}
 	}

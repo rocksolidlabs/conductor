@@ -72,24 +72,52 @@ const (
 )
 
 // allowedRoot is one folder agents may use: its path as configured or as
-// added, and whether it was added while the server runs.
+// added, and the folder it was when it was allowed (as the server started,
+// or as it was added): where its links led then (real) and what that folder
+// is (id). A configured folder not there at the start has none, and is
+// taken wherever its path leads at each use.
 type allowedRoot struct {
-	path  string
-	added bool
+	path string
+	real string
+	id   os.FileInfo
 }
 
-// resolve is the root's path with its links resolved now. A root added
-// while the server runs was its own real path when it was added, and is
-// used only while it still is: a link put at its path later leads nowhere.
-func (r allowedRoot) resolve() (string, bool) {
+// pinRoot is the folder path is now, kept as the one allowed: a path that
+// is a link on purpose keeps the folder it leads to now.
+func pinRoot(path string) allowedRoot {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return allowedRoot{path: path}
+	}
+	fi, err := os.Stat(real)
+	if err != nil || !fi.IsDir() {
+		return allowedRoot{path: path}
+	}
+	return allowedRoot{path: path, real: real, id: fi}
+}
+
+// resolve is where the root's path leads now, and the folder to open there:
+// used only while it is still the folder it was when it was allowed, the
+// same place and the same folder. A link put at its path or above it later,
+// or another folder put in its place, leads nowhere. The folder returned is
+// the one allowed, so an open through it (session.OpenFolderIn) refuses a
+// folder swapped in after this look.
+func (r allowedRoot) resolve() (string, os.FileInfo, bool) {
 	real, err := filepath.EvalSymlinks(r.path)
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
-	if r.added && real != r.path {
-		return "", false
+	fi, err := os.Stat(real)
+	if err != nil || !fi.IsDir() {
+		return "", nil, false
 	}
-	return real, true
+	if r.id == nil {
+		return real, fi, true
+	}
+	if real != r.real || !os.SameFile(fi, r.id) {
+		return "", nil, false
+	}
+	return real, r.id, true
 }
 
 // rootList holds the allowed roots: a list never changed in place, behind an
@@ -109,12 +137,13 @@ type rootList struct {
 	beforeAdd func(path string)
 }
 
-// newRootList holds the configuration's allowed roots.
+// newRootList holds the configuration's allowed roots, each the folder it
+// is as the server starts (pinRoot).
 func newRootList(cfg *config.Config) *rootList {
 	l := &rootList{}
 	roots := make([]allowedRoot, 0, len(cfg.AllowedRoots))
 	for _, p := range cfg.AllowedRoots {
-		roots = append(roots, allowedRoot{path: p})
+		roots = append(roots, pinRoot(p))
 	}
 	l.store(roots)
 	return l
@@ -550,7 +579,7 @@ func (s *Server) allowRoot(path, confirmed string) (string, bool, *rootRefusal) 
 	if no := stillTheFolder(path, v.id); no != nil {
 		return "", false, no
 	}
-	l.with(allowedRoot{path: path, added: true})
+	l.with(allowedRoot{path: path, real: path, id: v.id})
 	s.log.Info("a folder agents may use was added", "folder", path, "wide", v.wide)
 	if s.cfg.OverlapsDataDir(path) {
 		s.log.Warn(config.DataDirOverlapWords, "dataDir", s.cfg.DataDir, "allowedRoot", path)

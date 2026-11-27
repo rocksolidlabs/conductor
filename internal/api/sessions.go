@@ -709,17 +709,13 @@ func openCwdIn(cwd string, roots []allowedRoot) (*session.Folder, error) {
 	var opened error // an open through a root that holds it, failed
 	launchHook("resolved")
 	for _, root := range roots {
-		rootReal, ok := root.resolve()
+		// The root as allowed: the folder is opened only through that one.
+		rootReal, want, ok := root.resolve()
 		if !ok {
 			continue
 		}
 		rel, err := filepath.Rel(rootReal, real)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
-		}
-		// The root as checked: the folder is opened only through that one.
-		want, err := os.Stat(rootReal)
-		if err != nil {
 			continue
 		}
 		launchHook("root")
@@ -781,7 +777,7 @@ func resolveCwdIn(cwd string, roots []allowedRoot) (string, error) {
 		return "", &cwdError{"working directory is not a directory", err}
 	}
 	for _, root := range roots {
-		rootReal, ok := root.resolve()
+		rootReal, _, ok := root.resolve()
 		if !ok {
 			continue
 		}

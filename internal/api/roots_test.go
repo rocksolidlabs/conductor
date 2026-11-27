@@ -22,7 +22,7 @@ import (
 func (l *rootList) addRoot(path string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.with(allowedRoot{path: path})
+	l.with(pinRoot(path))
 }
 
 // checkRoot asks GET /api/roots/check of path as the admin.
