@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { scopeItems } from '~/utils/chat'
-import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, type RecipientPick, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
+import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopRunPageQuestion, type Action } from '~/utils/actions'
 import { taskActions, taskWords } from '~/utils/tasks'
 import { attemptSession, markSection, sessionStatus, taskStatus } from '~/utils/status'
@@ -149,13 +149,13 @@ const tiles = computed<RunWallTile[]>(() => {
 
 
 // Who gets a line from the message bar (broadcastSelection): everyone who can get one while `All` is on (`pick` null), else the
-// members the person ticked in the bar. The pick outlasts every read of the run and every run event; another run starts afresh.
-const pick = ref<RecipientPick>(null)
+// members the person ticked in the bar. The pick outlasts every read of the run and every run event, and a trip to a member and
+// back: it is kept for each run for the tab's life (useRunRecipients), with the line begun.
+const { pick } = useRunRecipients(runId)
 const recipients = computed(() => tiles.value.map((t) => ({ name: t.name, state: recipientState(t.member, t.session) })))
 const selection = computed(() => broadcastSelection(recipients.value, pick.value))
 
 watch(runId, (_, before) => {
-  pick.value = null
   gone.value = false
   load()
   dispatch.gate.drop(`run-ticket:${before}`)
