@@ -83,7 +83,7 @@ export interface SessionInfo {
    * an older server). A chat's `cols` and `rows` are 0.
    */
   way?: 'protocol'
-  /** A chat's protocol, of the catalog's closed set (`claude-stream-json`), at most 32 bytes. */
+  /** A chat's protocol, of the catalog's closed set (`claude-stream-json`, `codex-app-server`), at most 32 bytes. */
   protocol?: string
   /** A chat's messages reach its agent as written: no `@path` is expanded, no `/command` run. */
   verbatim?: boolean

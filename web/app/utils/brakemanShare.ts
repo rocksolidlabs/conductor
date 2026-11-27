@@ -16,8 +16,8 @@ export const SHARE_WHAT =
 /** The dialog's words for a brief about no run whose crew lists people. */
 export const SHARE_NONE = "This brief names no run with a crew's people: it goes with no names."
 
-/** The dialog's words over the addressed text it draws when the browser refused the clipboard. */
-export const SHARE_UNCOPIED = 'The browser did not let the page copy: select the text below and copy it by hand.'
+/** The dialog's words over the addressed text it draws when the clipboard was refused. */
+export const SHARE_UNCOPIED = 'The page could not copy: select the text below and copy it by hand.'
 
 /** The dialog's words for a crew whose run was launched from no ticket: the comment's dialog then asks which ticket. */
 export const shareNoTicket = (crew: string) => `${crew}'s run was launched from no ticket: pick the ticket to comment on.`

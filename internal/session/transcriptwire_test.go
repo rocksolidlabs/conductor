@@ -94,8 +94,8 @@ func TestReplayAfterResumePoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.TurnStarted("")
-	f.Permission(PermissionRequest{Ref: "p-open", Call: "c-open", Tool: "Bash", Input: []byte(`{"command":"make"}`)})
-	f.Permission(PermissionRequest{Ref: "p-gone", Call: "c-gone", Tool: "Bash", Input: []byte(`{"command":"rm -rf build"}`)})
+	askInStream(f, "p-open", "c-open", "Bash", `{"command":"make"}`)
+	askInStream(f, "p-gone", "c-gone", "Bash", `{"command":"rm -rf build"}`)
 	f.ToolStarted(ToolStep{Ref: "c-run", Name: "Bash", Input: []byte(`{"command":"go test"}`)})
 	for i := range 30 {
 		f.Text(fmt.Sprintf("m%d", i), "words", true)

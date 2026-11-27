@@ -275,14 +275,17 @@ describe("the Setup's words (C8): plain labels over the values a crew stores", (
   })
 
   it("names the server's default with what it is now", () => {
-    expect(permissionItems(false)[0]!.label).toBe("The server's default (now ask)")
-    expect(permissionItems(true)[0]!.label).toBe("The server's default (now skip)")
+    expect(permissionItems(false)[0]!.label).toBe("The server's default (now off)")
+    expect(permissionItems(true)[0]!.label).toBe("The server's default (now on)")
+    expect(permissionItems(false).slice(1).map((i) => i.label)).toEqual(['Off: members ask before acting', 'On: members act without asking'])
+    expect(SETUP_WORDS.permissions).toBe('Yolo')
   })
 
   it('says beside More options what each folded choice is now', () => {
-    expect(moreOptionsLine({ openAfterLaunch: false }, false)).toBe("Stays on this page · Permission prompts: the server's default (ask) · No view link")
-    expect(moreOptionsLine({ openAfterLaunch: true, yolo: true, viewLinkTtlSeconds: 8 * 3600 }, false)).toBe('Opens the run · Permission prompts: skip · A view link for 8 h')
-    expect(moreOptionsLine({ openAfterLaunch: true, yolo: false, viewLinkTtlSeconds: 1800 }, true)).toBe('Opens the run · Permission prompts: ask · A view link for 0.5 h')
+    // Yolo is in view, not folded: the line says nothing of it.
+    expect(moreOptionsLine({ openAfterLaunch: false })).toBe('Stays on this page · No view link')
+    expect(moreOptionsLine({ openAfterLaunch: true, viewLinkTtlSeconds: 8 * 3600 })).toBe('Opens the run · A view link for 8 h')
+    expect(moreOptionsLine({ openAfterLaunch: true, viewLinkTtlSeconds: 1800 })).toBe('Opens the run · A view link for 0.5 h')
     expect(viewLinkHoursWords(undefined)).toBe('8 h')
   })
 })

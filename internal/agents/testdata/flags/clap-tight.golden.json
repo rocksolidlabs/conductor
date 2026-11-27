@@ -1,0 +1,112 @@
+[
+  {
+    "name": "--version",
+    "aliases": [
+      "-v"
+    ],
+    "value": "none",
+    "about": "Prints the version",
+    "set": "exit"
+  },
+  {
+    "name": "--model",
+    "value": "required",
+    "placeholder": "model",
+    "about": "The model to use (use 'auto' to let it pick)",
+    "kind": "model"
+  },
+  {
+    "name": "--reasoning-effort",
+    "value": "required",
+    "placeholder": "level",
+    "about": "How hard it thinks [possible values: low, medium, high]",
+    "choices": [
+      {
+        "value": "low"
+      },
+      {
+        "value": "medium"
+      },
+      {
+        "value": "high"
+      }
+    ],
+    "kind": "choice"
+  },
+  {
+    "name": "--resume",
+    "aliases": [
+      "-r"
+    ],
+    "value": "optional",
+    "placeholder": "value",
+    "about": "Goes on with a session (optionally named)"
+  },
+  {
+    "name": "--session-id",
+    "value": "required",
+    "placeholder": "id",
+    "about": "The session's id",
+    "set": "session"
+  },
+  {
+    "name": "--allow-tool",
+    "value": "optional",
+    "placeholder": "tools",
+    "repeat": true,
+    "about": "Tools that run without a question"
+  },
+  {
+    "name": "--allow-all-tools",
+    "value": "none",
+    "about": "Every tool runs without a question [env: HELPER_ALLOW_ALL=]",
+    "set": "yolo"
+  },
+  {
+    "name": "--allow-all-paths",
+    "value": "none",
+    "about": "Every path may be read and written",
+    "set": "yolo"
+  },
+  {
+    "name": "--allow-all-urls",
+    "value": "none",
+    "about": "Every address may be fetched",
+    "set": "yolo"
+  },
+  {
+    "name": "--allow-all",
+    "value": "none",
+    "about": "All of the three above",
+    "set": "yolo"
+  },
+  {
+    "name": "--yolo",
+    "value": "none",
+    "about": "All of the three above",
+    "set": "yolo"
+  },
+  {
+    "name": "-C",
+    "value": "required",
+    "placeholder": "directory",
+    "about": "Changes to the folder first",
+    "kind": "folder"
+  },
+  {
+    "name": "--add-dir",
+    "value": "required",
+    "placeholder": "directory",
+    "about": "Another folder it may use",
+    "kind": "folder"
+  },
+  {
+    "name": "--help",
+    "aliases": [
+      "-h"
+    ],
+    "value": "none",
+    "about": "Prints help",
+    "set": "exit"
+  }
+]
