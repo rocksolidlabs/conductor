@@ -669,6 +669,8 @@ describe("the agent's own commands (row 12)", () => {
       (m) => (m.commands[1]!.name = m.commands[0]!.name),
       (m) => m.commands[0]!.aliases!.push('c'),
       (m) => (m.commands[0]!.aliases![0] = 'a b'),
+      (m) => (m.commands[0]!.aliases![0] += 'x'),
+      (m) => ((m as unknown as { more: unknown }).more = 1),
       (m) => (m.commands[0]!.words += 'x'),
       (m) => (m.commands[0]!.hint += 'x'),
       (m) => (m.commands[0]!.words = 'one\ntwo'),
