@@ -58,6 +58,8 @@ const asking = ref<{ text: string; kind: NonNullable<FolderLine['wide']> } | nul
 const pressing = ref(false)
 /** The text a launch was tried with: a folder missing is said for it even with the focus back in the field. */
 const launchedWith = ref<string | null>(null)
+/** The text and the place in the order of the last check answered or failed: a press's answer holds only until one after it. */
+const lastAsked = ref<{ text: string; n: number } | null>(null)
 let seq = 0
 let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -72,9 +74,13 @@ async function checkNow(text: string): Promise<RootCheck | null> {
     const reply = await api.checkRoot(text, ctl.signal)
     if (n !== seq || text !== props.path) return null
     checked.value = { text, reply, n }
+    lastAsked.value = { text, n }
     return reply
   } catch {
-    if (n === seq && text === props.path) checked.value = null
+    if (n === seq && text === props.path) {
+      checked.value = null
+      lastAsked.value = { text, n }
+    }
     return null
   } finally {
     clearTimeout(t)
@@ -102,19 +108,41 @@ const current = computed(() => (checked.value && checked.value.text === props.pa
 const line = computed<FolderLine | null>(() => {
   if (props.off || !props.path) return null
   const p = pressed.value
-  if (p && p.text === props.path && !(checked.value && checked.value.text === props.path && checked.value.n > p.n)) return p.line
+  if (p && p.text === props.path && !(lastAsked.value && lastAsked.value.text === props.path && lastAsked.value.n > p.n)) return p.line
   const c = current.value
   if (!c) return null
   if (asking.value && asking.value.text === props.path) {
     return { state: 'wide', ...wideQuestion(asking.value.kind, pressTarget(c)), tone: 'warning', button: 'wide', wide: asking.value.kind, blocks: true }
   }
-  return checkLine(c, way.value, props.focused && launchedWith.value !== props.path, props.path)
+  return checkLine(c, way.value, (props.focused || fieldFocused.value) && launchedWith.value !== props.path, props.path)
 })
 
 /** Whether the folder as it stands may be launched in: false only for a line that blocks it. */
 const blocks = computed(() => !!line.value?.blocks)
 
 const root = useTemplateRef<HTMLElement>('root')
+
+// Whether the field beside the line has the cursor (the line sits in the field's own wrapper): a folder not there yet is not said
+// while it is typed, in every host.
+const fieldFocused = ref(false)
+function onFocusIn() {
+  fieldFocused.value = true
+}
+function onFocusOut(e: FocusEvent) {
+  const to = e.relatedTarget as Node | null
+  if (!to || !root.value?.parentElement?.contains(to)) fieldFocused.value = false
+}
+onMounted(() => {
+  const field = root.value?.parentElement
+  field?.addEventListener('focusin', onFocusIn)
+  field?.addEventListener('focusout', onFocusOut)
+  fieldFocused.value = !!field && field.contains(document.activeElement)
+})
+onBeforeUnmount(() => {
+  const field = root.value?.parentElement
+  field?.removeEventListener('focusin', onFocusIn)
+  field?.removeEventListener('focusout', onFocusOut)
+})
 
 /** The press: the folder the check named, asked of the app alone; confirmed names a wide folder's kind once its question is answered. */
 async function allow(confirmed = '') {
@@ -139,7 +167,7 @@ async function allow(confirmed = '') {
   }
   asking.value = null
   if (text !== props.path) return
-  const l = answerLine(a, c)
+  const l = answerLine(a, c, text)
   // After every ask before it: a check still on its way says nothing over the press's answer.
   pressed.value = { text, line: l, n: ++seq }
   if (a.ok) {

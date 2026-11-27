@@ -47,16 +47,24 @@ export function homeExpanded(text: string, home: string): string {
 /** The listing route's words for a prefix under none of the folders agents may use (internal/api/paths.go errNoAllowedDir). */
 const NO_ALLOWED_DIR = 'no directory in the prefix is under the allowed roots'
 
+/** At most this many of the folders agents may use are named in the picker's sentence; the rest are counted. */
+export const ROOTS_NAMED = 3
+
 /**
- * What the folder picker says of a listing refused: for a place outside the folders agents may use, those folders in plain words
- * (the route names them after its own words); any other refusal in the server's words.
+ * What the folder picker, or a folder list with no line under its field, says of a listing refused, in plain words: for a place
+ * outside the folders agents may use, those folders (the route names them after its own words; at most ROOTS_NAMED, the rest
+ * counted); for a server that did not answer, that; for anything else, that the place cannot be listed. Never the route's own text.
  */
 export function listingProblem(code: string, message: string): string {
   if (code === 'invalid_cwd' && message.startsWith(NO_ALLOWED_DIR)) {
     const roots = message.slice(NO_ALLOWED_DIR.length).replace(/^:\s*/, '').trim()
-    return roots ? `Agents can use only the folders inside ${roots}. Pick one there.` : "Agents can't use a folder here. Pick another."
+    if (!roots) return "Agents can't use a folder here. Pick another."
+    const all = roots.split(', ')
+    const named = all.length > ROOTS_NAMED ? `${all.slice(0, ROOTS_NAMED).join(', ')} and ${all.length - ROOTS_NAMED} more` : all.join(', ')
+    return `Agents can use only the folders inside ${named}. Pick one there.`
   }
-  return message
+  if (code === 'network') return 'Conductor did not answer. Type on to try again.'
+  return "This place can't be listed. Pick another."
 }
 
 /** The prefix sent for what is typed: the text trimmed; empty means the server's default directory. */

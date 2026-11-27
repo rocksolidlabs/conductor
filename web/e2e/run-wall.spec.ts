@@ -529,10 +529,10 @@ test("a number key on an asking tile's frame answers it; in its terminal the key
   await page.keyboard.press('2')
   await expect.poll(transcript, { timeout: 30_000, message: 'core got beta from the fresh press' }).toContain('beta')
   expect(transcript()).not.toContain('alpha')
-  // Enter on the frame still opens the member.
+  // Enter on the frame still opens the member: in the run's place (UX3 R72).
   await tile.focus()
   await page.keyboard.press('Enter')
-  await expect(page).toHaveURL(new RegExp(`/sessions/${id}`))
+  await expect(page).toHaveURL(new RegExp(`/runs/[^?]+\\?session=${id}$`))
 })
 
 // A question the tile cannot answer, and a member that ended (R20b).

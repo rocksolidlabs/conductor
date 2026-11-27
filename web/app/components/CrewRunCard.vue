@@ -4,6 +4,8 @@ import { memberAsk, memberLooks, runAside, runLook, runSubtitle, shortRunId, sta
 import { memberSession } from '~/utils/crews'
 import { runLive, runState } from '~/utils/runs'
 import { runItems } from '~/utils/status'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 /**
  * One live run on the Crews page, read without a legend (C5): named by its crew and its start, its state in the one vocabulary with
@@ -103,7 +105,7 @@ async function stop() {
         <UIcon name="i-lucide-hand" class="mt-0.5 size-3.5 flex-none text-warning" />
         <!-- The question whole (#187): wrapped over its lines, never cut (the server bounds it at 500 bytes). -->
         <span class="min-w-0 break-words" data-run-ask-words><b class="font-semibold">{{ a.name }}</b> asks “{{ a.question }}”</span>
-        <NuxtLink v-if="a.sessionId && !(a.line && answers.answerable(a.line))" :to="`/sessions/${encodeURIComponent(a.sessionId)}`" class="ml-auto flex-none font-medium text-highlighted hover:underline" data-run-ask-open>Answer</NuxtLink>
+        <NuxtLink v-if="a.sessionId && !(a.line && answers.answerable(a.line))" :to="placeOf(a.sessionId)" class="ml-auto flex-none font-medium text-highlighted hover:underline" data-run-ask-open>Answer</NuxtLink>
       </div>
       <RunAskChoices v-if="a.line && answers.answerable(a.line)" :line="a.line" :answer="answers.answer" class="pl-5.5" />
     </div>

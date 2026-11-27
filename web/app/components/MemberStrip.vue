@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { usePageAltCodes } from '~/composables/useShortcuts'
 import { runTitle } from '~/utils/crewWords'
-import { backTitle, BACK_TO_CREW, memberTabs, stripsRun } from '~/utils/memberStrip'
+import { backByHistory, backTitle, BACK_TO_CREW, memberTabs, stripsRun } from '~/utils/memberStrip'
 
 /**
- * A crew member's page carries its crew (UX3 R12): one strip above the session's header, at every width, with `Back to the crew`, the
- * run's title and a tab for each member, its state's mark beside its name, the open member's selected. A tab opens that member's page
- * in this one's place (replace), so one Back leaves the crew's members; a member with no session yet is drawn and cannot be pressed.
+ * A crew member's view carries its crew (UX3 R12): one strip above the session's header, at every width, with `Back to the crew`, the
+ * run's title and a tab for each member, its state's mark beside its name, the open member's selected. The member is open inside its
+ * crew (UX3 R72), at its run's page with `?session=`: a tab opens another member in its place (replace), so one Back leaves the crew's
+ * members, and `Back to the crew` shows the run's own page (backByHistory). A member with no session yet is drawn and cannot be pressed.
+ * A run the server no longer holds draws `Crews` in place of the way back, and no tabs.
  * More members than fit scroll inside the strip, the open one kept in view. Its room is taken as soon as the page knows the session is
  * a member, so that the terminal under it is fitted once; the title and the tabs fill in when the run is read.
  *
@@ -17,7 +19,8 @@ import { backTitle, BACK_TO_CREW, memberTabs, stripsRun } from '~/utils/memberSt
  * (usePageAltCodes, as the Yard does), so a page that is no member keeps Alt+Q for its terminal. Escape is not bound: in a terminal it
  * is the agent's own key. A run the server no longer holds, or a Brakeman turn's run, says `gone`, and the page draws no strip.
  */
-const props = defineProps<{ runId: string; sessionId: string; inline?: boolean }>()
+const props = defineProps<{ runId: string; sessionId: string; inline?: boolean; room?: number }>()
+// `room`: inline, the width the strip may take in the header's row (px): the session's name and meta yield before it does.
 const emit = defineEmits<{ gone: [] }>()
 
 const live = useAttention()
@@ -25,6 +28,8 @@ const router = useRouter()
 const overlaid = useOverlaid()
 const clock = useNow()
 const run = computed(() => live.runOf(props.runId))
+/** The run's read answered that the server no longer holds it. */
+const missing = ref(false)
 const to = computed(() => `/runs/${encodeURIComponent(props.runId)}`)
 const title = computed(() => (run.value ? runTitle(run.value) : ''))
 const tabs = computed(() => (run.value ? memberTabs(run.value, live.sessions.value, props.sessionId, clock.value) : []))
@@ -36,7 +41,7 @@ watch(
     if (live.runOf(id)) return
     void live.refreshRun(id).then(
       (r) => {
-        if (!r && props.runId === id) emit('gone')
+        if (!r && props.runId === id) missing.value = true
       },
       () => undefined,
     )
@@ -49,14 +54,33 @@ watch(run, (r) => r && !stripsRun(r) && emit('gone'), { immediate: true })
 // members are added, and when the strip's width changes (the window, the strip moving into the header's row).
 const list = useTemplateRef<HTMLElement>('list')
 const openName = computed(() => tabs.value.find((t) => t.selected)?.name ?? '')
-function keepInView() {
+/** The tabs run past an edge of the strip: that edge fades, so a cut tab says there are more. */
+const more = ref<{ left: boolean; right: boolean }>({ left: false, right: false })
+function measureMore() {
   const el = list.value
-  if (!el || !openName.value) return
-  const tab = el.querySelector<HTMLElement>(`[data-member-tab="${CSS.escape(openName.value)}"]`)
+  if (!el) return
+  const left = el.scrollLeft > 1
+  const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+  if (left !== more.value.left || right !== more.value.right) more.value = { left, right }
+}
+const fade = computed(() => {
+  const { left, right } = more.value
+  if (!left && !right) return undefined
+  const mask = `linear-gradient(to right, ${left ? 'transparent, black 1.5rem' : 'black'}, ${right ? 'black calc(100% - 1.5rem), transparent' : 'black'})`
+  return { maskImage: mask, WebkitMaskImage: mask }
+})
+function keepInView(given?: HTMLElement) {
+  measureMore()
+  const el = list.value
+  if (!el || (!given && !openName.value)) return
+  const tab = given ?? el.querySelector<HTMLElement>(`[data-member-tab="${CSS.escape(openName.value)}"]`)
   if (!tab) return
   const [l, t] = [el.getBoundingClientRect(), tab.getBoundingClientRect()]
-  if (t.left < l.left) el.scrollLeft -= l.left - t.left
-  else if (t.right > l.right) el.scrollLeft += t.right - l.right
+  // Clear of the edges' fade, so the open tab stays whole and readable.
+  const pad = 24
+  if (t.left < l.left + (el.scrollLeft > 0 ? pad : 0)) el.scrollLeft -= l.left - t.left + pad
+  else if (t.right > l.right - pad) el.scrollLeft += t.right - l.right + pad
+  measureMore()
 }
 watch([list, openName, () => tabs.value.length], () => void nextTick(keepInView), { immediate: true })
 watch(
@@ -70,8 +94,15 @@ watch(
   { immediate: true },
 )
 
+/** Back to the run's own page: the browser's Back when the person came from it, else a replace to it. */
+function backToCrew() {
+  if (backByHistory((window.history.state as { back?: unknown } | null)?.back, to.value)) router.back()
+  else void router.replace(to.value)
+}
+
 usePageAltCodes().register(['KeyQ'])
-defineShortcuts(computed(() => (overlaid.value ? {} : { alt_q: { usingInput: true, handler: () => void router.push(to.value) } })))
+// KeyQ is the page's while the strip is drawn, so Alt+Q always does what the strip's way back does: Crews while the run is missing.
+defineShortcuts(computed(() => (overlaid.value ? {} : { alt_q: { usingInput: true, handler: () => (missing.value ? void router.push('/crews') : backToCrew()) } })))
 
 const TAB = 'inline-flex flex-none items-center gap-1.5 rounded-md px-2 py-1 text-sm'
 </script>
@@ -79,21 +110,33 @@ const TAB = 'inline-flex flex-none items-center gap-1.5 rounded-md px-2 py-1 tex
 <template>
   <div
     class="flex min-w-0 items-center gap-2"
-    :class="inline ? 'max-w-[min(48rem,45%)] flex-none border-r border-default pr-3' : 'h-10 flex-none border-b border-default px-4 sm:px-6'"
+    :class="inline ? 'flex-none border-r border-default pr-3' : 'h-10 flex-none border-b border-default px-4 sm:px-6'"
+    :style="inline && room ? { maxWidth: `${room}px` } : undefined"
     data-member-strip
     :data-run="runId"
     :data-strip-inline="inline ? '' : undefined"
   >
-    <UTooltip :text="backTitle(run)" :kbds="['alt', 'Q']">
-      <UButton :to="to" icon="i-lucide-arrow-left" :label="BACK_TO_CREW" color="neutral" variant="ghost" size="xs" class="flex-none" data-back-to-crew />
+    <UButton v-if="missing" to="/crews" icon="i-lucide-arrow-left" label="Crews" color="neutral" variant="ghost" size="xs" class="flex-none" data-back-to-crews />
+    <UTooltip v-else :text="backTitle(run)" :kbds="['alt', 'Q']">
+      <UButton icon="i-lucide-arrow-left" :label="BACK_TO_CREW" color="neutral" variant="ghost" size="xs" class="flex-none" data-back-to-crew @click="backToCrew" />
     </UTooltip>
     <USeparator orientation="vertical" class="h-4 flex-none" />
     <span v-if="title" class="min-w-0 max-w-64 truncate text-sm font-semibold text-highlighted" :title="title" data-member-strip-title>{{ title }}</span>
-    <nav v-if="tabs.length" ref="list" class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]" aria-label="Members of the crew" data-member-tabs>
+    <nav
+      v-if="tabs.length"
+      ref="list"
+      class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
+      :style="fade"
+      aria-label="Members of the crew"
+      data-member-tabs
+      :data-tabs-more="more.left && more.right ? 'both' : more.left ? 'left' : more.right ? 'right' : undefined"
+      @scroll.passive="measureMore"
+      @focusin="(e: FocusEvent) => keepInView(((e.target as HTMLElement).closest('[data-member-tab]') as HTMLElement | null) ?? undefined)"
+    >
       <template v-for="t in tabs" :key="t.name">
         <NuxtLink
           v-if="t.sessionId"
-          :to="`/sessions/${encodeURIComponent(t.sessionId)}`"
+          :to="{ path: to, query: { session: t.sessionId } }"
           replace
           :class="[TAB, t.selected ? 'bg-elevated font-medium text-highlighted' : 'text-muted hover:bg-elevated/60 hover:text-default', 'focus-visible:outline-2 focus-visible:outline-primary']"
           :aria-current="t.selected ? 'page' : undefined"

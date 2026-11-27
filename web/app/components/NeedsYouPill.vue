@@ -22,6 +22,8 @@ const attention = useAttention()
 const quick = useQuickReply()
 const toast = useToast()
 const router = useRouter()
+// The pill opens its session's place; the member already open is the page's own address (UX3 R72).
+const placeOf = useSessionPlace()
 const route = useRoute()
 const root = useTemplateRef<HTMLElement>('root')
 
@@ -69,7 +71,7 @@ function open() {
   if (!s) return
   cursor.hide()
   // On the Yard the tile expands in place, where its bar takes a typed reply; elsewhere the session's page.
-  void router.push(pillTarget(route.path, s.id))
+  void router.push(pillTarget(route.path, s.id, placeOf(s.id, {}, s)))
 }
 function answer(i: number) {
   const s = session.value

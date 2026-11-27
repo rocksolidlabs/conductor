@@ -601,3 +601,30 @@ describe('BaseTransport chat (TRANSCRIPT)', () => {
     expect(noTurn.error).toMatchObject({ code: 'no_turn' })
   })
 })
+
+describe('BaseTransport.submitAcked, a line for the agent to expand (UX3 R10)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', globalThis)
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('submitCarriesExpandOnlyWhenAsked: the frame says expand only for a caller that asks, and never to an older owner', async () => {
+    const t = new TestTransport()
+    t.receive(encodeControl({ t: 'welcome', proto: 1, sessionId: 's', role: 'control', cols: 80, rows: 24, status: 'running', scrollbackBytes: 0, transport: 'ws', fileView: true, answer: true, submitAck: true }))
+    track(t.submitAcked('/compact', { expand: true }))
+    track(t.submitAcked('as written'))
+    track(t.submitAcked('as written too', { expand: false }))
+    const frames = t.sent.map((f) => parseJSON<Record<string, unknown>>(f.subarray(1))!)
+    expect(frames[0]).toMatchObject({ t: 'submit', text: '/compact', expand: true })
+    expect('expand' in frames[1]!).toBe(false)
+    expect('expand' in frames[2]!).toBe(false)
+    const old = new TestTransport()
+    old.receive(encodeControl({ t: 'welcome', proto: 1, sessionId: 's', role: 'control', cols: 80, rows: 24, status: 'running', scrollbackBytes: 0, transport: 'ws', fileView: true }))
+    track(old.submitAcked('/compact', { expand: true }))
+    expect(parseJSON<Record<string, unknown>>(old.sent[0]!.subarray(1))).toEqual({ t: 'submit', text: '/compact' })
+  })
+})

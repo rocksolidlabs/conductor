@@ -290,7 +290,7 @@ test('a folder agents cannot use is said under Folder before the press, and Laun
   // This spec's server is no desktop app's: its folders are its configuration's, and no press is offered (launch-folder.spec.ts has it).
   const cases = [
     { path: '/', words: "Agents can't use the whole disk. Pick a folder inside it." },
-    { path: outsideFolder, words: "Agents can't use this folder. This server's folders are set in its configuration." },
+    { path: outsideFolder, words: "Agents can't use this folder. Add it to this server's folders agents can use, or pick another." },
     { path: join(own.root, 'no-such-folder'), words: 'There is no folder at this path.' },
     { path: file, words: 'This is a file, not a folder.' },
   ]

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { CrewFeedItem } from '~/utils/crews'
 import type { EventColor } from '~/utils/events'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 /**
  * A run's Activity, the column beside its tiles: its members' events and the run's own log, newest first (crewFeed), and the way to
@@ -30,7 +32,7 @@ const DOT: Record<EventColor, string> = {
         <span class="flex-none pt-px font-mono text-[11px] text-muted">{{ e.time }}</span>
         <span class="mt-1.5 size-[7px] flex-none rounded-full" :class="DOT[e.color]" aria-hidden="true" />
         <span class="min-w-0 break-words">
-          <NuxtLink v-if="e.who && e.sessionId" :to="`/sessions/${e.sessionId}`" class="font-mono text-xs font-semibold text-highlighted hover:underline">{{ e.who }}</NuxtLink>
+          <NuxtLink v-if="e.who && e.sessionId" :to="placeOf(e.sessionId)" class="font-mono text-xs font-semibold text-highlighted hover:underline">{{ e.who }}</NuxtLink>
           <b v-else-if="e.who" class="font-mono text-xs font-semibold text-highlighted">{{ e.who }}</b>
           {{ e.what }}
           <template v-if="e.url">

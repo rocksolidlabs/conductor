@@ -13,7 +13,7 @@ import type { OwnServer } from './own-server'
 test.describe.configure({ mode: 'serial' })
 
 const FIRST_REPLY = "Chat opens after the agent's first reply."
-const TO_CHAT = 'Moved to Chat. Turns made in the terminal are not shown here. What the agent left running in its terminal was ended.'
+const TO_CHAT = 'Moved to Chat. Earlier terminal messages are not shown here, and commands left running in the terminal were stopped.'
 const TO_TERMINAL = 'Moved to the terminal.'
 
 let own: OwnServer

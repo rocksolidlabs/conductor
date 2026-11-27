@@ -257,9 +257,8 @@ anywhere. Its words never say it is used in a browser: they say "from
 anywhere", "in the app" or "on this device". The word stays where a real
 browser is meant: Open in browser, an agent's browser profile.
 
-Not yet: the places `designRules.test.ts` lists as to be reworded, and
-words built in scripts (toasts, the palette, the events table), which a
-check reads only where `deviceWords.test.ts` names them.
+Not yet: words built in scripts (toasts, the palette, the events table)
+are checked only where `deviceWords.test.ts` names them.
 
 Checks: `designRules.test.ts`, the words (no "browser" in a template's text
 or in an attribute written as text that a person reads: a label, a
@@ -406,9 +405,10 @@ A field for an agent's arguments or its model (the Launch dialog's, Add
 agent's, a crew member's) offers that agent's own flags and model names as
 the person types, from what Conductor knows of the agent.
 
-Not yet: these fields take free text today.
+Not yet: Add agent's fields take free text.
 
-Checks: none yet; they come with the change that builds it.
+Checks: `web/e2e/launch-flags.spec.ts` (Launch agent's Extra arguments and
+Model, a crew member's, a trial agent's Arguments, Brakeman's Model).
 
 ### What a pull request cannot do
 
