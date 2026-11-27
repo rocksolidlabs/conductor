@@ -76,6 +76,8 @@ watch(
   },
   { immediate: true },
 )
+/** Add account can be pressed: an agent, a label and a folder. */
+const addReady = computed(() => !!add.adapter && !!add.label.trim() && !!add.folder.trim())
 const adapterItems = computed(() => (doc.value?.adapters ?? []).map((a) => ({ label: a.name, value: a.adapter })))
 async function addAccount() {
   if (!add.adapter || !add.label.trim() || !add.folder.trim()) return
@@ -104,9 +106,9 @@ const removing = ref('')
 
 <template>
   <UCard v-if="available !== false" :ui="{ header: 'px-4 py-3 sm:px-5', body: 'p-4 sm:p-5' }" data-accounts-card>
-    <template #header><SettingsCardTitle title="Accounts" description="The logins your agents use on this server, each by the folder it lives in. Conductor keeps no credential and reads nothing in a folder." /></template>
+    <template #header><SettingsCardTitle title="Accounts" description="The logins your agents use. Each change saves at once." /></template>
     <div class="flex flex-col gap-4">
-      <UAlert v-if="!owner" color="warning" variant="subtle" icon="i-lucide-lock" title="Another server over this data directory keeps the accounts: they are shown here, and changed there" :description="doc?.why" data-accounts-not-owner />
+      <UAlert v-if="!owner" color="warning" variant="subtle" icon="i-lucide-lock" title="Another server keeps these accounts: change them there." :description="doc?.why" data-accounts-not-owner />
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-accounts-error />
       <UAlert v-if="notice" color="success" variant="subtle" icon="i-lucide-check" :title="notice" data-accounts-notice />
       <UAlert
@@ -128,7 +130,7 @@ const removing = ref('')
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-sm font-medium">Default login</span>
               <UBadge v-if="ad.default === 'default'" label="default" color="primary" variant="subtle" size="sm" data-account-is-default />
-              <span class="text-xs text-muted">the tool's own login on this server, where it keeps it</span>
+              <span class="text-xs text-muted">the agent's own login on this machine</span>
               <div class="flex-1" />
               <UButton v-if="ad.default !== 'default'" label="Set as default" size="xs" color="neutral" variant="outline" :disabled="busy || !owner" data-account-set-default @click="run(() => store.setDefault(ad.adapter, 'default'))" />
             </div>
@@ -138,8 +140,8 @@ const removing = ref('')
             <div class="flex flex-wrap items-center gap-2">
               <template v-if="renaming?.id === a.id">
                 <UInput v-model="renaming.label" size="sm" maxlength="60" class="min-w-40 flex-1" aria-label="The account's new label" data-account-rename-input @keydown.enter.prevent="saveRename" />
+                <UButton label="Cancel" size="xs" color="neutral" variant="ghost" data-account-rename-cancel @click="renaming = null" />
                 <UButton label="Save" size="xs" :disabled="busy || !renaming.label.trim()" data-account-rename-save @click="saveRename" />
-                <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="renaming = null" />
               </template>
               <template v-else>
                 <span class="text-sm font-medium" data-account-name>{{ a.label }}</span>
@@ -151,8 +153,8 @@ const removing = ref('')
             <div v-if="renaming?.id !== a.id" class="flex flex-wrap items-center gap-1.5">
               <template v-if="removing === a.id">
                 <span class="text-xs">Remove {{ a.label }}? Its id is never given again; the folder is left as it is.</span>
+                <UButton label="Keep it" size="xs" color="neutral" variant="ghost" data-account-remove-keep @click="removing = ''" />
                 <UButton label="Remove" size="xs" color="error" variant="soft" :disabled="busy" data-account-remove-confirm @click="run(() => store.remove(a.id), `${a.label} removed`).then(() => (removing = ''))" />
-                <UButton label="Keep it" size="xs" color="neutral" variant="ghost" @click="removing = ''" />
               </template>
               <template v-else>
                 <UButton v-if="!a.retired && ad.default !== a.id" label="Set as default" size="xs" color="neutral" variant="outline" :disabled="busy || !owner" data-account-set-default @click="run(() => store.setDefault(ad.adapter, a.id))" />
@@ -175,22 +177,24 @@ const removing = ref('')
       >
         <p class="text-sm font-medium">Add an account</p>
         <div class="grid gap-3 sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)]">
-          <UFormField label="Agent tool" name="adapter">
+          <UFormField label="Agent" name="adapter">
             <USelect v-model="add.adapter" :items="adapterItems" class="w-full" data-account-add-adapter />
           </UFormField>
           <UFormField label="Label" name="label" hint="such as Work">
             <UInput v-model="add.label" maxlength="60" class="w-full" data-account-add-label />
           </UFormField>
         </div>
-        <UFormField label="Folder" name="folder" description="The folder that login lives in (the tool's configuration folder). Fixed once added: for another folder, add another account.">
+        <UFormField label="Folder" name="folder" description="Where its login lives. Conductor reads nothing in it and keeps no credential. Fixed once added.">
           <DirInput v-model="add.folder" placeholder="/home/me/.claude-work" picker-title="The folder the login lives in" :anywhere="anywhere === true" data-account-add-folder />
         </UFormField>
-        <div class="flex justify-end">
-          <UButton type="submit" label="Add account" icon="i-lucide-plus" :loading="busy" :disabled="busy || !add.adapter || !add.label.trim() || !add.folder.trim()" data-account-add-submit />
+        <div class="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+          <!-- What the grey button needs, said beside it; once it can, how it saves. -->
+          <span class="text-xs text-muted" data-account-add-needs>{{ addReady ? 'Saves at once.' : 'Needs a label and a folder.' }}</span>
+          <UButton type="submit" label="Add account" icon="i-lucide-plus" :loading="busy" :disabled="busy || !addReady" data-account-add-submit />
         </div>
       </form>
 
-      <p v-if="others.length" class="text-xs text-muted" data-accounts-others>{{ others.join(', ') }}: {{ others.length === 1 ? 'its' : 'their' }} own login on this server only. Conductor cannot move {{ others.length === 1 ? 'its' : 'their' }} login folder, and knows no way to read {{ others.length === 1 ? 'its' : 'their' }} usage.</p>
+      <p v-if="others.length" class="text-xs text-muted" data-accounts-others>{{ others.join(', ') }}: {{ others.length === 1 ? 'its' : 'their' }} own login only. Conductor cannot read {{ others.length === 1 ? 'its' : 'their' }} usage.</p>
     </div>
   </UCard>
 </template>
