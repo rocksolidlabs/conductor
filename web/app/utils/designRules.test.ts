@@ -688,7 +688,7 @@ const BROWSER_WORDS_KNOWN: Known = {
   'components/SessionInspector.vue': { count: 1, why: '"watch this session from their browser": to be reworded' },
   'components/WelcomeCard.vue': { count: 1, why: '"from any browser": to be reworded as from anywhere' },
   'components/WorkbenchTokenGate.vue': { count: 1, why: 'where the token is kept, "in this browser": to be reworded' },
-  'pages/settings.vue': { count: 3, why: 'a real browser: Open in browser, which the desktop app opens' },
+  'pages/settings.vue': { count: 1, why: "a real browser: Open in browser, The app's server row, which the desktop app opens" },
 }
 
 describe('what stays in view, and the words', () => {

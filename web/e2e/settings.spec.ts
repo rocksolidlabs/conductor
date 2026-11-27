@@ -940,7 +940,7 @@ test("in a browser, Brakeman's section is saved by the page's one Save", async (
 // `?section=`; below lg a sticky row of links, nothing else scrolling sideways, and the save bar above the bottom bar. The
 // stand-in bridge is the app's, as above; on win32 with an ICE status the WebRTC section and the WSL fields are laid out too.
 type Platform = 'linux' | 'win32'
-async function standIn(page: Page, state: E2EState, platform: Platform) {
+async function standIn(page: Page, state: E2EState, platform: Platform, server?: { state: string; lastError?: string }) {
   const form = {
     dataDir: state.data,
     allowedRoots: [state.root],
@@ -959,8 +959,9 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
   await page.addInitScript(
     ({ token, form, url, platform }) => {
       const settings = { ...form }
-      const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[] }
+      const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[]; e2eRestarts: number }
       w.e2eSets = []
+      w.e2eRestarts = 0
       w.conductorDesktop = {
         version: 'e2e',
         platform,
@@ -973,10 +974,12 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
             return Object.assign(settings, p)
           },
         },
-        restartServer: async () => {},
+        restartServer: async () => {
+          w.e2eRestarts++
+        },
         openInBrowser: async () => {},
         showLog: async () => {},
-        serverState: async () => ({ state: 'running', url, failures: 0 }),
+        serverState: async () => ({ state: 'running', url, failures: 0, ...server }),
         notice: async () => '',
         ice: async () => ({ forwarding: true, port: 40001, publicIp: '203.0.113.7', wslAddress: '172.20.0.2', firewall: 'missing' }),
         allowIceFirewall: async () => 'present',
@@ -984,7 +987,7 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
         onServerState: () => () => {},
       }
     },
-    { token: state.token, form, url: state.baseURL, platform },
+    { token: state.token, form, url: state.baseURL, platform, server },
   )
 }
 
@@ -1142,13 +1145,13 @@ for (const platform of ['linux', 'win32'] as const) {
       // The navbar fits: its buttons, icons alone, inside the window.
       // The panel's navbar: the element before its body.
       const navbar = body(page).locator('xpath=preceding-sibling::*[1]')
-      for (const b of ['[data-open-in-browser]', '[data-server-log]', '[data-restart-server]', '[data-fullscreen]']) {
-        const box = await boxOf(page.locator(b))
-        expect(box.right, b).toBeLessThanOrEqual(390)
-        expect(box.width, b).toBeLessThanOrEqual(40)
-      }
+      // The server's three buttons are The app's now (UX3 R57): the navbar holds Full screen alone.
+      for (const b of ['[data-open-in-browser]', '[data-server-log]', '[data-restart-server]']) await expect(navbar.locator(b)).toHaveCount(0)
+      const full = await boxOf(page.locator('[data-fullscreen]'))
+      expect(full.right).toBeLessThanOrEqual(390)
+      expect(full.width).toBeLessThanOrEqual(40)
       expect(await navbar.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true)
-      await expect(page.getByRole('button', { name: 'Restart server' })).toBeVisible()
+      await expect(page.locator('[data-about-card]').getByRole('button', { name: 'Restart server' })).toBeVisible()
       // The row of links: across the top of the body, stuck there as the sections scroll, scrolling sideways within itself.
       const nav = page.locator('[data-settings-nav]')
       expect(await nav.evaluate((e) => getComputedStyle(e).flexDirection)).toBe('row')
@@ -1634,3 +1637,53 @@ for (const size of [{ width: 2000, height: 810 }, { width: 1440, height: 810 }])
     }
   })
 }
+
+// The server's state and its three buttons sit in The app (UX3 R57): no banner while it runs, one line at the top while it does not,
+// and Restart server asks first while agents run, restarting at once with none.
+test("The app holds Conductor's server and its buttons; Restart server asks only while agents run", async ({ page, state, api }) => {
+  test.setTimeout(20 * 15_000)
+  await standIn(page, state, 'linux')
+  await page.goto('/settings?section=app')
+  await settled(page, 'linux')
+  const about = page.locator('[data-about-card]')
+  const row = about.locator('[data-server-row]')
+  await expect(page.locator('[data-server-state]')).toHaveCount(0)
+  await expect(about).toContainText("Versions, the tray and Conductor's server.")
+  await expect(row).toContainText("Conductor's server · Running at")
+  await expect(row.locator('[data-server-url]')).toHaveText(state.baseURL)
+  for (const b of ['[data-server-log]', '[data-open-in-browser]', '[data-restart-server]']) await expect(row.locator(b)).toBeVisible()
+  // None running: Restart server restarts at once.
+  const restarts = () => page.evaluate(() => (window as unknown as { e2eRestarts: number }).e2eRestarts)
+  await row.locator('[data-restart-server]').click()
+  await expect.poll(restarts).toBe(1)
+  await expect(row.locator('[data-restart-question]')).toHaveCount(0)
+  // One of the test's own running: it asks, Keep it running keeps it, and Restart server restarts.
+  const s = await api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'settings restart server', cwd: state.root })
+  try {
+    await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()).toBeAttached()
+    await row.locator('[data-restart-server]').click()
+    await expect(row.locator('[data-restart-question]')).toHaveText('Restart the server? 1 running agent stops.')
+    await expect(row.locator('[data-restart-keep]')).toBeFocused()
+    await expect(row.locator('[data-restart-keep]')).toHaveText('Keep it running')
+    await row.locator('[data-restart-keep]').click()
+    await expect(row.locator('[data-restart-question]')).toHaveCount(0)
+    expect(await restarts()).toBe(1)
+    await row.locator('[data-restart-server]').click()
+    await row.locator('[data-restart-confirm]').click()
+    await expect.poll(restarts).toBe(2)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+test("a server that stopped is said in one line at the top, with its log and a restart", async ({ page, state }) => {
+  await standIn(page, state, 'linux', { state: 'failed', lastError: 'the server exited with status 1' })
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  const line = page.locator('[data-server-state="failed"]')
+  await expect(line).toContainText("Conductor's server stopped: the server exited with status 1.")
+  await expect(line.locator('[data-server-state-log]')).toBeVisible()
+  await line.locator('[data-server-state-restart]').click()
+  await expect.poll(() => page.evaluate(() => (window as unknown as { e2eRestarts: number }).e2eRestarts)).toBe(1)
+  await expect(page.locator('[data-about-card] [data-server-word]')).toHaveText('Stopped')
+})

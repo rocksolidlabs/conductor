@@ -21,8 +21,6 @@ const fieldUi = SETTINGS_FIELD_UI
 const switchUi = SETTINGS_SWITCH_UI
 /** A section's card: scrolled to, it clears the phone's sticky row of links, and on a wide window keeps the body's padding above it. */
 const sectionClass = 'scroll-mt-16 sm:scroll-mt-18 lg:scroll-mt-6'
-/** The navbar's buttons: their words from sm, their icons alone below it (each has an aria-label and a tooltip). */
-const navbarButtonUi = { label: 'hidden sm:inline' }
 const settings = ref<DesktopSettings | null>(null)
 const form = reactive<DesktopSettings>({ dataDir: '', allowedRoots: [], defaultCwd: '', yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '' })
 const saving = ref(false)
@@ -143,6 +141,30 @@ function confirmSave(e: MouseEvent) {
 }
 function keepEditing() {
   asking.value = false
+}
+
+// Conductor's server (UX3 R57): its state and its three buttons in The app; a line at the top only while it does not run.
+const serverState = computed(() => desktop.serverState.value)
+const serverWord = computed(() => {
+  const st = serverState.value?.state
+  return st === 'running' ? 'Running' : st === 'starting' ? 'Starting' : st ? 'Stopped' : ''
+})
+/** Restart server pressed while agents run: the row asks first, Keep it running or Restart server. */
+const askingRestart = ref(false)
+const restartAsk = computed(() => restartQuestion(running.value))
+const keepRunningButton = useTemplateRef<{ $el: HTMLElement }>('keepRunningEl')
+function pressRestart() {
+  if (running.value > 0) {
+    askingRestart.value = true
+    void nextTick(() => keepRunningButton.value?.$el?.focus())
+    return
+  }
+  void desktop.bridge.value?.restartServer()
+}
+function confirmRestart(e: MouseEvent) {
+  if (e.detail > 1) return
+  askingRestart.value = false
+  void desktop.bridge.value?.restartServer()
 }
 /** Discard: the app's fields back to what is saved, and Brakeman's form to its saved configuration (a stale choice that waits is kept). */
 function discard() {
@@ -398,7 +420,7 @@ usePalette().registerPage(() => {
       { key: 'page:save', label: restarts.value ? 'Save and restart' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value || blocked.value, ask: restarts.value && n ? saveRestartQuestion(n) : undefined, run: save },
       ...(desktop.isDesktop.value
         ? [
-            { key: 'page:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: restartQuestion(n), run: () => void desktop.bridge.value?.restartServer() },
+            { key: 'page:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: n ? restartQuestion(n) : undefined, run: () => void desktop.bridge.value?.restartServer() },
             { key: 'page:browser', label: 'Open in browser', icon: 'i-lucide-external-link', run: () => void desktop.bridge.value?.openInBrowser() },
             { key: 'page:log', label: 'Server log', icon: 'i-lucide-scroll-text', run: () => void desktop.bridge.value?.showLog() },
           ]
@@ -414,18 +436,7 @@ usePalette().registerPage(() => {
       <UDashboardNavbar :toggle="false" title="Settings" :ui="{ root: 'h-14' }">
         <template #leading><UDashboardSidebarCollapse /></template>
         <template #right>
-          <!-- Icon-only below sm, so the four fit a phone's width (#433); the tooltip names each (#374). -->
-          <template v-if="desktop.isDesktop.value">
-            <UTooltip text="Open in browser">
-              <UButton label="Open in browser" aria-label="Open in browser" icon="i-lucide-external-link" color="neutral" variant="outline" :ui="navbarButtonUi" data-open-in-browser @click="desktop.bridge.value?.openInBrowser()" />
-            </UTooltip>
-            <UTooltip text="Server log">
-              <UButton label="Server log" aria-label="Server log" icon="i-lucide-scroll-text" color="neutral" variant="outline" :ui="navbarButtonUi" data-server-log @click="desktop.bridge.value?.showLog()" />
-            </UTooltip>
-            <UTooltip text="Restart server">
-              <UButton label="Restart server" aria-label="Restart server" icon="i-lucide-rotate-ccw" color="neutral" variant="outline" :ui="navbarButtonUi" data-restart-server @click="desktop.bridge.value?.restartServer()" />
-            </UTooltip>
-          </template>
+          <!-- The server's buttons are The app's (UX3 R57). -->
           <FullscreenButton />
         </template>
       </UDashboardNavbar>
@@ -476,15 +487,14 @@ usePalette().registerPage(() => {
         </nav>
         <!-- A fieldset, so a save that may move the page holds every field of the sections at once (holding). -->
         <fieldset :disabled="holding" class="@container m-0 flex min-w-0 flex-1 flex-col gap-5 border-0 p-0" data-settings-sections>
-        <UAlert
-          v-if="desktop.serverState.value"
-          :color="desktop.serverState.value.state === 'running' ? 'success' : desktop.serverState.value.state === 'failed' ? 'error' : 'neutral'"
-          variant="subtle"
-          :icon="desktop.serverState.value.state === 'running' ? 'i-lucide-check' : 'i-lucide-loader-circle'"
-          :title="`Server ${desktop.serverState.value.state}${desktop.serverState.value.url ? ` at ${desktop.serverState.value.url}` : ''}`"
-          :description="desktop.serverState.value.lastError || (desktop.serverState.value.version ? `conductor ${desktop.serverState.value.version}` : '')"
-          data-server-state
-        />
+        <!-- Only while Conductor's server does not run: what happened, with its log and a restart (UX3 R57). -->
+        <div v-if="serverState && serverState.state !== 'running'" class="flex flex-wrap items-center gap-3 rounded-md border border-default px-4 py-3" :data-server-state="serverState.state">
+          <p class="min-w-0 flex-1 text-sm" :class="serverState.state === 'starting' ? 'text-muted' : 'text-error'">
+            {{ serverState.state === 'starting' ? "Conductor's server is starting." : `Conductor's server stopped${serverState.lastError ? `: ${serverState.lastError.replace(/\.$/, '')}` : ''}.` }}
+          </p>
+          <UButton label="Server log" icon="i-lucide-scroll-text" size="sm" color="neutral" variant="outline" data-server-state-log @click="desktop.bridge.value?.showLog()" />
+          <UButton label="Restart server" icon="i-lucide-rotate-ccw" size="sm" color="neutral" variant="outline" data-server-state-restart @click="pressRestart" />
+        </div>
         <UCard :ui="cardUi" :class="sectionClass" data-settings-section="folders">
           <template #header><SettingsCardTitle title="Where agents work" description="The folders agents may use." /></template>
           <div class="flex flex-col gap-4">
@@ -607,6 +617,23 @@ usePalette().registerPage(() => {
         <SignInCard :class="sectionClass" />
         <AboutCard :versions="versions" :class="sectionClass" data-settings-section="app">
           <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" data-tray-switch />
+          <template #server>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-default pt-3.5" data-server-row :data-server-asking="askingRestart || undefined" @keydown.esc="askingRestart = false">
+              <p v-if="askingRestart" class="min-w-0 flex-1 text-sm text-highlighted" role="status" data-restart-question>{{ restartAsk.title }} {{ restartAsk.detail }}</p>
+              <p v-else class="min-w-0 flex-1 text-sm break-words">
+                <span class="font-medium text-highlighted">Conductor's server</span> · <span data-server-word>{{ serverWord }}</span><template v-if="serverState?.url && serverState.state === 'running'"> at <code class="text-xs" data-server-url>{{ serverState.url }}</code></template>
+              </p>
+              <template v-if="askingRestart">
+                <UButton ref="keepRunningEl" :label="restartAsk.keep" size="sm" color="neutral" variant="ghost" data-restart-keep @click="askingRestart = false" />
+                <UButton :label="restartAsk.confirm" icon="i-lucide-rotate-ccw" size="sm" color="neutral" variant="outline" data-restart-confirm @click="confirmRestart" />
+              </template>
+              <template v-else>
+                <UButton label="Server log" icon="i-lucide-scroll-text" size="sm" color="neutral" variant="outline" data-server-log @click="desktop.bridge.value?.showLog()" />
+                <UButton label="Open in browser" icon="i-lucide-external-link" size="sm" color="neutral" variant="outline" data-open-in-browser @click="desktop.bridge.value?.openInBrowser()" />
+                <UButton label="Restart server" icon="i-lucide-rotate-ccw" size="sm" color="neutral" variant="outline" data-restart-server @click="pressRestart" />
+              </template>
+            </div>
+          </template>
         </AboutCard>
         </fieldset>
 
