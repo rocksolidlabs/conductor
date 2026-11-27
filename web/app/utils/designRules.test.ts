@@ -686,7 +686,6 @@ const BROWSER_WORDS_KNOWN: Known = {
   'components/DispatchViewsBar.vue': { count: 1, why: '"for every browser": to be reworded' },
   'components/ReviewDraft.vue': { count: 2, why: 'where a draft is kept, "this browser": to be reworded' },
   'components/SessionInspector.vue': { count: 1, why: '"watch this session from their browser": to be reworded' },
-  'components/WelcomeCard.vue': { count: 1, why: '"from any browser": to be reworded as from anywhere' },
   'components/WorkbenchTokenGate.vue': { count: 1, why: 'where the token is kept, "in this browser": to be reworded' },
   'pages/settings.vue': { count: 3, why: 'a real browser: Open in browser, which the desktop app opens' },
 }

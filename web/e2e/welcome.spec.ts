@@ -1,19 +1,20 @@
 import type { Locator, Page } from '@playwright/test'
-import { budget, dayPage, expect, test, useTheme } from './fixtures'
-import { inside, noSideways, tabTo, tapTarget, uncut } from './layout'
+import { budget, DAILY, dayPage, expect, test, useTheme } from './fixtures'
+import { BOX_SLACK, inside, noSideways, tabTo, tapTarget, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { START_WAIT_MS } from './server'
 
-// The first screens of a new install (the UX review's P17; #906 before it): the welcome says what Conductor is in one sentence, then
-// three steps (the agents this machine has, each with its version; another machine's terminal brought in; the example crews), then
-// "Where things are", each page of the nav with the sentence its tooltip says. Every choice says what it does, here and where the
+// The first screens of a new install (the UX review's P17; #906 before it; UX3): the welcome says what Conductor is in one sentence,
+// then one main button, Launch <the first agent this machine has>, the other agents on one line (Or: ...), and the other ways to start
+// folded (another machine's terminal brought in; the example crews). Every choice says what it does in its tooltip, here and where the
 // examples are offered elsewhere (Crews, the palette). The token dialog's words are held in connect.spec.ts.
 
 /** An expect's bound and an action's (the config's expect timeout). */
 const STEP_MS = 15_000
 
 const SENTENCE = 'Run your coding agents here, and answer them from anywhere.'
-const STEPS = ['Launch an agent', 'Bring one in from another machine', 'Try a crew']
+/** The built-in shell: on the Or line, never the main button. */
+const SHELL = 'shell'
 
 /** An agent of GET /api/catalog, the fields this spec reads. */
 interface CatalogAgent {
@@ -54,13 +55,42 @@ async function settledCatalog(srv: OwnServer): Promise<CatalogAgent[]> {
   return agents
 }
 
-/** The welcome drawn with its agents settled: nothing still looked for, no agent still checked. */
+/** The welcome drawn with its agents settled: nothing still looked for. */
 async function settled(page: Page): Promise<Locator> {
   const card = page.locator('[data-welcome-card]')
   await expect(card).toBeVisible()
   await expect(card.locator('[data-welcome-looking]')).toHaveCount(0)
-  await expect(card.locator('[data-welcome-checking]')).toHaveCount(0)
   return card
+}
+
+/** The other ways to start unfolded (pressed only while folded) and drawn: their body, `data-welcome-fold`. */
+async function unfold(card: Locator): Promise<Locator> {
+  const row = card.locator('[data-welcome-expander]')
+  if ((await row.getAttribute('aria-expanded')) !== 'true') await row.click()
+  await expect(row).toHaveAttribute('aria-expanded', 'true')
+  const body = card.locator('[data-welcome-fold]')
+  await expect(body).toBeVisible()
+  return body
+}
+
+/** What the welcome offers, from a catalog the server has settled, by the card's rule: the main agent, the names on the Or line, the count of the rest. */
+function offerOf(catalog: CatalogAgent[]): { main: CatalogAgent; named: CatalogAgent[]; rest: number } {
+  const found = catalog.filter((a) => a.available !== false)
+  const main = found.find((a) => a.id !== SHELL)
+  if (!main) throw new Error('the e2e catalog has an agent the server can launch')
+  const others = found.filter((a) => a.id !== main.id)
+  const named = others.length <= 3 ? others : others.slice(0, 2)
+  return { main, named, rest: others.length - named.length }
+}
+
+/** The box of `l` as drawn, inside the window: none of it below, above or beside what the window shows. */
+async function inWindow(page: Page, l: Locator, at: string) {
+  const box = (await l.boundingBox())!
+  const view = page.viewportSize()!
+  expect(box.y, `${at}: its top in the window`).toBeGreaterThanOrEqual(-BOX_SLACK)
+  expect(box.x, `${at}: its left in the window`).toBeGreaterThanOrEqual(-BOX_SLACK)
+  expect(box.y + box.height, `${at}: its foot in the window`).toBeLessThanOrEqual(view.height + BOX_SLACK)
+  expect(box.x + box.width, `${at}: its right in the window`).toBeLessThanOrEqual(view.width + BOX_SLACK)
 }
 
 /** Each match of `parts`, scrolled into view in its list, whole and inside `card`: a card taller than the window is read part by part. */
@@ -76,19 +106,20 @@ async function wholeIn(parts: Locator, card: Locator, at: string) {
 }
 
 /**
- * The welcome read whole at the window's size: the sentence, the three steps by their labels and "Where things are"; each step's label
- * and each agent's name whole and inside the card; nothing scrolls sideways; under touch each control is big enough to tap.
+ * The welcome read whole at the window's size: the title and the sentence, the main button and each name of the Or line whole and inside
+ * the card, then unfolded, the other ways to start whole too; nothing scrolls sideways; under touch each control is big enough to tap.
  */
 async function welcomeWhole(page: Page, at: string, touch = false) {
   const card = await settled(page)
+  await expect(card.locator('[data-welcome-title]'), at).toHaveText('Welcome to Conductor')
   await expect(card.locator('[data-welcome-sentence]'), at).toHaveText(SENTENCE)
-  // Conductor is used in its apps, not in a browser: the word is nowhere on the card.
+  // Conductor is used in its apps, not in a browser: the word is nowhere on the card. The steps and Where things are left it.
   await expect(card, at).not.toContainText(/browser/i)
-  await expect(card.locator('[data-welcome-step-label]'), at).toHaveText(STEPS)
-  await expect(card.locator('[data-welcome-where] h3'), at).toHaveText('Where things are')
-  await wholeIn(card.locator('[data-welcome-step-label]'), card, at)
-  await wholeIn(card.locator('[data-welcome-agent-name]'), card, at)
-  await wholeIn(card.locator('[data-welcome-agent], [data-welcome-examples], [data-welcome-host]'), card, at)
+  await expect(card.locator('[data-welcome-step-label], [data-welcome-where], [data-welcome-version]'), at).toHaveCount(0)
+  await expect(card.locator('[data-welcome-primary]'), at).toHaveText(/^Launch \S/)
+  await wholeIn(card.locator('[data-welcome-agent], [data-welcome-more], [data-welcome-expander]'), card, at)
+  await unfold(card)
+  await wholeIn(card.locator('[data-welcome-fold] h3, [data-welcome-examples], [data-welcome-host]'), card, at)
   await noSideways(page)
   if (touch) {
     const controls = card.locator('button, a')
@@ -99,7 +130,7 @@ async function welcomeWhole(page: Page, at: string, touch = false) {
   }
 }
 
-test('the welcome shows the sentence, three steps and Where things are, each whole, at 1440 and 1024 wide and in both themes, and again as the window changes', async ({ browser }) => {
+test('the welcome shows the sentence, the main button, the Or line and the other ways to start, each whole, at 1440 and 1024 wide and in both themes, and again as the window changes', async ({ browser }) => {
   const srv = await empty()
   budget(3 * 12 * STEP_MS)
   const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
@@ -124,68 +155,67 @@ test("a phone's Sessions page on a server with no session shows the welcome in p
   }
 })
 
-test("step 1 offers the first four agents the server can launch, in the catalog's order with their versions, and the rest in one line", async ({ browser }) => {
+test("the main button names the first agent the server can launch that is not the shell, the Or line the others, and each opens the dialog with its agent picked", async ({ browser }) => {
   const srv = await empty()
-  budget(8 * STEP_MS)
-  const catalog = await settledCatalog(srv)
-  const found = catalog.filter((a) => a.available !== false)
-  const first = found.slice(0, 4)
-  expect(first.length, 'the e2e catalog has agents the server can launch').toBeGreaterThan(0)
+  budget(16 * STEP_MS)
+  const { main, named, rest } = offerOf(await settledCatalog(srv))
+  expect(named.length, 'the e2e catalog has other agents the server can launch').toBeGreaterThan(0)
 
   const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
   const card = await settled(page)
-  const buttons = card.locator('[data-welcome-agent]')
-  await expect(buttons).toHaveCount(first.length)
-  expect(await buttons.evaluateAll((els) => els.map((e) => e.getAttribute('data-welcome-agent')))).toEqual(first.map((a) => a.id))
-  for (const [i, a] of first.entries()) {
-    await expect(buttons.nth(i).locator('[data-welcome-agent-name]')).toHaveText(a.name)
-    const version = a.identity?.identified ? a.identity.version : undefined
-    if (version) await expect(buttons.nth(i).locator('[data-welcome-version]'), `${a.id}'s version`).toHaveText(version)
-    else await expect(buttons.nth(i).locator('[data-welcome-version]'), `${a.id} has no version`).toHaveCount(0)
-  }
-  const rest = found.length - first.length
-  if (rest) await expect(card.locator('[data-welcome-more]')).toHaveText(`and ${rest} more`)
-  else await expect(card.locator('[data-welcome-more]')).toHaveCount(0)
+  const primary = card.locator('[data-welcome-primary]')
+  await expect(primary).toHaveText(`Launch ${main.name}`)
+  await expect(primary).toHaveAttribute('data-welcome-agent', main.id)
+  const or = card.locator('[data-welcome-or]')
+  expect(await or.locator('[data-welcome-agent]').evaluateAll((els) => els.map((e) => e.getAttribute('data-welcome-agent')))).toEqual(named.map((a) => a.id))
+  if (rest) {
+    await expect(or.locator('[data-welcome-more]')).toHaveText(`${rest} more`)
+    await expect(or.locator('[data-welcome-more]')).toHaveAccessibleName(`${rest} more agents`)
+  } else await expect(or.locator('[data-welcome-more]')).toHaveCount(0)
 
-  // The first agent's button opens the Launch dialog with that agent picked.
-  await buttons.first().click()
+  // Each opens the Launch dialog with its own agent picked: the main button, then each name of the Or line, found by its name.
   const dialog = page.getByRole('dialog')
-  await expect(dialog).toBeVisible()
-  // The radio holds the agent's avatar beside its name.
-  await expect(dialog.getByRole('radio', { checked: true })).toContainText(first[0]!.name)
+  const opens = async (button: Locator, name: string) => {
+    await button.click()
+    await expect(dialog, `${name}: the dialog`).toBeVisible()
+    // The radio holds the agent's avatar beside its name.
+    await expect(dialog.getByRole('radio', { checked: true }), `${name} picked`).toContainText(name)
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+  }
+  await opens(primary, main.name)
+  for (const a of named) await opens(or.getByRole('button', { name: a.name, exact: true }), a.name)
+  if (rest) {
+    await or.locator('[data-welcome-more]').click()
+    await expect(dialog, 'N more: the dialog').toBeVisible()
+  }
 })
 
-test("Where things are lists the sidebar's pages, its tiles in order then those under More, each tile's line the sentence its tooltip says", async ({ browser }) => {
+test("the card keeps its place: folded and unfolded it is inside the window at the daily window and at 1440, and a press on Other ways to start moves neither the title nor the row", async ({ browser }) => {
   const srv = await empty()
-  budget(24 * STEP_MS)
-  const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
-  const card = await settled(page)
-  const where = card.locator('[data-where-page]')
-  const labels = await where.locator('[data-where-label]').allTextContents()
-  const abouts = await where.locator('[data-where-about]').allTextContents()
-  const sidebar = page.locator('#dashboard-sidebar-main')
-  // Brakeman's slot is held until the server has said whether it has Brakeman: the tiles are read once it has.
-  await expect(sidebar.locator('[data-sidebar-tile="held"]')).toHaveCount(0)
-  const tiles = sidebar.locator('[data-sidebar-tiles] [data-sidebar-tile]:not([data-sidebar-tile="more"])')
-  const tileLabels = await tiles.locator('[data-nav-label]').allTextContents()
-  // The pages under More, as its menu lists them.
-  await sidebar.locator('[data-sidebar-tile="more"]').click()
-  const menu = page.getByRole('menu')
-  await expect(menu).toBeVisible()
-  const moreLabels = (await menu.getByRole('menuitem').locator('[data-slot="itemLabel"]').allTextContents()).map((t) => t.trim())
-  await page.keyboard.press('Escape')
-  await expect(menu).toHaveCount(0)
-  expect(tileLabels.length).toBeGreaterThan(0)
-  expect(labels, 'the tiles, then More').toEqual([...tileLabels, ...moreLabels])
-  // Each tile's line is its tooltip, read from the page: hovered, the tile says "Label: its sentence".
-  const tipText = page.locator('[data-slot="content"] [data-slot="text"]')
-  for (const [i, label] of tileLabels.entries()) {
-    const about = abouts[i]!.trim().replace(/\.$/, '')
-    await tiles.nth(i).hover()
-    await expect(tipText, `${label}'s tooltip`).toHaveText(`${label}: ${about.charAt(0).toLowerCase()}${about.slice(1)}`)
-    // Away from the tiles, the tooltip closed and gone before the next is hovered: one open at a time.
-    await page.mouse.move(1000, 450)
-    await expect(tipText, `${label}'s tooltip closed`).toHaveCount(0)
+  budget(2 * 12 * STEP_MS)
+  for (const size of [DAILY, { width: 1440, height: 900 }]) {
+    const at = `at ${size.width} × ${size.height}`
+    const page = await dayPage(browser, { ...size, path: '/', server: srv.started })
+    const card = await settled(page)
+    const title = card.locator('[data-welcome-title]')
+    const row = card.locator('[data-welcome-expander]')
+    await expect(row).toHaveAttribute('aria-expanded', 'false')
+    await expect(card.locator('[data-welcome-fold]')).toHaveCount(0)
+    await inWindow(page, card, `${at}, folded`)
+    const before = [await title.boundingBox(), await row.boundingBox()]
+    await unfold(card)
+    await inWindow(page, card, `${at}, unfolded`)
+    const after = [await title.boundingBox(), await row.boundingBox()]
+    for (const [i, what] of ['the title', 'the row'].entries()) {
+      for (const k of ['x', 'y', 'width', 'height'] as const) expect(Math.abs(after[i]![k] - before[i]![k]), `${at}: ${what}'s ${k}`).toBeLessThanOrEqual(BOX_SLACK)
+    }
+    await noSideways(page)
+    // A second press folds it again.
+    await row.click()
+    await expect(row).toHaveAttribute('aria-expanded', 'false')
+    await expect(card.locator('[data-welcome-fold]')).toHaveCount(0)
+    await page.context().close()
   }
 })
 
@@ -193,11 +223,11 @@ test("Where things are lists the sidebar's pages, its tiles in order then those 
 // utils/welcome.ts, written out here so that a change of them is seen.
 const EXAMPLES_TIP = 'Adds five ready-made crews to Crews; nothing starts until you launch one.'
 const TIPS = {
-  agent: (name: string) => `Opens the Launch dialog with ${name} picked; nothing starts until you launch.`,
-  more: 'Opens the Launch dialog, to pick one of the other agents this machine has.',
+  agent: (name: string, version?: string) => `Opens the Launch dialog with ${name}${version ? ` ${version}` : ''} picked.`,
+  more: 'Opens the Launch dialog with every agent this machine has.',
   agents: 'Opens Agents: the agents Conductor knows, and which of them this machine has.',
   launch: 'Opens the Launch dialog, which looks for the agents on this machine again.',
-  host: 'Opens the Quick start in a new tab: how to run conductor host on another machine.',
+  host: 'Opens the Quick start: how to run conductor host on another machine.',
   examples: EXAMPLES_TIP,
 }
 
@@ -260,16 +290,26 @@ async function tipsOnHoverAndTab(page: Page, controls: { button: Locator; name: 
   await noTip(page)
 }
 
-/** The welcome's buttons as the card draws them with agents found: each agent, "and N more" when there are more, the host's, the examples'. */
-async function welcomeButtons(card: Locator) {
+/**
+ * The welcome's buttons as the card draws them with agents found, the other ways unfolded: the main one, each name of the Or line,
+ * "N more" when there are more, the host's, the examples'. An agent's tooltip names its version where its check found one (`catalog`).
+ */
+async function welcomeButtons(card: Locator, catalog: CatalogAgent[]) {
+  const version = (id: string) => {
+    const a = catalog.find((c) => c.id === id)
+    return a?.identity?.identified ? a.identity.version : undefined
+  }
   const out: { button: Locator; name: string | RegExp; tip: string }[] = []
   const agents = card.locator('[data-welcome-agent]')
   for (let i = 0; i < (await agents.count()); i++) {
-    const name = (await agents.nth(i).locator('[data-welcome-agent-name]').textContent())!.trim()
-    out.push({ button: agents.nth(i), name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`), tip: TIPS.agent(name) })
+    const button = agents.nth(i)
+    const label = (await button.textContent())!.trim()
+    const name = (await button.getAttribute('data-welcome-primary')) === null ? label : label.replace(/^Launch /, '')
+    out.push({ button, name: label, tip: TIPS.agent(name, version((await button.getAttribute('data-welcome-agent'))!)) })
   }
   const more = card.locator('[data-welcome-more]')
-  if (await more.count()) out.push({ button: more, name: (await more.textContent())!.trim(), tip: TIPS.more })
+  if (await more.count()) out.push({ button: more, name: `${(await more.textContent())!.trim()} agents`, tip: TIPS.more })
+  await unfold(card)
   out.push({ button: card.locator('[data-welcome-host]'), name: 'How to bring one in', tip: TIPS.host })
   out.push({ button: card.locator('[data-welcome-examples]'), name: 'Load the example crews', tip: TIPS.examples })
   return out
@@ -278,30 +318,32 @@ async function welcomeButtons(card: Locator) {
 test("every button of the welcome says what it does in a tooltip, on hover and on Tab, at the desktop app's width in both themes", async ({ browser }) => {
   const srv = await empty()
   budget(2 * 40 * STEP_MS)
+  const catalog = await settledCatalog(srv)
   for (const theme of ['dark', 'light'] as const) {
     const page = await dayPage(browser, { width: 1440, height: 900, theme, path: '/', server: srv.started })
     const card = await settled(page)
     await expect(anyTip(page)).toHaveCount(0)
-    const buttons = await welcomeButtons(card)
+    const buttons = await welcomeButtons(card, catalog)
     expect(buttons.length, 'an agent at least, with the host and the examples').toBeGreaterThanOrEqual(3)
     await tipsOnHoverAndTab(page, buttons, `${theme}`)
     await page.context().close()
   }
 })
 
-test("a tooltip closes as the pointer leaves its button: a press on the agent below one whose tooltip was open opens that agent's Launch dialog", async ({ browser }) => {
+test("a tooltip closes as the pointer leaves its button: a press on the Or line's first agent, under the main button whose tooltip was open, opens that agent's Launch dialog", async ({ browser }) => {
   const srv = await empty()
   budget(8 * STEP_MS)
+  const { main, named } = offerOf(await settledCatalog(srv))
+  expect(named.length, 'the e2e catalog offers an agent on the Or line').toBeGreaterThanOrEqual(1)
   const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
   const card = await settled(page)
-  const agents = card.locator('[data-welcome-agent]')
-  expect(await agents.count(), 'the e2e catalog offers two agents or more').toBeGreaterThanOrEqual(2)
-  const [first, second] = [agents.nth(0), agents.nth(1)]
-  const name = (await second.locator('[data-welcome-agent-name]').textContent())!.trim()
+  const first = card.locator('[data-welcome-primary]')
+  const second = card.locator('[data-welcome-or]').getByRole('button', { name: named[0]!.name, exact: true })
+  const name = named[0]!.name
   await first.hover()
-  await tipShown(page, first, TIPS.agent((await first.locator('[data-welcome-agent-name]').textContent())!.trim()), 'the first agent, hovered')
-  // Straight down onto the middle of the next agent, where the first's tooltip lies while it is open, and pressed there: the mouse
-  // itself, so that a press that lands on the tooltip fails here rather than waiting on the locator's own check.
+  await tipShown(page, first, TIPS.agent(main.name, main.identity?.identified ? main.identity.version : undefined), 'the main button, hovered')
+  // Straight down onto the middle of the Or line's first agent, where the main button's tooltip lies while it is open, and pressed
+  // there: the mouse itself, so that a press that lands on the tooltip fails here rather than waiting on the locator's own check.
   const box = (await second.boundingBox())!
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 })
   await page.mouse.down()
@@ -327,14 +369,16 @@ test('the welcome with no agent found offers Agents, and with the agents not rea
     await page.reload()
     const card = page.locator('[data-welcome-card]')
     await expect(card.locator(button), state).toBeVisible()
-    await tipsOnHoverAndTab(
-      page,
-      [
-        { button: card.locator(button), name, tip },
-        { button: card.locator('[data-welcome-host]'), name: 'How to bring one in', tip: TIPS.host },
-      ],
-      state,
-    )
+    // Its button says what it does on hover, and reached by the keyboard (Shift+Tab from the fold's row, the control after it).
+    const b = card.locator(button)
+    await expect(b, state).toHaveAccessibleName(name)
+    await b.hover()
+    await tipShown(page, b, tip, `${state}, hovered`)
+    await noTip(page)
+    await card.locator('[data-welcome-expander]').focus()
+    await page.keyboard.press('Shift+Tab')
+    await expect(b).toBeFocused()
+    await tipShown(page, b, tip, `${state}, by the keyboard`)
     await page.context().close()
   }
 })
@@ -342,10 +386,11 @@ test('the welcome with no agent found offers Agents, and with the agents not rea
 test("on a phone the welcome's buttons keep their labels as their names, and a tap opens no tooltip, then or when the dialog it opened closes", async ({ browser }) => {
   const srv = await empty()
   budget(12 * STEP_MS)
+  const catalog = await settledCatalog(srv)
   const page = await dayPage(browser, { width: 390, height: 844, touch: true, path: '/sessions', server: srv.started })
   const card = await settled(page)
-  for (const c of await welcomeButtons(card)) await expect(c.button).toHaveAccessibleName(c.name)
-  const first = card.locator('[data-welcome-agent]').first()
+  for (const c of await welcomeButtons(card, catalog)) await expect(c.button).toHaveAccessibleName(c.name)
+  const first = card.locator('[data-welcome-primary]')
   await first.scrollIntoViewIfNeeded()
   await first.tap()
   const dialog = page.getByRole('dialog')
@@ -391,20 +436,27 @@ test("Crews' Load the examples says what it does in a tooltip on hover and on Ta
   await expect(anyTip(phone)).toHaveCount(0)
 })
 
-test('the examples say what loading them does, on the welcome, on Crews and in the palette, and the welcome loads them onto Crews', async ({ browser }) => {
-  budget(START_WAIT_MS + 16 * STEP_MS)
+test("the examples say what loading them does, on the welcome's tooltip, on Crews and in the palette, and the welcome loads them onto Crews", async ({ browser }) => {
+  budget(START_WAIT_MS + 20 * STEP_MS)
   const srv = await ownServer('welcome-examples')
   try {
-    const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
-    const card = await settled(page)
-    const line = (await card.locator('[data-examples-line]').textContent())!.trim()
-    expect(line).not.toBe('')
-
-    // Crews with nothing on it: the same words under its Load the examples.
-    await page.goto('/crews')
+    // Crews with nothing on it: the words under its Load the examples.
+    const page = await dayPage(browser, { width: 1440, height: 900, path: '/crews', server: srv.started })
     const crewsEmpty = page.locator('[data-crews-empty]')
     await expect(crewsEmpty.getByRole('button', { name: 'Load the examples' })).toBeVisible()
-    await expect(crewsEmpty.locator('[data-examples-line]')).toHaveText(line)
+    const line = (await crewsEmpty.locator('[data-examples-line]').textContent())!.trim()
+    expect(line).toBe(EXAMPLES_TIP)
+    // The welcome: the same words are its button's tooltip, and no line under it says them again.
+    await page.goto('/')
+    const card = await settled(page)
+    await unfold(card)
+    await expect(card.locator('[data-examples-line]')).toHaveCount(0)
+    const examples = card.locator('[data-welcome-examples]')
+    await examples.hover()
+    await tipShown(page, examples, line, 'the welcome, hovered')
+    await noTip(page)
+    await page.goto('/crews')
+    await expect(crewsEmpty.getByRole('button', { name: 'Load the examples' })).toBeVisible()
     // The palette: on the Crews page its own group's row, and from the home the runs-and-crews mode's (#) row, say them as their detail.
     const palette = page.locator('[data-palette]')
     const paletteSays = async (key: string, query: string) => {
@@ -422,9 +474,10 @@ test('the examples say what loading them does, on the welcome, on Crews and in t
     await settled(page)
     await paletteSays('crews:examples', '#example')
 
-    // The welcome's Load the example crews lands on Crews, listing them.
+    // The welcome's Load the example crews lands on Crews, listing them, and says how many it added in the words Crews says.
     await page.goto('/')
-    await (await settled(page)).locator('[data-welcome-examples]').click()
+    await (await unfold(await settled(page))).locator('[data-welcome-examples]').click()
+    await expect(page.getByText(/^[1-9]\d* example crews? added$/)).toBeVisible()
     await expect(page).toHaveURL(/\/crews$/)
     await expect(page.locator('[data-crew-entry][data-crew-id="example-todo-app"] [data-crew-item]')).toBeVisible()
   } finally {

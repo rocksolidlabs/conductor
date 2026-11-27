@@ -147,30 +147,61 @@ export function notInstalledBadge(a: Pick<AgentInfo, 'identity' | 'command' | 'o
   return { label: notInstalled(host, a.onWindows), title: notInstalledTitle(program, a.onWindows), notAgent: false }
 }
 
-/** An agent the welcome offers to launch: its name and the version its check found, or `checking` while the server still looks. */
+/** The built-in shell's id: an agent the catalog offers, never the welcome's main button. */
+export const SHELL_ID = 'shell'
+
+/** An agent the welcome offers to launch: its name, and the version its check found (for the button's tooltip). */
 export interface WelcomeAgent {
   id: string
   name: string
-  icon?: string
   version?: string
-  checking: boolean
 }
 
 /**
- * The agents the welcome offers (the UX review's P17): those the server can launch now, and those it is still checking (#704), in the
- * catalog's order, at most `max`, with how many more there are. An agent not installed (or another program of its name) is left out:
- * the welcome offers nothing the server cannot launch.
+ * What the welcome offers (UX3): `looking` while an agent ahead of the first one found is still being looked up; `none` when the server
+ * can launch no agent but the shell; else the main button's agent and the others for the Or line, all of them when they are three or
+ * fewer, else the first two and how many more.
  */
-export function welcomeAgents(list: readonly AgentInfo[], max = 4): { agents: WelcomeAgent[]; rest: number } {
-  const found = list.filter((a) => a.checking || isAvailable(a))
-  const agents = found.slice(0, max).map((a) => ({
-    id: a.id,
-    name: a.name,
-    icon: a.icon,
-    version: !a.checking && a.identity?.identified && a.identity.version ? a.identity.version : undefined,
-    checking: !!a.checking,
-  }))
-  return { agents, rest: found.length - agents.length }
+export type WelcomeOffer = { state: 'looking' } | { state: 'none' } | { state: 'found'; main: WelcomeAgent; named: WelcomeAgent[]; rest: number }
+
+/**
+ * Whether the server is still looking the agent's program up (#704): the quick read counts such a program as installed, so it is not
+ * known yet. One whose version alone is still asked (`identity.pending`) was found.
+ */
+export function stillLookedUp(a: Pick<AgentInfo, 'checking' | 'identity'>): boolean {
+  return !!a.checking && !a.identity?.pending
+}
+
+function welcomeAgent(a: AgentInfo): WelcomeAgent {
+  return { id: a.id, name: a.name, version: a.identity?.identified && !a.identity.pending && a.identity.version ? a.identity.version : undefined }
+}
+
+/**
+ * The welcome's offer (UX3, the welcome's plan row 1): the main button is the first agent the server can launch whose id is not the
+ * built-in shell, in the catalog's order; `keep` (the agent the button already names, or the one launched last) comes first while the
+ * server can still launch it, so the button never changes under the pointer. An agent still looked up ahead of it holds the answer back
+ * (`looking`), unless the card already read it once and gave up (`gaveUp`): then it counts as not found for now. The others the server
+ * can launch, the shell among them, go to the Or line in the catalog's order: all of them when there are three or fewer, else two and
+ * the count of the rest. An agent not installed, or another program of its name, is never offered.
+ */
+export function welcomeOffer(list: readonly AgentInfo[], o: { gaveUp?: ReadonlySet<string>; keep?: string } = {}): WelcomeOffer {
+  const found = (a: AgentInfo) => !stillLookedUp(a) && isAvailable(a)
+  let main = o.keep ? list.find((a) => a.id === o.keep && a.id !== SHELL_ID && found(a)) : undefined
+  if (!main) {
+    for (const a of list) {
+      if (a.id === SHELL_ID) continue
+      if (stillLookedUp(a) && !o.gaveUp?.has(a.id)) return { state: 'looking' }
+      if (found(a)) {
+        main = a
+        break
+      }
+    }
+  }
+  if (!main) return { state: 'none' }
+  const first = main
+  const others = list.filter((a) => a.id !== first.id && found(a)).map(welcomeAgent)
+  const named = others.length <= 3 ? others : others.slice(0, 2)
+  return { state: 'found', main: welcomeAgent(first), named, rest: others.length - named.length }
 }
 
 /** The agents the Launch dialog's server tab offers. */

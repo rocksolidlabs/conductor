@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { agentItem, CHECK_READ_DEADLINE_MS, checkBadge, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, pageRequests, serverAgents, settleChecks, welcomeAgents } from './agents'
+import { agentItem, CHECK_READ_DEADLINE_MS, checkBadge, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, pageRequests, serverAgents, settleChecks, SHELL_ID, stillLookedUp, welcomeOffer } from './agents'
 import type { After } from './capacity'
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({ id: 'a', name: 'Agent', command: ['a'], allowArgs: true, ...over })
@@ -270,36 +270,57 @@ describe('agents still being checked (#704)', () => {
   })
 })
 
-describe('the agents the welcome offers (the UX review, P17)', () => {
+describe("the welcome's offer (UX3)", () => {
   const found = (version?: string) => ({ ran: true, identified: true, verified: true, name: 'Agent', version })
-  it('offers the agents the server can launch and those still checked, in catalog order, never one not installed', () => {
+  const ids = (o: ReturnType<typeof welcomeOffer>) => (o.state === 'found' ? { main: o.main.id, named: o.named.map((a) => a.id), rest: o.rest } : o.state)
+
+  it("names the first agent the server can launch, in the catalog's order, with its version, never one not installed", () => {
     const list = [
+      agent({ id: 'gone', name: 'Gone', available: false }),
       agent({ id: 'one', name: 'One', available: true, identity: found('2.1.318') }),
       agent({ id: 'two', name: 'Two', available: true }),
-      agent({ id: 'three', name: 'Three', available: false }),
-      agent({ id: 'four', name: 'Four', available: false, checking: true }),
     ]
-    expect(welcomeAgents(list)).toEqual({
-      agents: [
-        { id: 'one', name: 'One', icon: undefined, version: '2.1.318', checking: false },
-        { id: 'two', name: 'Two', icon: undefined, version: undefined, checking: false },
-        { id: 'four', name: 'Four', icon: undefined, version: undefined, checking: true },
-      ],
-      rest: 0,
-    })
+    expect(welcomeOffer(list)).toEqual({ state: 'found', main: { id: 'one', name: 'One', version: '2.1.318' }, named: [{ id: 'two', name: 'Two', version: undefined }], rest: 0 })
   })
 
-  it('gives no version for a program its check did not identify, and none while its version is still asked', () => {
+  it('never makes the built-in shell the main button: it goes to the Or line, and a machine with only the shell has none', () => {
+    const shell = agent({ id: SHELL_ID, name: 'Shell', available: true })
+    expect(ids(welcomeOffer([shell, agent({ id: 'one', available: true })]))).toEqual({ main: 'one', named: [SHELL_ID], rest: 0 })
+    expect(welcomeOffer([shell, agent({ id: 'gone', available: false })])).toEqual({ state: 'none' })
+    expect(welcomeOffer([])).toEqual({ state: 'none' })
+  })
+
+  it('holds the answer back while an agent ahead of the first found is still looked up, and not once it was read and gave up', () => {
+    const list = [agent({ id: 'slow', available: true, checking: true }), agent({ id: 'one', available: true })]
+    expect(welcomeOffer(list)).toEqual({ state: 'looking' })
+    // Read once and still looked up: not found for now, and not on the Or line either.
+    expect(ids(welcomeOffer(list, { gaveUp: new Set(['slow']) }))).toEqual({ main: 'one', named: [], rest: 0 })
+    // One looked up behind the first found holds nothing back, and joins the Or line only once it is found.
+    expect(ids(welcomeOffer([agent({ id: 'one', available: true }), agent({ id: 'slow', available: true, checking: true })]))).toEqual({ main: 'one', named: [], rest: 0 })
+    // Its version alone still asked: its program was found, so it is known.
+    const asked = agent({ id: 'asked', available: true, checking: true, identity: { ...found('1.0'), pending: true } })
+    expect(stillLookedUp(asked)).toBe(false)
+    expect(welcomeOffer([asked])).toEqual({ state: 'found', main: { id: 'asked', name: 'Agent', version: undefined }, named: [], rest: 0 })
+  })
+
+  it('keeps the agent the button already names while the server can launch it, and lets it go once an answer says it is gone', () => {
+    const list = [agent({ id: 'one', available: true }), agent({ id: 'two', available: true })]
+    expect(ids(welcomeOffer(list, { keep: 'two' }))).toEqual({ main: 'two', named: ['one'], rest: 0 })
+    expect(ids(welcomeOffer([agent({ id: 'slow', checking: true }), ...list], { keep: 'two' }))).toEqual({ main: 'two', named: ['one'], rest: 0 })
+    expect(ids(welcomeOffer([list[0]!, agent({ id: 'two', available: false })], { keep: 'two' }))).toEqual({ main: 'one', named: [], rest: 0 })
+    expect(ids(welcomeOffer([agent({ id: SHELL_ID, available: true }), ...list], { keep: SHELL_ID }))).toEqual({ main: 'one', named: [SHELL_ID, 'two'], rest: 0 })
+  })
+
+  it('names three others or fewer on the Or line, else the first two and the count of the rest', () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => agent({ id: `a${i}`, available: true }))
+    expect(ids(welcomeOffer(many(4)))).toEqual({ main: 'a0', named: ['a1', 'a2', 'a3'], rest: 0 })
+    expect(ids(welcomeOffer(many(5)))).toEqual({ main: 'a0', named: ['a1', 'a2'], rest: 2 })
+    expect(ids(welcomeOffer(many(1)))).toEqual({ main: 'a0', named: [], rest: 0 })
+  })
+
+  it('gives no version for a program its check did not identify', () => {
     const odd = { ran: true, identified: false, verified: false, output: 'v9', version: '9' }
-    expect(welcomeAgents([agent({ id: 'x', available: true, identity: odd })]).agents[0]!.version).toBeUndefined()
-    expect(welcomeAgents([agent({ id: 'y', available: true, checking: true, identity: { ...found('1.0'), pending: true } })]).agents[0]).toMatchObject({ version: undefined, checking: true })
-  })
-
-  it('offers at most max, and counts the rest', () => {
-    const six = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => agent({ id, available: true }))
-    const w = welcomeAgents(six, 4)
-    expect(w.agents.map((a) => a.id)).toEqual(['a', 'b', 'c', 'd'])
-    expect(w.rest).toBe(2)
-    expect(welcomeAgents(six.slice(0, 2), 4).rest).toBe(0)
+    const o = welcomeOffer([agent({ id: 'x', available: true, identity: odd })])
+    expect(o.state === 'found' && o.main.version).toBeUndefined()
   })
 })
