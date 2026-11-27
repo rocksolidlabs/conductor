@@ -139,7 +139,13 @@ describe("the picker's words for a listing refused", () => {
     expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots: /home/ada/code')).toBe('Agents can use only the folders inside /home/ada/code. Pick one there.')
     expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots: /a, /b')).toBe('Agents can use only the folders inside /a, /b. Pick one there.')
     expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots')).toBe("Agents can't use a folder here. Pick another.")
-    expect(listingProblem('network', 'Cannot reach the server')).toBe('Cannot reach the server')
+    expect(listingProblem('network', 'Cannot reach the server')).toBe('Conductor did not answer. Type on to try again.')
+    expect(listingProblem('http_error', 'Internal Server Error: /x')).toBe("This place can't be listed. Pick another.")
+  })
+  it('names at most three folders agents may use, and counts the rest', () => {
+    const roots = ['/a', '/b', '/c', '/d', '/e'].join(', ')
+    expect(listingProblem('invalid_cwd', `no directory in the prefix is under the allowed roots: ${roots}`)).toBe('Agents can use only the folders inside /a, /b, /c and 2 more. Pick one there.')
+    expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots: /a, /b, /c')).toBe('Agents can use only the folders inside /a, /b, /c. Pick one there.')
   })
 })
 

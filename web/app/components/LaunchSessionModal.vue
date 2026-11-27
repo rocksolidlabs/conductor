@@ -354,8 +354,13 @@ const folderRefusal = computed(() => (cwdRefused.value && cwdRefused.value.cwd =
 // It is checked again before every launch, and a folder it says cannot be used is not sent.
 const folderLine = useTemplateRef<{ check: () => Promise<boolean>; blocks: boolean }>('folderLine')
 const folderFocused = ref(false)
+/**
+ * The folder as the launch sends it, the one place that decides it: the field's text, or for a clone none when the field holds
+ * only spaces (the clone then runs in its source's folder). The line checks exactly this text.
+ */
+const folderSent = computed(() => (cloning.value ? (cloneCwd(state.cwd) ?? '') : state.cwd))
 /** A blank folder is the agent's own, the server's default or a clone's source's: nothing is checked until one is typed. */
-const folderUnchecked = computed(() => !open.value || !state.cwd)
+const folderUnchecked = computed(() => !open.value || !folderSent.value)
 const lineBlocks = computed(() => !!folderLine.value?.blocks)
 function onFolderBlur(e: FocusEvent) {
   const to = e.relatedTarget as Node | null
@@ -480,7 +485,7 @@ async function submitClone(source: NonNullable<LaunchPrefill['clone']>) {
   submitting.value = true
   error.value = ''
   try {
-    const session = await api.clone(source.id, { name: cloneNamed.value.name, agentId: state.agentId, cwd: cloneCwd(state.cwd), args: cloneArgs(), yolo: yolo.value })
+    const session = await api.clone(source.id, { name: cloneNamed.value.name, agentId: state.agentId, cwd: folderSent.value || undefined, args: cloneArgs(), yolo: yolo.value })
     toast.add({ title: `Cloned ${source.name}`, description: `${session.name} is a new session like ${source.name}`, color: 'success', icon: 'i-lucide-copy' })
     if (current()) open.value = false
     emit('launched', session)
@@ -511,7 +516,7 @@ async function submit() {
     const session = await api.create({
       agentId: state.agentId,
       name: state.name || undefined,
-      cwd: state.cwd || undefined,
+      cwd: folderSent.value || undefined,
       args: selected.value?.allowArgs && state.args.trim() ? splitArgs(state.args) : undefined,
       yolo: state.yolo,
       // The account the person picked, else none: the route resolves it (its refusal of a pick is shown in its words).
@@ -601,8 +606,8 @@ async function submit() {
 
         <template v-if="state.runsOn === 'server'">
           <UFormField label="Folder" name="cwd" :error="(folderRefusal && !lineBlocks ? folderRefusal.words : lineBlocks) || undefined" data-launch-folder @focusin="folderFocused = true" @focusout="onFolderBlur">
-            <DirInput v-model="state.cwd" :placeholder="folderPlaceholder" name="cwd" picker-title="Where the session runs" />
-            <FolderAllowLine ref="folderLine" :path="state.cwd" :focused="folderFocused" :off="folderUnchecked" @use="(p: string) => (state.cwd = p)" @allowed="onFolderAllowed" @leave="open = false" />
+            <DirInput v-model="state.cwd" :placeholder="folderPlaceholder" name="cwd" picker-title="Where the session runs" lined />
+            <FolderAllowLine ref="folderLine" :path="folderSent" :focused="folderFocused" :off="folderUnchecked" @use="(p: string) => (state.cwd = p)" @allowed="onFolderAllowed" @leave="open = false" />
             <template v-if="folderRefusal && !lineBlocks" #error>
               <span data-launch-folder-refused>{{ folderRefusal.words }}<template v-if="folderRefusal.outside && isDesktop"> <NuxtLink to="/settings?section=folders" class="underline" data-launch-folder-settings @click="open = false">Add it in Settings</NuxtLink></template></span>
             </template>

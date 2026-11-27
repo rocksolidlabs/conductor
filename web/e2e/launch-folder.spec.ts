@@ -367,6 +367,16 @@ test('the press allows the folder the check named, named on the line, never the 
 
 test('a text is checked as typed: a space at its end is no other folder, and an empty Folder shows no line', async ({ browser }) => {
   const { page, asked } = await folderPage(browser, 'press')
+  // An empty text checked would be the server's default folder: here one agents may not use, so a check of it would draw a line.
+  const blank: string[] = []
+  page.on('request', (r) => {
+    const u = new URL(r.url())
+    if (u.pathname === '/api/roots/check' && !u.searchParams.get('path')?.trim()) blank.push(u.search)
+  })
+  await page.route(
+    (u) => u.pathname === '/api/roots/check' && !u.searchParams.get('path')?.trim(),
+    (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ path: outsideRoot, state: 'outside' }) }),
+  )
   const dialog = await openLaunch(page)
   const folder = outside('padded')
   await typeFolder(dialog, `${folder} `)
@@ -375,6 +385,12 @@ test('a text is checked as typed: a space at its end is no other folder, and an 
   await dialog.getByLabel('Folder', { exact: true }).fill('')
   await dialog.locator('[data-launch-message-input]').click()
   await expect(line(dialog)).toHaveCount(0)
+  // Launch pressed with Folder empty: still no check of an empty text, and no line.
+  const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
+  await dialog.locator('[data-launch-submit]').click()
+  const s = (await (await answered).json()) as Session
+  if (s.id) made.push(s.id)
+  expect(blank, 'no check of an empty Folder').toEqual([])
   expect(asked).toEqual([])
 })
 
@@ -452,4 +468,105 @@ test('a folder outside the folders agents may use opens no list under the field,
   await expect(page.getByRole('listbox')).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText('no directory in the prefix')
   await expect(page.locator('body')).not.toContainText('under the allowed roots')
+})
+
+test("an older answer for the same text, come after the newer one, changes nothing", async ({ browser }) => {
+  const { page } = await folderPage(browser, 'press')
+  const dialog = await openLaunch(page)
+  const folder = outside('same-text')
+  const other = outside('same-text-between')
+  // The first check of the folder held; another folder typed, then the folder again, whose second check is answered.
+  const held: Route[] = []
+  let first = true
+  const match = (u: URL) => u.pathname === '/api/roots/check' && u.searchParams.get('path') === folder
+  await page.route(match, (r) => {
+    if (first) {
+      first = false
+      held.push(r)
+    } else void r.continue()
+  })
+  await typeFolder(dialog, folder)
+  await expect.poll(() => held.length).toBe(1)
+  await typeFolder(dialog, other)
+  await typeFolder(dialog, folder)
+  await expect(line(dialog)).toHaveAttribute('data-folder-state', 'outside')
+  const done = page.waitForEvent('requestfinished', (r) => r === held[0]!.request())
+  await held[0]!.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ path: folder, state: 'missing' }) })
+  await done
+  await page.unroute(match)
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  await expect(line(dialog)).toHaveAttribute('data-folder-state', 'outside')
+  await expect(dialog.locator('[data-launch-allow]')).toBeVisible()
+})
+
+test('a press answered busy goes with a later check that fails: no button left that does nothing', async ({ browser }) => {
+  const { page, answer } = await folderPage(browser, 'press')
+  const dialog = await openLaunch(page)
+  const folder = outside('busy-then-failed')
+  await typeFolder(dialog, folder)
+  answer({ ok: false, code: 'busy', message: 'the settings are being saved: try again' })
+  await dialog.locator('[data-launch-allow]').click()
+  await expect(line(dialog).locator('[data-folder-words]')).toHaveText('Conductor is busy. Press Allow this folder again in a moment.')
+  // The folder's next check fails at the network: the busy line and its button go with it.
+  const match = (u: URL) => u.pathname === '/api/roots/check' && u.searchParams.get('path') === folder
+  await page.route(match, (r) => r.abort())
+  const failed = page.waitForEvent('requestfailed', (r) => match(new URL(r.url())))
+  await typeFolder(dialog, outside('busy-between'))
+  await typeFolder(dialog, folder)
+  await failed
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  await expect(dialog.locator('[data-launch-allow]')).toHaveCount(0)
+  await page.unroute(match)
+})
+
+test('a folder missing stays said once a launch was tried with it, the cursor back in Folder', async ({ browser }) => {
+  const { page } = await folderPage(browser, 'press')
+  const dialog = await openLaunch(page)
+  const launches = countLaunches(page)
+  const missing = join(outsideRoot, 'never-made')
+  const field = dialog.getByLabel('Folder', { exact: true })
+  // Typed with the cursor kept in Folder: not said while typed.
+  await field.click()
+  const checkedIt = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/roots/check' && new URL(r.url()).searchParams.get('path') === missing)
+  await field.fill(missing)
+  await checkedIt
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  await expect(field).toBeFocused()
+  await expect(line(dialog)).toHaveCount(0)
+  // Launch tried: the check before it says the folder is missing, the cursor goes back to Folder, and the line stays.
+  await dialog.locator('[data-launch-submit]').click()
+  await expect(field).toBeFocused()
+  await expect(line(dialog)).toHaveText('There is no folder at this path.')
+  expect(launches(), 'nothing was sent').toBe(0)
+})
+
+test("a clone's Folder of spaces alone is no folder: nothing is checked, and the clone runs in its source's folder", async ({ browser }) => {
+  const source = await own.api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: `clone source ${randomBytes(3).toString('hex')}` })
+  made.push(source.id)
+  const { page } = await folderPage(browser, 'press')
+  const checked: string[] = []
+  page.on('request', (r) => {
+    const u = new URL(r.url())
+    if (u.pathname === '/api/roots/check') checked.push(u.searchParams.get('path') ?? '')
+  })
+  const r = page.locator(`[data-session-list] [data-sidebar-row="s:${source.id}"]`).first()
+  await expect(r).toBeVisible()
+  await r.hover()
+  await r.locator('[data-row-more]').click()
+  await page.getByRole('menuitem', { name: /^Clone with options…/ }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.locator(`[data-launch-clone="${source.id}"]`)).toBeVisible()
+  await dialog.locator('[data-clone-name]').fill(`clone ${randomBytes(3).toString('hex')}`)
+  await dialog.getByLabel('Folder', { exact: true }).fill('   ')
+  await dialog.getByLabel('Folder', { exact: true }).blur()
+  const sent = page.waitForRequest((q) => q.method() === 'POST' && new URL(q.url()).pathname === `/api/sessions/${source.id}/clone`)
+  const answered = page.waitForResponse((q) => q.request().method() === 'POST' && new URL(q.url()).pathname === `/api/sessions/${source.id}/clone`)
+  await dialog.locator('[data-launch-clone-submit]').click()
+  expect(((await sent).postDataJSON() as { cwd?: string }).cwd).toBeUndefined()
+  const reply = await answered
+  const clone = (await reply.json()) as Session
+  if (clone.id) made.push(clone.id)
+  expect(reply.status()).toBe(201)
+  expect(clone.cwd).toBe(source.cwd)
+  expect(checked.filter((p) => !p.trim()), 'no check of a Folder of spaces').toEqual([])
 })

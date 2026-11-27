@@ -78,9 +78,13 @@ function noPress(way: AllowWay): Pick<FolderLine, 'words' | 'settings' | 'after'
     case 'app':
       return { words: `${CANT} Allow it in the Conductor app on the computer that runs it.` }
     default:
-      return { words: `${CANT} This server's folders are set in its configuration.` }
+      return { words: `${CANT} Add it to this server's folders agents can use, or pick another.` }
   }
 }
+
+/** The longest folder the app allows (desktop/src/allow.ts MAX_ROOT_PATH): one longer gets no press. */
+export const MAX_ALLOW_PATH = 1024
+const TOO_LONG = "Agents can't use this folder: its path is too long to allow. Pick another."
 
 /** The words for a folder the server never allows from the app's screens, by its reason; an unknown reason says only the fact. */
 export function refusedWords(reason: string | undefined): string {
@@ -88,9 +92,9 @@ export function refusedWords(reason: string | undefined): string {
     case 'whole_disk':
       return "Agents can't use the whole disk. Pick a folder inside it."
     case 'conductor_data':
-      return "Agents can't use this folder: it holds Conductor's own data. Pick another."
+      return "Agents can't use this folder: Conductor's data or an account's login is in it. Pick another."
     case 'name':
-      return "Agents can't use this folder: its name has a comma, a hidden character or a space at an end. Rename it, or pick another."
+      return "Agents can't use this folder: a name in its path has a comma, a hidden character or a space at an end. Rename that folder, or pick another."
     case 'owner':
       return "Agents can't use this folder: another user owns it. Pick one of yours."
     default:
@@ -106,7 +110,7 @@ export function wideQuestion(kind: WideKind, real: string): Pick<FolderLine, 'wo
     case 'above_home':
       return { words: 'Allow all of', folder: real, after: '? Your home folder is inside it, and agents could read and change everything there.' }
     case 'holds_data':
-      return { words: 'Allow all of', folder: real, after: '? Conductor keeps its own data inside it, and agents could read it.' }
+      return { words: 'Allow all of', folder: real, after: "? Conductor's data or an account's login is inside it, and agents could read it." }
   }
 }
 
@@ -141,6 +145,7 @@ export function checkLine(c: RootCheck, way: AllowWay, focused = false, typed = 
       if (c.wide && !isWide(c.wide)) return blocked(CANT_PICK, { state: 'refused' })
       if (way !== 'press') return blocked('', { state: 'outside', ...noPress(way) })
       const target = pressTarget(c)
+      if (target.length > MAX_ALLOW_PATH) return blocked(TOO_LONG, { state: 'refused' })
       const wide = isWide(c.wide) ? c.wide : undefined
       if (target !== typed) return blocked("Agents can't use", { state: 'outside', folder: target, after: ' yet.', button: 'allow', wide })
       return blocked("Agents can't use this folder yet.", { state: 'outside', button: 'allow', wide })
@@ -151,19 +156,26 @@ export function checkLine(c: RootCheck, way: AllowWay, focused = false, typed = 
   }
 }
 
-/** The line once the press answered: what it became of the folder, and the way on from a refusal. */
-export function answerLine(a: AllowAnswer, c: RootCheck): FolderLine {
+/**
+ * The line once the press answered: what it became of the folder, and the way on from a refusal. An answer that keeps the press names
+ * the folder it allows whenever that is not the text as typed, as the line before it did. No raw text of the app or the server.
+ */
+export function answerLine(a: AllowAnswer, c: RootCheck, typed = c.path): FolderLine {
   const blocked = (state: string, words: string, extra: Partial<FolderLine> = {}): FolderLine => ({ state, words, tone: 'error', button: '', blocks: true, ...extra })
+  const target = pressTarget(c)
+  /** An answer that keeps the press: its reason, after the folder's name where the folder is not the text. */
+  const again = (reason: string): FolderLine =>
+    target !== typed ? blocked('outside', "Agents can't use", { folder: target, after: ` yet. ${reason}`, button: 'allow' }) : blocked('outside', reason, { button: 'allow' })
   if (a.ok) {
-    if (!a.saved) return { state: 'allowed_unsaved', words: `Agents can use this folder until Conductor restarts. It was not kept: ${trimmed(a.error)}.`, tone: 'warning', button: '', blocks: false }
-    if (a.error) return { state: 'allowed_restarted', words: 'Restart Conductor to use this folder.', tone: 'warning', button: '', blocks: false }
+    if (!a.saved) return { state: 'allowed_unsaved', words: 'Agents can use this folder until Conductor restarts. Add it in', settings: true, after: ' to keep it.', tone: 'warning', button: '', blocks: false }
+    if (a.error) return { state: 'allowed_restarted', words: "Conductor keeps this folder. If agents can't use it once Conductor runs, restart Conductor.", tone: 'warning', button: '', blocks: false }
     return { state: 'allowed_now', words: 'Agents can use this folder now.', tone: 'success', button: '', blocks: false }
   }
   switch (a.code) {
     case 'folder_is_link':
       return a.real ? blocked('link', 'This goes through a link to', { folder: a.real, after: ". Agents can't use that folder yet.", button: 'use' }) : blocked('refused', CANT_PICK)
     case 'folder_wide':
-      return isWide(a.wide) ? { state: 'wide', ...wideQuestion(a.wide, pressTarget(c)), tone: 'warning', button: 'wide', wide: a.wide, blocks: true } : blocked('refused', CANT_PICK)
+      return isWide(a.wide) ? { state: 'wide', ...wideQuestion(a.wide, target), tone: 'warning', button: 'wide', wide: a.wide, blocks: true } : blocked('refused', CANT_PICK)
     case 'folder_refused':
       return blocked('refused', refusedWords(a.reason))
     case 'folder_missing':
@@ -174,24 +186,22 @@ export function answerLine(a: AllowAnswer, c: RootCheck): FolderLine {
       return blocked('unreadable', "Conductor can't open this folder. Pick another.")
     case 'busy':
       // A Settings save or a restart under way: the dialog keeps what was typed, and the press can be made again.
-      return blocked('outside', 'Conductor is busy. Press Allow this folder again in a moment.', { button: 'allow' })
+      return again('Conductor is busy. Press Allow this folder again in a moment.')
     case 'no_answer':
-      return blocked('outside', 'Conductor did not answer. Press Allow this folder again in a moment.', { button: 'allow' })
-    case 'rate_limited':
-      return blocked('outside', 'Conductor refused too many requests. Press Allow this folder again in a minute.', { button: 'allow' })
+      return again('Conductor did not answer. Press Allow this folder again in a moment.')
     case 'folder_changed':
-      return blocked('outside', 'The folder changed as it was allowed. Press Allow this folder again.', { button: 'allow' })
+      return again('The folder changed as it was allowed. Press Allow this folder again.')
+    case 'rate_limited':
+      return blocked('outside', 'Conductor is refusing requests for now. Try again later.')
     case 'too_many_roots':
       return blocked('outside', 'Agents can use no more folders. Remove one in', { settings: true, after: ', or pick a folder agents can use.' })
+    case 'invalid_request':
+      return blocked('refused', target.length > MAX_ALLOW_PATH ? TOO_LONG : CANT_PICK)
     case 'not_supported':
     case 'not_the_app':
       return blocked('outside', '', noPress('settings'))
     default:
       // A refusal this page does not know offers nothing that could not help.
-      return blocked('outside', `The folder was not allowed: ${trimmed(a.message)}. Pick another.`)
+      return blocked('outside', 'Conductor did not allow this folder. Add it in', { settings: true, after: ', or pick another.' })
   }
-}
-
-function trimmed(s: string | undefined): string {
-  return (s ?? '').trim().replace(/[.\s]+$/, '') || 'no reason was given'
 }

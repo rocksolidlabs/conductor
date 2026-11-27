@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { allowWay, answerLine, checkLine, pressTarget, refusedWords, wideQuestion, type RootCheck } from './folderAllow'
+import { MAX_ALLOW_PATH, allowWay, answerLine, checkLine, pressTarget, refusedWords, wideQuestion, type RootCheck } from './folderAllow'
 
 // Allow this folder (UX3 R30): the line under a folder field, made from the server's check, what this app can do, and the press.
 
 const outside = (over: Partial<RootCheck> = {}): RootCheck => ({ path: '/home/ada/Downloads', state: 'outside', ...over })
-const said = (l: ReturnType<typeof checkLine>) => (l ? [l.words, l.folder ?? '', l.settings ? 'Settings' : '', l.after ?? ''].filter(Boolean).join(' ').replace(/ ([.,?])/g, '$1') : null)
+const said = (l: ReturnType<typeof checkLine>) => (l ? [l.words, l.folder ?? '', l.settings ? 'Settings' : '', l.after ?? ''].filter(Boolean).join(' ').replace(/\s+/g, ' ').replace(/ ([.,?])/g, '$1') : null)
 
 describe('the way on, from the app and the server', () => {
   it('presses only in the desktop app whose bridge offers it and whose server holds its key', () => {
@@ -31,7 +31,7 @@ describe('the line for a check', () => {
   it('says the way on where this app cannot press', () => {
     expect(said(checkLine(outside(), 'settings'))).toBe("Agents can't use this folder. Add it to Folders agents can use in Settings, or pick another.")
     expect(said(checkLine(outside(), 'app'))).toBe("Agents can't use this folder. Allow it in the Conductor app on the computer that runs it.")
-    expect(said(checkLine(outside(), 'config'))).toBe("Agents can't use this folder. This server's folders are set in its configuration.")
+    expect(said(checkLine(outside(), 'config'))).toBe("Agents can't use this folder. Add it to this server's folders agents can use, or pick another.")
   })
   it('never offers the press for a folder refused, and says why by its reason; an unknown reason is no yes', () => {
     for (const reason of ['whole_disk', 'conductor_data', 'name', 'owner', 'something_new']) {
@@ -41,8 +41,8 @@ describe('the line for a check', () => {
       expect(l.words, reason).toBe(refusedWords(reason))
     }
     expect(refusedWords('whole_disk')).toBe("Agents can't use the whole disk. Pick a folder inside it.")
-    expect(refusedWords('conductor_data')).toBe("Agents can't use this folder: it holds Conductor's own data. Pick another.")
-    expect(refusedWords('name')).toBe("Agents can't use this folder: its name has a comma, a hidden character or a space at an end. Rename it, or pick another.")
+    expect(refusedWords('conductor_data')).toBe("Agents can't use this folder: Conductor's data or an account's login is in it. Pick another.")
+    expect(refusedWords('name')).toBe("Agents can't use this folder: a name in its path has a comma, a hidden character or a space at an end. Rename that folder, or pick another.")
     expect(refusedWords('owner')).toBe("Agents can't use this folder: another user owns it. Pick one of yours.")
     expect(refusedWords('something_new')).toBe("Agents can't use this folder. Pick another.")
   })
@@ -82,14 +82,17 @@ describe('the press', () => {
   it('asks first for a wide folder, in the words for its kind', () => {
     expect(wideQuestion('home', '/home/ada')).toEqual({ words: 'Allow your whole home folder,', folder: '/home/ada', after: '? Agents could read and change everything in it.' })
     expect(wideQuestion('above_home', '/home')).toEqual({ words: 'Allow all of', folder: '/home', after: '? Your home folder is inside it, and agents could read and change everything there.' })
-    expect(wideQuestion('holds_data', '/srv')).toEqual({ words: 'Allow all of', folder: '/srv', after: '? Conductor keeps its own data inside it, and agents could read it.' })
+    expect(wideQuestion('holds_data', '/srv')).toEqual({ words: 'Allow all of', folder: '/srv', after: "? Conductor's data or an account's login is inside it, and agents could read it." })
   })
   it('says what became of the folder', () => {
     const c = outside()
     expect(answerLine({ ok: true, root: '/r', saved: true }, c)).toMatchObject({ state: 'allowed_now', words: 'Agents can use this folder now.', blocks: false, tone: 'success' })
     expect(answerLine({ ok: true, root: '/r', saved: true }, c).settings).toBeFalsy()
-    expect(answerLine({ ok: true, root: '/r', saved: false, error: 'the settings file could not be written' }, c).words).toBe('Agents can use this folder until Conductor restarts. It was not kept: the settings file could not be written.')
-    expect(answerLine({ ok: true, root: '/r', saved: true, error: 'Conductor restarted meanwhile and is not running yet' }, c)).toMatchObject({ words: 'Restart Conductor to use this folder.', tone: 'warning', blocks: false })
+    // Never the app's own text: the fact, and the way on.
+    const unsaved = answerLine({ ok: true, root: '/r', saved: false, error: 'the settings file could not be written' }, c)
+    expect(said(unsaved)).toBe('Agents can use this folder until Conductor restarts. Add it in Settings to keep it.')
+    expect(answerLine({ ok: true, root: '/r', saved: true, error: 'Conductor restarted meanwhile and is not running yet' }, c)).toMatchObject({ words: "Conductor keeps this folder. If agents can't use it once Conductor runs, restart Conductor.", tone: 'warning', blocks: false })
+    for (const l of [unsaved, answerLine({ ok: true, root: '/r', saved: true, error: 'did not take the folder (x)' }, c)]) expect(said(l)).not.toMatch(/settings file|meanwhile|\(x\)/)
   })
   it('says a refusal in the line of its state, and keeps the press for a server restarting or another failure', () => {
     const c = outside()
@@ -101,13 +104,33 @@ describe('the press', () => {
     expect(answerLine({ ok: false, code: 'folder_missing', message: '' }, c).words).toBe('There is no folder at this path.')
     expect(answerLine({ ok: false, code: 'busy', message: 'the settings are being saved: try again' }, c)).toMatchObject({ button: 'allow', words: 'Conductor is busy. Press Allow this folder again in a moment.' })
     expect(answerLine({ ok: false, code: 'no_answer', message: '' }, c)).toMatchObject({ button: 'allow', words: 'Conductor did not answer. Press Allow this folder again in a moment.' })
-    expect(answerLine({ ok: false, code: 'rate_limited', message: '' }, c).button).toBe('allow')
+    // Another press cannot help a server that limits requests: no button.
+    expect(answerLine({ ok: false, code: 'rate_limited', message: '' }, c)).toMatchObject({ button: '', words: 'Conductor is refusing requests for now. Try again later.' })
     expect(answerLine({ ok: false, code: 'folder_changed', message: '' }, c)).toMatchObject({ button: 'allow', words: 'The folder changed as it was allowed. Press Allow this folder again.' })
     expect(answerLine({ ok: false, code: 'too_many_roots', message: 'agents may use at most 64 folders' }, c)).toMatchObject({ button: '', settings: true, words: 'Agents can use no more folders. Remove one in', after: ', or pick a folder agents can use.' })
     expect(answerLine({ ok: false, code: 'not_the_app', message: '' }, c).button).toBe('')
     // A refusal this page does not know offers no button that could not help.
-    expect(answerLine({ ok: false, code: 'invalid_request', message: "the folder's path is longer than 1024 characters" }, c)).toMatchObject({ button: '', words: "The folder was not allowed: the folder's path is longer than 1024 characters. Pick another." })
-    expect(answerLine({ ok: false, code: 'something_new', message: 'x' }, c).button).toBe('')
+    expect(answerLine({ ok: false, code: 'invalid_request', message: "the folder's path must be written clean" }, c)).toMatchObject({ button: '', words: "Agents can't use this folder. Pick another." })
+    const long = outside({ path: '/' + 'a'.repeat(MAX_ALLOW_PATH) })
+    expect(answerLine({ ok: false, code: 'invalid_request', message: 'longer' }, long).words).toBe("Agents can't use this folder: its path is too long to allow. Pick another.")
+    const unknown = answerLine({ ok: false, code: 'something_new', message: 'raw words of the app' }, c)
+    expect(unknown.button).toBe('')
+    expect(said(unknown)).toBe('Conductor did not allow this folder. Add it in Settings, or pick another.')
+  })
+  it('names the folder after every answer that keeps the press, when it is not the text as typed', () => {
+    const c = outside({ path: '/srv/b' })
+    for (const code of ['busy', 'no_answer', 'folder_changed']) {
+      const l = answerLine({ ok: false, code, message: '' }, c, 'b')
+      expect(l, code).toMatchObject({ button: 'allow', words: "Agents can't use", folder: '/srv/b' })
+      expect(l.after, code).toMatch(/^ yet\. .*again/)
+      expect(answerLine({ ok: false, code, message: '' }, c, '/srv/b').folder, code).toBeUndefined()
+    }
+  })
+  it('offers no press for a folder whose path is too long to allow', () => {
+    const at = checkLine(outside({ path: '/' + 'a'.repeat(MAX_ALLOW_PATH - 1) }), 'press')!
+    expect(at.button).toBe('allow')
+    const past = checkLine(outside({ path: '/' + 'a'.repeat(MAX_ALLOW_PATH) }), 'press')!
+    expect(past).toMatchObject({ button: '', blocks: true, words: "Agents can't use this folder: its path is too long to allow. Pick another." })
   })
 })
 
