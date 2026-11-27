@@ -621,14 +621,13 @@ func askAbout(t *testing.T, s *acpServer, rec *recorder, n int, id, input string
 }
 
 // A call that changes closes its card: an update after the request that
-// gives a shown field another value (a number written another way too), a
-// repeated announcement with
+// gives a shown field another value (a number written another way too) or
+// holds only a field the client does not read, a repeated announcement with
 // other fields, an update that sets the call running, and a line the client
 // could not read (too long, a key twice, not UTF-8, a lone surrogate) each
-// withdraw the open request (the session is told, the
-// agent answered cancelled), and a later verdict on it writes nothing, so
-// allow_once is never selected; a later request about a changed call is
-// declined.
+// withdraw the open request (the session is told, the agent answered
+// cancelled), and a later verdict on it writes nothing, so allow_once is
+// never selected; a later request about each changed call is declined.
 func TestACPACallThatChangesClosesItsCard(t *testing.T) {
 	c, s, rec := begun(t, ACPOptions{})
 	changes := []struct {
@@ -639,6 +638,7 @@ func TestACPACallThatChangesClosesItsCard(t *testing.T) {
 		{"a repeated announcement", "c2", acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"c2","title":"t","kind":"execute","status":"pending","rawInput":{"command":"cat /etc/passwd"}}`), ""},
 		{"the call set running", "c3", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c3","status":"in_progress"}`), ""},
 		{"a line too long to read", "c4", `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + acpSession + `","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"` + strings.Repeat("a", session.MaxProtocolLine) + `"}}}}`, ""},
+		{"an update holding only a field the client does not read", "c5", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c5","_meta":{"x":1}}`), ""},
 		{"a number written another way", "c6", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c6","rawInput":{"command":"ls","path":1.0}}`), `{"command":"ls","path":1}`},
 		{"a line with a key twice", "c7", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c7","rawInput":{"command":"cat /etc/passwd","command":"ls"}}`), ""},
 		{"a line that is not UTF-8", "c8", acpUpdate(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a` + "\xff" + `"}}`), ""},
@@ -662,10 +662,16 @@ func TestACPACallThatChangesClosesItsCard(t *testing.T) {
 			t.Fatalf("%s: a verdict on the closed card: %v", tc.name, err)
 		}
 	}
-	// A later request about a changed call is declined.
-	s.write(`{"jsonrpc":"2.0","id":90,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"c1"},"options":` + acpOpts + `}}`)
-	if got := s.await(`"id":90,`); strings.Contains(got, `"o1"`) {
-		t.Fatalf("a request about a changed call answered %s", got)
+	// A later request about each changed call is declined.
+	for i, tc := range changes {
+		if tc.id == "c3" {
+			continue
+		}
+		n := itoa(140 + i)
+		s.write(`{"jsonrpc":"2.0","id":` + n + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"` + tc.id + `"},"options":` + acpOpts + `}}`)
+		if got := s.await(`"id":` + n + `,`); strings.Contains(got, `"o1"`) {
+			t.Fatalf("%s: a later request answered %s", tc.name, got)
+		}
 	}
 	for _, l := range s.written() {
 		if strings.Contains(l, `"optionId":"o1"`) {
