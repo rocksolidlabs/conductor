@@ -212,3 +212,23 @@ export function launchKey(e: LaunchKey, inTask: boolean): boolean {
   if (e.ctrlKey || e.metaKey) return true
   return inTask && !e.shiftKey
 }
+
+/** Whether a launch's arguments name a model themselves: `--model`, `--model=<name>` or `-m`, as the agents' own flags spell it. */
+export function argsNameModel(args: readonly string[]): boolean {
+  return args.some((a) => a === '--model' || a.startsWith('--model=') || a === '-m')
+}
+
+/** Whether a launch's arguments hold one of the agent's yolo recipe arguments: the Yolo switch is the place for those. */
+export function argsHoldYolo(args: readonly string[], recipe: readonly string[] | undefined): boolean {
+  return !!recipe?.length && args.some((a) => recipe.includes(a))
+}
+
+/**
+ * The placeholder of Launch agent's Name: the name the task gives once one is typed (namePreview), `Made from the task` before, and
+ * for an agent that takes no task the name the server gives it, `<Agent> and a number`.
+ */
+export function namePlaceholderFor(agent: { name: string } | undefined, takesTask: boolean, task: string): string {
+  if (!agent) return ''
+  if (!takesTask) return `${agent.name} and a number`
+  return namePreview(task) || 'Made from the task'
+}

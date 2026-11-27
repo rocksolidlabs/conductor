@@ -158,9 +158,9 @@ test('an account added in Settings and made the default launches a session that 
   await expect(dialog.locator('[data-more-line]')).toHaveCount(0)
   await openMore(dialog)
   await expect(dialog.locator('[data-launch-model-input]')).toHaveValue('')
-  // The empty Model field says what the panel says: no model named, never the agent's default (the Arguments field can name one).
-  await expect(dialog.locator('[data-launch-model-input]')).toHaveAttribute('placeholder', 'no model named')
-  await expect(dialog.locator('[data-launch-model]')).toContainText('empty: the agent chooses, or its arguments do')
+  // The empty Model field says the agent chooses, with no line under it; never the agent's default (the arguments can name one).
+  await expect(dialog.locator('[data-launch-model-input]')).toHaveAttribute('placeholder', "The agent's choice")
+  await expect(dialog.locator('[data-launch-model]')).not.toContainText('empty: the agent chooses, or its arguments do')
   await expect(dialog.locator('[data-launch-model]')).not.toContainText("the agent's default")
   const panel = dialog.locator('[data-capacity-panel]')
   await expect(panel).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
@@ -413,10 +413,13 @@ test.describe('the account a launch is sent with', () => {
     const model = dialog.locator('[data-launch-model-input]')
     await model.fill('claude-e2e-model')
     await expect(model).toHaveValue('claude-e2e-model')
-    // The arguments choose a model as well: the route refuses, in its words, and the dialog stays open with the pick as it was.
+    // The arguments choose a model as well: the dialog says so before the press and still sends; the route refuses, in its words,
+    // and the dialog stays open with the pick as it was.
     const args = dialog.locator('[data-launch-args]')
     await args.fill('--model opus')
     await expect(args).toHaveValue('--model opus')
+    await expect(dialog.locator('[data-launch-args-field]')).toContainText('The model is set here and in Model. Keep one of them.')
+    await expect(dialog.getByRole('button', { name: 'Launch', exact: true })).toBeEnabled()
     const refused = await launch(page, dialog)
     expect(refused.status).toBe(400)
     await expect(dialog.locator('[data-launch-error]')).toHaveText('Not started: the arguments choose a model already: set the model in one place.')

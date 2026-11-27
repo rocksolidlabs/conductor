@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { chipStep, cutAtWord, firstMessageLine, isLoopbackHost, launchKey, launchRefusal, messageProblem, namePreview, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
+import { argsHoldYolo, argsNameModel, chipStep, cutAtWord, firstMessageLine, isLoopbackHost, launchKey, launchRefusal, messageProblem, namePlaceholderFor, namePreview, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
 
 describe('showsRunsOn', () => {
   it('never asks in the desktop app', () => {
@@ -181,3 +181,28 @@ describe('the keys that launch from the Launch dialog', () => {
     expect(launchKey(key({ key: 'a', ctrlKey: true }), true)).toBe(false)
   })
 })
+
+describe("Launch agent's More options, before the press", () => {
+  it('sees a model the arguments name, in each spelling the agents take', () => {
+    expect(argsNameModel(['--model', 'opus'])).toBe(true)
+    expect(argsNameModel(['--model=opus'])).toBe(true)
+    expect(argsNameModel(['-m', 'o3'])).toBe(true)
+    expect(argsNameModel(['--add-dir', '../shared'])).toBe(false)
+    expect(argsNameModel(['--models'])).toBe(false)
+    expect(argsNameModel([])).toBe(false)
+  })
+  it("sees the agent's own yolo arguments typed by hand, and nothing for an agent with no recipe", () => {
+    expect(argsHoldYolo(['--dangerously-skip-permissions'], ['--dangerously-skip-permissions'])).toBe(true)
+    expect(argsHoldYolo(['--add-dir', 'x'], ['--dangerously-skip-permissions'])).toBe(false)
+    expect(argsHoldYolo(['--yolo'], undefined)).toBe(false)
+    expect(argsHoldYolo(['--yolo'], [])).toBe(false)
+  })
+  it("gives Name's placeholder from the task, or the server's name for an agent that takes none", () => {
+    expect(namePlaceholderFor({ name: 'Claude Code' }, true, '')).toBe('Made from the task')
+    expect(namePlaceholderFor({ name: 'Claude Code' }, true, 'fix the build')).toBe(namePreview('fix the build'))
+    expect(namePlaceholderFor({ name: 'Plain' }, false, 'ignored')).toBe('Plain and a number')
+    expect(namePlaceholderFor(undefined, true, 'x')).toBe('')
+    expect(namePlaceholderFor({ name: 'Claude Code' }, true, '')).not.toBe('optional')
+  })
+})
+

@@ -7,8 +7,8 @@ import { splitArgs } from '~/utils/argv'
 import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { accountChoices, accountOfLaunch, capacityKey, modelProblem, type CapacityQuery } from '~/utils/capacity'
-import { chipStep, launchKey, launchRefusal, messageProblem, namePreview, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
-import { effectiveYolo, hasYoloRecipe, yoloUnavailable } from '~/utils/yolo'
+import { argsHoldYolo, argsNameModel, chipStep, launchKey, launchRefusal, messageProblem, namePlaceholderFor, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
+import { effectiveYolo, hasYoloRecipe, yoloSummary, yoloUnavailable } from '~/utils/yolo'
 import { offersRunAs, readRunAs, writeRunAs } from '~/utils/launchWay'
 import type { SessionWay } from '~/utils/protocol'
 
@@ -42,7 +42,7 @@ const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: stri
 // field says so and Launch waits; with no name given, the name it makes is the Name field's placeholder.
 const message = ref('')
 const messageError = computed(() => (takesMessage.value ? messageProblem(message.value) : ''))
-const namePlaceholder = computed(() => (takesMessage.value && namePreview(message.value)) || 'optional')
+const namePlaceholder = computed(() => namePlaceholderFor(selected.value, takesMessage.value, message.value))
 
 // Run as: Terminal | Chat (issue 1174), for an agent that can run as a chat, on this server, never a clone: a launch as a chat
 // starts in its terminal and moves to Chat by itself. It comes back as that agent was last launched in this browser, read at every
@@ -133,6 +133,10 @@ watch([open, launchModal.asked], async ([v]) => {
   catalogRead.value = false
   if (p?.cwd !== undefined) state.cwd = p.cwd
   if (p?.args !== undefined) state.args = p.args
+  // Each agent's model and arguments, kept while this opening lasts: what is in the fields now is the prefill's agent's, or the
+  // picked one's.
+  perAgent.clear()
+  fieldsOf = p?.agentId ?? state.agentId
   if (p?.yolo !== undefined) state.yolo = p.yolo
   let wantedAgent = p?.agentId
   const wanted = () => {
@@ -260,6 +264,30 @@ watch(arrived, (s) => {
 /** Whether the arguments' line shows: the agent takes arguments, or it is the source's and its recorded ones are kept in sight. */
 const argsShown = computed(() => (cloning.value ? cloneArgsShown({ allowArgs: !!selected.value?.allowArgs, sameAgent: !!state.agentId && state.agentId === sourceAgent.value, recorded: cloneArgv.value?.argv }) : !!selected.value?.allowArgs))
 
+// Model and arguments belong to the agent picked: picking another keeps them for the first and shows the other's, as last typed in
+// this opening (never stored: arguments can hold a key). A clone keeps its own fields across a pick, by its rules.
+const perAgent = new Map<string, { model: string; args: string }>()
+/** The agent whose model and arguments the fields hold now. */
+let fieldsOf = ''
+watch(
+  () => state.agentId,
+  (id) => {
+    if (cloning.value || id === fieldsOf) return
+    if (fieldsOf) perAgent.set(fieldsOf, { model: model.value, args: state.args })
+    const kept = perAgent.get(id)
+    model.value = kept?.model ?? ''
+    state.args = kept?.args ?? ''
+    fieldsOf = id
+  },
+)
+
+// Under Extra arguments: what the launch runs (the command, the arguments, Yolo's when on) and the model in words; and, before the
+// press, a model set twice or Yolo's own arguments typed. Neither holds Launch: the server stays the judge.
+const extraArgs = computed(() => (selected.value?.allowArgs && state.args.trim() ? splitArgs(state.args) : []))
+const runsView = computed(() => yoloSummary(selected.value, yolo.value, extraArgs.value))
+const modelTwice = computed(() => (takesAccount.value && !!model.value.trim() && argsNameModel(extraArgs.value) ? 'The model is set here and in Model. Keep one of them.' : ''))
+const yoloTyped = computed(() => (argsHoldYolo(extraArgs.value, selected.value?.yolo?.args) ? 'Use the Yolo switch for this.' : ''))
+
 // Folder: its placeholder is the folder a launch that names none runs in (the agent's own, else the server's default, which GET
 // /api/paths names for an empty prefix); a refusal of the folder is said under it, and Launch sends nothing until it changes.
 const defaultFolder = ref('')
@@ -308,7 +336,7 @@ const moreLine = computed(() =>
 )
 // A problem with a field inside opens the fold, so that it is never said out of sight.
 watch(
-  () => !!modelError.value,
+  () => !!modelError.value || !!modelTwice.value,
   (bad) => {
     if (bad) moreOpen.value = true
   },
@@ -419,6 +447,7 @@ async function submit() {
     state.args = ''
     model.value = ''
     message.value = ''
+    perAgent.delete(state.agentId)
   } catch (e) {
     const r = launchRefusal(e instanceof ApiError ? e.code : '', (e as Error).message)
     if (r.at === 'folder') {
@@ -533,21 +562,29 @@ async function submit() {
             </div>
           </UFormField>
           <template v-if="state.runsOn === 'server'">
-            <UFormField v-if="!cloning" label="Name" name="name" hint="optional">
-              <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
-            </UFormField>
-            <UFormField v-if="takesAccount" label="Model" name="model" hint="empty: the agent chooses, or its arguments do" :error="modelError || undefined" data-launch-model>
-              <UInput v-model="model" placeholder="no model named" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" data-launch-model-input />
-            </UFormField>
-            <UFormField
-              v-if="argsShown"
-              label="Extra arguments"
-              name="args"
-              :hint="selected?.allowArgs ? 'appended to the command' : 'this agent takes no extra arguments now'"
-              :help="selected?.allowArgs ? undefined : 'Recorded at its launch: the server refuses a clone with them; clear them to clone without'"
-            >
-              <UInput v-model="state.args" placeholder="--model opus" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" data-launch-args />
-            </UFormField>
+            <div v-if="!cloning || takesAccount" class="grid gap-4 sm:grid-cols-2">
+              <UFormField v-if="!cloning" label="Name" name="name">
+                <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
+              </UFormField>
+              <UFormField v-if="takesAccount" label="Model" name="model" :error="modelError || undefined" data-launch-model>
+                <UInput v-model="model" placeholder="The agent's choice" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" data-launch-model-input />
+              </UFormField>
+            </div>
+            <div v-if="argsShown" class="flex flex-col gap-1.5">
+              <UFormField
+                label="Extra arguments"
+                name="args"
+                :hint="selected?.allowArgs ? undefined : 'this agent takes no extra arguments now'"
+                :help="selected?.allowArgs ? yoloTyped || undefined : 'Recorded at its launch: the server refuses a clone with them; clear them to clone without'"
+                :error="modelTwice || undefined"
+                data-launch-args-field
+              >
+                <UInput v-model="state.args" placeholder="Flags, as you would type them in a terminal" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" data-launch-args />
+              </UFormField>
+              <p v-if="selected?.allowArgs && runsView.argv.length" class="text-xs text-muted [overflow-wrap:anywhere]" data-launch-runs>
+                Runs: <code class="font-mono" data-mono="command">{{ runsView.argv.join(' ') }}</code><template v-if="takesAccount && model.trim()"> · model {{ model.trim() }}</template>
+              </p>
+            </div>
           </template>
         </MoreOptions>
       </form>

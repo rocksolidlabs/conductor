@@ -150,7 +150,7 @@ test('an agent whose prompt the server does not know is offered no message, and 
   const line = dialog.locator('[data-launch-no-message]')
   await expect(line).toHaveText('Plain (e2e stub) starts at its prompt. Type your task in its terminal.')
   await expect(dialog).not.toContainText('Conductor types a first message')
-  await expect((await openMore(dialog)).getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'optional')
+  await expect((await openMore(dialog)).getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'Plain (e2e stub) and a number')
   // Launched so, it carries no message: the server would refuse one, and the session is named as any launch is.
   const s = await launchFrom(page, dialog)
   expect(s.name).toMatch(/^Plain \(e2e stub\) #\d+$/)

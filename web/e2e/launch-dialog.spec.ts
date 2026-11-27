@@ -343,3 +343,87 @@ test("on a phone every control of the footer is a touch target", async ({ browse
   for (const l of [footer.locator('[data-launch-yolo]'), footer.getByRole('button', { name: 'Cancel' }), footer.getByRole('button', { name: 'Launch', exact: true })]) await tapTarget(l)
 })
 
+
+test('each agent keeps its own model and arguments while the dialog is open, and the closed row names what the picked one holds', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openOnPrompted(page)
+  const more = await openMore(dialog)
+  const model = more.locator('[data-launch-model-input]')
+  const args = more.locator('[data-launch-args]')
+  await model.fill('opus')
+  await args.fill('--add-dir ../shared')
+  // Under the arguments: what it runs, and the model in words.
+  const runs = more.locator('[data-launch-runs]')
+  await expect(runs).toContainText('--add-dir ../shared')
+  await expect(runs).toContainText('· model opus')
+  await expect(runs.locator('[data-mono="command"]')).not.toContainText('model opus')
+  // Another agent: its own fields, empty; back, the first's again.
+  await pick(dialog, PROMPTED_CODEX)
+  await expect(model).toHaveValue('')
+  await expect(args).toHaveValue('')
+  await args.fill('--search')
+  await pick(dialog, PROMPTED)
+  await expect(model).toHaveValue('opus')
+  await expect(args).toHaveValue('--add-dir ../shared')
+  // Closed, the row names what the picked agent holds, whole.
+  await dialog.locator('[data-more-options]').click()
+  await expect(dialog.locator('[data-more-line]')).toHaveText('opus · --add-dir ../shared')
+  await pick(dialog, PROMPTED_CODEX)
+  await expect(dialog.locator('[data-more-line]')).toHaveText('--search')
+})
+
+test("an agent that takes no arguments shows none, and Name's placeholder says what the session will be called", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openOnPrompted(page)
+  const more = await openMore(dialog)
+  const name = more.getByRole('textbox', { name: 'Name', exact: true })
+  await expect(name).toHaveAttribute('placeholder', 'Made from the task')
+  await dialog.locator('[data-launch-message-input]').fill('fix the build')
+  await expect(name).toHaveAttribute('placeholder', 'fix the build')
+  await expect(more.locator('[data-launch-args]')).toHaveAttribute('placeholder', 'Flags, as you would type them in a terminal')
+  await expect(more.locator('[data-launch-model-input]')).toHaveAttribute('placeholder', "The agent's choice")
+  await pick(dialog, PLAIN)
+  await expect(name).toHaveAttribute('placeholder', `${PLAIN} and a number`)
+  // The built-in shell: no Model, no Extra arguments.
+  const shell = dialog.getByRole('radiogroup', { name: 'Agent' }).getByRole('radio', { name: /Shell$/ })
+  if (await shell.count()) {
+    await shell.click()
+    await expect(shell).toHaveAttribute('aria-checked', 'true')
+    await expect(more.locator('[data-launch-args]')).toHaveCount(0)
+    await expect(more.locator('[data-launch-model]')).toHaveCount(0)
+  }
+})
+
+test('a model set twice, and Yolo typed by hand, are said before the press, and Launch stays enabled', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openOnPrompted(page)
+  const more = await openMore(dialog)
+  const field = more.locator('[data-launch-args-field]')
+  await more.locator('[data-launch-model-input]').fill('opus')
+  for (const typed of ['--model sonnet', '--model=sonnet', '-m sonnet']) {
+    await more.locator('[data-launch-args]').fill(typed)
+    await expect(field, typed).toContainText('The model is set here and in Model. Keep one of them.')
+  }
+  await expect(dialog.locator('[data-launch-submit]')).toBeEnabled()
+  await more.locator('[data-launch-model-input]').fill('')
+  await expect(field).not.toContainText('The model is set here')
+  const recipe = (await own.api.call<{ agents: Array<{ id: string; yolo?: { args?: string[] } }> }>('GET', '/api/catalog')).body?.agents.find((a) => a.id === 'prompted')?.yolo?.args ?? []
+  expect(recipe.length, "the prompted stub's yolo recipe").toBeGreaterThan(0)
+  await more.locator('[data-launch-args]').fill(recipe.join(' '))
+  await expect(field).toContainText('Use the Yolo switch for this.')
+  await expect(dialog.locator('[data-launch-submit]')).toBeEnabled()
+})
+
+for (const size of [DAILY, { width: 1440, height: 810 }]) {
+  test(`at ${size.width} x ${size.height} the dialog with More options open does not scroll, its chips in view`, async ({ browser }) => {
+    const page = await dayPage(browser, { server: own.started, ...size })
+    const dialog = await openOnPrompted(page)
+    const more = await openMore(dialog)
+    await more.locator('[data-launch-model-input]').fill('opus')
+    await expect(more.locator('[data-launch-runs]')).toBeVisible()
+    await expect(dialog.getByRole('radiogroup', { name: 'Agent' })).toBeInViewport({ ratio: 1 })
+    const body = dialog.locator('[data-slot="body"]')
+    const overflow = await body.evaluate((el) => el.scrollHeight - el.clientHeight)
+    expect(overflow, "the open dialog's body does not scroll").toBeLessThanOrEqual(0.5)
+  })
+}
