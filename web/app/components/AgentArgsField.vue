@@ -17,6 +17,10 @@ const props = defineProps<{
   /** The form has a Model field for this agent: the model flag is left to it. */
   modelField?: boolean
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
+  /** More classes for the input itself (a table's smaller text and touch height). */
+  baseClass?: string
+  /** The placeholder while the agent has no list of flags (a narrow field's shorter words). */
+  plainPlaceholder?: string
 }>()
 
 const { flags, reading } = useAgentFlags(() => (props.agent ? { id: props.agent.id, version: props.agent.version } : null))
@@ -40,7 +44,7 @@ const waiting = computed(() => reading.value && typed.value.startsWith('-'))
 const open = computed(() => focused.value && engaged.value && !dismissed.value && (listShows(rows.value, typed.value) || waiting.value))
 const items = computed(() => rows.value.map((r) => ({ ...r, value: r.text })))
 const yoloTyped = computed(() => holdsYolo(model.value, flags.value))
-const placeholder = computed(() => (flags.value.length ? 'Type -- to see its flags' : 'Flags, as you would type them in a terminal'))
+const placeholder = computed(() => (flags.value.length ? 'Type -- to see its flags' : props.plainPlaceholder || 'Flags, as you would type them in a terminal'))
 
 function input(): HTMLInputElement | undefined {
   return menu.value?.inputRef
@@ -153,7 +157,7 @@ function onBlur(e: FocusEvent) {
       autocapitalize="off"
       autocomplete="off"
       spellcheck="false"
-      :ui="{ base: 'font-mono', content: 'min-w-80' }"
+      :ui="{ base: ['font-mono', baseClass].filter(Boolean).join(' '), content: 'min-w-80' }"
       class="w-full"
       @update:model-value="onText"
       @update:open="onOpen"

@@ -259,3 +259,37 @@ test("Brakeman's Model field in Settings offers the names its agent's help gives
     await page.context().close()
   }
 })
+
+test("each trial agent's Arguments offers its own flags, the model flag and its names among them, and its chip shows the line", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, path: '/crews', width: 1440, height: 900 })
+  try {
+    await page.locator('[data-new-comparison]').click()
+    const form = page.locator('[data-compare-template]')
+    await expect(form).toBeVisible()
+    await expect(form.locator('[data-trial-agent="1"]')).toBeVisible()
+    const more = await openMore(form)
+    // Agent A is the Claude Code stub's copy: the form has no Model field, so its model flag and the names its help gives are offered.
+    const a = more.locator('input[data-compare-agent-args="0"]')
+    await expect(a).toHaveAttribute('placeholder', 'Type -- to see its flags')
+    await a.click()
+    await a.pressSequentially('--mo')
+    expect(await rows(page)).toEqual(['--model', '--permission-mode'])
+    await highlight(page, '--model')
+    await page.keyboard.press('Tab')
+    expect(await rows(page)).toEqual(['alpha', 'beta'])
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    // Agent B is the Codex stub's copy: its own flags, and its chip shows the line as typed.
+    const b = more.locator('input[data-compare-agent-args="1"]')
+    await b.click()
+    await b.pressSequentially('--sa')
+    await page.keyboard.press('Enter')
+    await expect(b).toHaveValue('--sandbox ')
+    await highlight(page, 'read-only')
+    await page.keyboard.press('Enter')
+    await expect(b).toHaveValue('--sandbox read-only ')
+    await expect(form.locator('[data-trial-agent="1"] [data-trial-agent-args]')).toHaveText('--sandbox read-only')
+  } finally {
+    await page.context().close()
+  }
+})
