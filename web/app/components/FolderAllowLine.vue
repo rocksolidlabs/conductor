@@ -56,6 +56,8 @@ const pressed = ref<{ text: string; line: FolderLine; n: number } | null>(null)
 /** The wide folder's question, shown in place of the line after the first press. */
 const asking = ref<{ text: string; kind: NonNullable<FolderLine['wide']> } | null>(null)
 const pressing = ref(false)
+/** The text a launch was tried with: a folder missing is said for it even with the focus back in the field. */
+const launchedWith = ref<string | null>(null)
 let seq = 0
 let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -106,7 +108,7 @@ const line = computed<FolderLine | null>(() => {
   if (asking.value && asking.value.text === props.path) {
     return { state: 'wide', ...wideQuestion(asking.value.kind, pressTarget(c)), tone: 'warning', button: 'wide', wide: asking.value.kind, blocks: true }
   }
-  return checkLine(c, way.value, props.focused, props.path)
+  return checkLine(c, way.value, props.focused && launchedWith.value !== props.path, props.path)
 })
 
 /** Whether the folder as it stands may be launched in: false only for a line that blocks it. */
@@ -162,6 +164,7 @@ function use(folder: string) {
 async function check(): Promise<boolean> {
   clearTimeout(timer)
   if (props.off || !props.path) return true
+  launchedWith.value = props.path
   await checkNow(props.path)
   return !blocks.value
 }
