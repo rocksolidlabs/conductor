@@ -222,6 +222,6 @@ test('Answer all answers the same question asked by several sessions, one send e
   await page.keyboard.press('ArrowDown')
   await page.keyboard.press('Enter')
   await expect(palette).toBeHidden()
-  await expect(page.getByLabel('Working directory')).toHaveValue('/tmp/reach', { timeout: 15_000 })
+  await expect(page.getByLabel('Folder', { exact: true })).toHaveValue('/tmp/reach', { timeout: 15_000 })
   await page.keyboard.press('Escape')
 })

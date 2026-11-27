@@ -34,9 +34,11 @@ const rows = computed(() => {
 
 <template>
   <UCard :ui="{ header: 'px-4 py-3 sm:px-5', body: 'p-4 sm:p-5' }" data-about-card>
-    <template #header><SettingsCardTitle title="The app" description="Versions, license and the window." /></template>
+    <template #header><SettingsCardTitle title="The app" :description="$slots.server ? 'Versions, the tray and Conductor\'s server.' : 'Versions, license and the window.'" /></template>
     <div class="flex flex-col gap-4">
       <slot />
+      <!-- The desktop app's: Conductor's server, its state and its three buttons (UX3 R57). -->
+      <slot name="server" />
       <dl class="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
         <template v-for="r in rows" :key="r.key">
           <dt class="text-muted">{{ r.label }}</dt>

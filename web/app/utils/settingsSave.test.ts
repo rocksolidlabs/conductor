@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DesktopSettings } from './desktop'
-import { answer, configForm, followSaved, StaleRefusal, formMove, newer, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
+import { answer, configForm, draftBack, followSaved, StaleRefusal, formMove, newer, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
 
 /** A part that records its call in `calls` and answers `value`, or throws `fail`. */
 function part<T>(calls: string[], name: string, value: T, fail?: string) {
@@ -298,5 +298,76 @@ describe('Discard (UX3 R56)', () => {
     setSaved(null)
     ctl.drop()
     expect(ctl.discard()).toBe(false)
+  })
+})
+
+describe('a draft kept while another page is open (UX3 R81)', () => {
+  it('brings back each edit, but a setting saved meanwhile wins', () => {
+    const read = { ...settings }
+    const left = { ...settings, yolo: true, reach: 'auto' as const, closeToTray: false }
+    // Meanwhile Reach was saved elsewhere (the palette, another window): it wins; the other edits come back.
+    const now = { ...settings, reach: 'manual' as const }
+    const form = { ...now }
+    expect(draftBack(form, left, read, now)).toEqual(['yolo', 'closeToTray'])
+    expect(form).toEqual({ ...now, yolo: true, closeToTray: false })
+    // A field the draft did not change follows what is saved now.
+    const form2 = { ...now, closeToTray: true }
+    draftBack(form2, { ...read }, read, now)
+    expect(form2).toEqual({ ...now, closeToTray: true })
+  })
+
+  type Conf = { rev: number; reads: number; turns: number }
+  function harness(start: Conf, gen = { now: 0 }) {
+    let saved: Conf | null = start
+    const ctl = configForm<Conf>({
+      generation: () => gen.now,
+      saved: () => saved,
+      save: async () => {
+        throw Object.assign(new Error('stale'), { stale: true })
+      },
+      read: async () => saved!,
+      isStale: (e) => (e as { stale?: boolean }).stale === true,
+      current: (f) => f,
+      same: (a, b) => a.reads === b.reads && a.turns === b.turns,
+      shown: () => {},
+    })
+    ctl.follow()
+    return { ctl, set: (c: Conf) => (saved = c) }
+  }
+
+  it("keeps Brakeman's form only when it holds a change, and brings it back at the revision saved now", () => {
+    const a = harness({ rev: 1, reads: 300, turns: 5 })
+    expect(a.ctl.keep()).toBeNull()
+    a.ctl.form.value!.reads = 400
+    const kept = a.ctl.keep()!
+    expect(kept).toEqual({ form: { rev: 1, reads: 400, turns: 5 }, base: { rev: 1, reads: 300, turns: 5 }, gen: 0, stale: false })
+    // Back on the page, a newer revision saved meanwhile changed the turns: the reads come back, the turns are the saved ones.
+    const b = harness({ rev: 2, reads: 300, turns: 7 })
+    expect(b.ctl.restore(kept)).toBe(true)
+    expect(b.ctl.form.value).toEqual({ rev: 2, reads: 400, turns: 7 })
+    expect(b.ctl.dirty.value).toBe(true)
+    // A revision that changed the reads too: the saved value wins, nothing is left to save.
+    const c = harness({ rev: 3, reads: 350, turns: 5 })
+    c.ctl.restore(kept)
+    expect(c.ctl.form.value).toEqual({ rev: 3, reads: 350, turns: 5 })
+    expect(c.ctl.dirty.value).toBe(false)
+  })
+
+  it('drops a form kept under another token, and keeps a stale choice only while nothing was saved since', async () => {
+    const a = harness({ rev: 1, reads: 300, turns: 5 })
+    a.ctl.form.value!.reads = 400
+    await expect(a.ctl.save({ rev: 1, reads: 400, turns: 5 }, 0)).rejects.toBeInstanceOf(StaleRefusal)
+    const kept = a.ctl.keep()!
+    expect(kept.stale).toBe(true)
+    const same = harness({ rev: 1, reads: 300, turns: 5 })
+    same.ctl.restore(kept)
+    expect(same.ctl.stale.value).toBe(true)
+    const moved = harness({ rev: 2, reads: 300, turns: 5 })
+    moved.ctl.restore(kept)
+    expect(moved.ctl.stale.value).toBe(false)
+    expect(moved.ctl.form.value!.reads).toBe(400)
+    const other = harness({ rev: 1, reads: 300, turns: 5 }, { now: 1 })
+    expect(other.ctl.restore(kept)).toBe(false)
+    expect(other.ctl.form.value!.reads).toBe(300)
   })
 })
