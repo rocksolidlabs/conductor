@@ -126,6 +126,74 @@ export interface SessionRecord {
   resumes?: ResumeReceipt[]
 }
 
+/** A row of GET /api/history/sessions: a session's record as the list gives it (docs/protocol.md, History). */
+export interface SessionSummary {
+  id: string
+  name: string
+  kind: string
+  agent: SessionRecord['agent']
+  host: SessionRecord['host']
+  where?: string
+  cwd: string
+  repo?: string
+  branch?: string
+  crew?: { runId: string }
+  startedAt: string
+  endedAt?: string
+  lostAt?: string
+  ending?: string
+  unreadable?: boolean
+}
+
+/** How many rows the welcome reads, and how many it shows. */
+export const WELCOME_RESUME_READ = 20
+export const WELCOME_RESUME_ROWS = 3
+
+/** When a record's session ended, or was found lost: what its row's age counts from. */
+function endOf(r: Pick<SessionSummary, 'endedAt' | 'lostAt'>): number {
+  return Date.parse(r.endedAt || r.lostAt || '') || 0
+}
+
+/**
+ * The sessions the welcome offers to pick up (UX3, the welcome's plan row 4): the records of this server's own sessions (not hosted),
+ * of no crew, that ended or whose end was not seen, whose agent has a conversation to resume; the newest of each conversation; newest
+ * end first; at most `max`, and how many there are in all.
+ */
+export function welcomeResumeRows(records: readonly SessionSummary[], max = WELCOME_RESUME_ROWS): { rows: SessionSummary[]; total: number } {
+  const seen = new Set<string>()
+  const all = records
+    .filter((r) => !r.unreadable && !r.host?.hosted && !r.crew && (r.endedAt || r.lostAt) && r.agent?.session?.resumable && r.agent.session.id)
+    .sort((a, b) => endOf(b) - endOf(a))
+    .filter((r) => {
+      const k = `${r.agent.id}:${r.agent.session!.id}`
+      if (seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+  return { rows: all.slice(0, max), total: all.length }
+}
+
+/** Whether a record's end was not seen (lost, never ended): its own page asks the second yes, so its row opens that page. */
+export function endNotSeen(r: Pick<SessionSummary, 'endedAt' | 'lostAt'>): boolean {
+  return !!r.lostAt && !r.endedAt
+}
+
+/** A row's age in the Status rule's words: "ended just now", "ended 12m ago", "ended 3h ago", "ended 2d ago". */
+export function endedWords(r: Pick<SessionSummary, 'endedAt' | 'lostAt'>, now: number): string {
+  const at = endOf(r)
+  if (!at) return 'ended'
+  const sec = Math.floor((now - at) / 1000)
+  if (sec < 60) return 'ended just now'
+  if (sec < 3600) return `ended ${Math.floor(sec / 60)}m ago`
+  if (sec < 86400) return `ended ${Math.floor(sec / 3600)}h ago`
+  return `ended ${Math.floor(sec / 86400)}d ago`
+}
+
+/** The link under the rows, to History's sessions: "All 4 ended sessions". */
+export function allEndedWords(total: number): string {
+  return `All ${total} ended ${total === 1 ? 'session' : 'sessions'}`
+}
+
 /** The record route's reply: the record whole, `live` while its session runs. */
 export interface RecordReply {
   record: SessionRecord

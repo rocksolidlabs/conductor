@@ -199,3 +199,107 @@ func TestStubCodexSpeaksTheDriver(t *testing.T) {
 		}
 	}
 }
+
+// The stub's third mode (web/e2e/stub-protocol-acp.mjs), an agent's Agent
+// Client Protocol server, speaks what the ACP client reads: protocol 1, the
+// session resumed (and loaded where it offers no resume, its replayed
+// history not shown), a message answered in a turn with words and, asked,
+// an execute step; a permission request answered by the allow_once option's
+// own id; a held turn, cancelled, ends interrupted; its fs and terminal
+// requests are refused -32601. What the client wrote is the baseline's.
+func TestStubACPSpeaksTheClient(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("no node to run the stub agent: ", err)
+	}
+	stub, err := filepath.Abs(filepath.Join("..", "..", "web", "e2e", "stub-protocol.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"resume", "load"} {
+		t.Run(mode, func(t *testing.T) {
+			home := t.TempDir()
+			kept := filepath.Join(home, ".stub-sessions")
+			if err := os.Mkdir(kept, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("node", stub, "acp")
+			cmd.Env = append(os.Environ(), "HOME="+home, "STUB_ACP_OPTIONS=opencode")
+			if mode == "load" {
+				cmd.Env = append(cmd.Env, "STUB_ACP_NO_RESUME=1")
+			}
+			cmd.Dir = t.TempDir()
+			stdin, _ := cmd.StdinPipe()
+			stdout, _ := cmd.StdoutPipe()
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Wait() })
+			c := NewACP(stdin, stdout, ACPOptions{Session: acpSession, Cwd: cmd.Dir})
+			rec := &recorder{}
+			ended := make(chan event, 4)
+			rec.after = func(e event) {
+				switch e.kind {
+				case "turn_ended":
+					ended <- e
+				case "permission":
+					go func() { _ = c.Reply(context.Background(), e.ref, session.Verdict{Allow: true}) }()
+				}
+			}
+			read := make(chan error, 1)
+			go func() { read <- c.Read(context.Background(), rec) }()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := c.Begin(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Send(ctx, session.Message{Ref: "r1", Text: "run a tool and ask and fs"}); err != nil {
+				t.Fatal(err)
+			}
+			if e := <-ended; e.out != "done" {
+				t.Fatalf("the turn ended %+v", e)
+			}
+			r := rec.render()
+			for _, want := range []string{"conversation " + acpSession, "accepted r1", `execute summary="ls"`, `output="notes.txt"`,
+				"permission acp-req-1", `output="ran: echo allowed"`, `"stub chat: run a tool and ask and fs"`} {
+				if !strings.Contains(r, want) {
+					t.Fatalf("no %q in\n%s", want, r)
+				}
+			}
+			if strings.Contains(r, "an old answer") {
+				t.Fatalf("a load's history was shown:\n%s", r)
+			}
+			outcome, _ := os.ReadFile(filepath.Join(kept, acpSession+".outcome"))
+			refused, _ := os.ReadFile(filepath.Join(kept, acpSession+".refused"))
+			if !strings.Contains(string(outcome), `"optionId":"once"`) || strings.TrimSpace(string(refused)) != "-32601 -32601" {
+				t.Fatalf("the stub was told %s and %s", outcome, refused)
+			}
+			if err := c.Send(ctx, session.Message{Ref: "r2", Text: "hold"}); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				if _, err := os.Stat(filepath.Join(kept, acpSession+".held")); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the held turn never held")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if err := c.Interrupt(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if e := <-ended; e.out != "interrupted" {
+				t.Fatalf("the cancelled turn ended %q", e.out)
+			}
+			_ = c.CloseInput()
+			if err := <-read; !errors.Is(err, io.EOF) {
+				t.Fatalf("Read: %v", err)
+			}
+			wire, _ := os.ReadFile(filepath.Join(kept, acpSession+".wire"))
+			if !strings.Contains(string(wire), `"session/`+mode+`"`) || strings.Contains(string(wire), `"readTextFile":true`) {
+				t.Fatalf("the client wrote\n%s", wire)
+			}
+		})
+	}
+}

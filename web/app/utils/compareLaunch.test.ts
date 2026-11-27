@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PlanBody, PlanCompare } from '~/composables/useDispatch'
-import { candidateAgents, compareLaunch, compareStatement, launchButtonWords } from './compareLaunch'
+import { COMPARISON_LAUNCHES_FROM_A_TICKET, candidateAgents, compareLaunch, compareStatement, launchButtonWords } from './compareLaunch'
 
 const catalog = [
   { id: 'claude', name: 'Claude Code' },
@@ -129,5 +129,12 @@ describe("a launch from a revision, and the count it sends", () => {
     expect(launchButtonWords(l, 'failed')).toBe('Launch again')
     expect(launchButtonWords({ kind: 'ordinary' }, null)).toBe('Launch')
     expect(launchButtonWords(null, null)).toBe('Launch')
+  })
+})
+
+describe("where an agent trial's crew is started, as the crews page and the launch sheet say it", () => {
+  it('names an agent trial and the ticket it starts from, and never a comparison or a plan revision', () => {
+    expect(COMPARISON_LAUNCHES_FROM_A_TICKET).toBe("An agent trial starts from a ticket's approved plan: propose this crew as the ticket's plan, approve it, and launch it there")
+    expect(COMPARISON_LAUNCHES_FROM_A_TICKET).not.toMatch(/comparison|revision|candidate/i)
   })
 })
