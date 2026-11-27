@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Launcher } from '../src/launcher'
 import { loopbackOrigin, ServerSupervisor, StartStopped, trustedOrigin } from '../src/server'
 
@@ -159,6 +159,83 @@ process.stdin.resume()
     writeFileSync(gate, '')
     await stopping
     expect(trustedOrigin(s.status)).toBe('')
+  })
+  it('never trusts a server told to stop while it starts, whatever it prints after', async () => {
+    // A server that prints its handshake only once the test lets it, told to stop before that, and exits a moment after.
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const gate = join(dir, 'gate')
+    const file = join(dir, 'server.js')
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+const fs = require('fs')
+const srv = http.createServer((req, res) => res.end('{}'))
+srv.listen(0, '127.0.0.1', () => {
+  const t = setInterval(() => {
+    if (!fs.existsSync(${JSON.stringify(gate)})) return
+    clearInterval(t)
+    process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + srv.address().port, publicUrl: 'http://localhost:' + srv.address().port, pid: process.pid, version: 'fake' }) + '\\n')
+    setTimeout(() => process.exit(0), 200)
+  }, 10)
+})
+process.stdin.resume()
+`,
+    )
+    const s = new ServerSupervisor({ launcher: new ScriptLauncher(file), args: [], env: () => ({ PATH: process.env.PATH ?? '' }), stopGraceMs: 60_000, log: quiet })
+    const states: string[] = []
+    s.on('state', (st) => states.push(st.state))
+    const started = s.start()
+    started.catch(() => {})
+    await vi.waitFor(() => expect(states).toContain('starting'))
+    const stopping = s.stop()
+    writeFileSync(gate, '')
+    await expect(started).rejects.toBeInstanceOf(StartStopped)
+    await stopping
+    expect(states).not.toContain('running')
+    expect(states).not.toContain('failed')
+    expect(trustedOrigin(s.status)).toBe('')
+  })
+  it('a restart while the server starts reports the next start, and trusts only it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const gate = join(dir, 'gate')
+    const file = join(dir, 'server.js')
+    // The first spawn waits for the gate before its handshake; every later one prints at once.
+    const count = join(dir, 'count')
+    writeFileSync(count, '0')
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+const fs = require('fs')
+const n = Number(fs.readFileSync(${JSON.stringify(count)}, 'utf8')) + 1
+fs.writeFileSync(${JSON.stringify(count)}, String(n))
+const srv = http.createServer((req, res) => res.end('{}'))
+srv.listen(0, '127.0.0.1', () => {
+  const print = () => process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + srv.address().port, publicUrl: 'http://localhost:' + srv.address().port, pid: process.pid, version: 'fake' }) + '\\n')
+  if (n > 1) return print()
+  const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(gate)})) { clearInterval(t); print(); setTimeout(() => process.exit(0), 200) } }, 10)
+})
+process.stdin.on('end', () => { if (n > 1) process.exit(0) })
+process.stdin.resume()
+`,
+    )
+    const s = new ServerSupervisor({ launcher: new ScriptLauncher(file), args: [], env: () => ({ PATH: process.env.PATH ?? '' }), stopGraceMs: 60_000, log: quiet })
+    const states: Array<{ state: string; pid?: number }> = []
+    s.on('state', (st) => states.push({ state: st.state, pid: st.pid }))
+    const started = s.start()
+    started.catch(() => {})
+    await vi.waitFor(() => expect(states.map((x) => x.state)).toContain('starting'))
+    // The restart: its stop waits for the first server, which the gate lets print and exit; then the next one starts.
+    const restarted = s.restart()
+    writeFileSync(gate, '')
+    const h = await restarted
+    expect(await started).toEqual(h)
+    const running = states.filter((x) => x.state === 'running')
+    expect(running).toHaveLength(1)
+    expect(running[0]!.pid).toBe(h.pid)
+    expect(trustedOrigin(s.status)).toBe('http://' + h.listen)
+    await s.stop()
   })
   it('writes a fresh first line at every start, and a server answers only its own token', async () => {
     // A server that takes its token from its first line and answers 401 to any other.

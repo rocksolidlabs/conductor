@@ -5,7 +5,7 @@ import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
 import { NOT_INSTALLED_BADGE, identityBadge } from '~/utils/agentBadges'
 import { PUBLIC_SWITCHYARD, folderProblems, foldersHeld, plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
-import { EDITED_KEYS, draftBack, followSaved, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
+import { EDITED_KEYS, draftBack, followOutside, followSaved, rootsFollow, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
 import { SETTINGS_FIELD_UI, SETTINGS_SWITCH_UI, changedSections, changedWords, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsAddress, type SettingsSectionId } from '~/utils/settingsSections'
 
 // The desktop app's settings: what its shell starts the server with. In a
@@ -100,7 +100,11 @@ async function load() {
     followSaved(form, settings.value, s)
     // The first read brings back what was left unsaved here, but for a setting saved meanwhile, which wins (draftBack).
     const kept = first ? draft.value.app : undefined
-    if (kept) draftBack(form, kept.form, kept.saved, s, EDITED_KEYS)
+    if (kept) {
+      draftBack(form, kept.form, kept.saved, s, EDITED_KEYS.filter((k) => k !== 'allowedRoots'))
+      // The folders: the ones edited here, and every folder allowed meanwhile from a dialog (UX3 R62).
+      form.allowedRoots = rootsFollow(kept.form.allowedRoots, kept.saved.allowedRoots, s.allowedRoots)
+    }
     draft.value.app = undefined
     settings.value = s
     switchyardChecked.value = switchyardKey()
@@ -114,6 +118,37 @@ async function load() {
     api.catalog().then((c) => (agents.value = c)).catch(() => (agents.value = [])),
   ])
 }
+
+/**
+ * The app's settings changed outside the page while it is open (UX3 R62): a folder allowed from the Launch agent dialog, a trial's or
+ * a crew's. Read again: what is not edited here follows, a folder allowed joins the list though it was edited, and the next Save
+ * keeps it. Read after a save that is out, never beside it.
+ */
+let refreshAfterSave = false
+async function refresh() {
+  const b = desktop.bridge.value
+  if (!b || !settings.value) return
+  if (saving.value) {
+    refreshAfterSave = true
+    return
+  }
+  try {
+    const s = await b.settings.get()
+    if (saving.value || !settings.value) {
+      refreshAfterSave = true
+      return
+    }
+    followOutside(form, settings.value, s)
+    settings.value = s
+  } catch {
+    /* read again at the next change or save */
+  }
+}
+let offSettings: (() => void) | undefined
+onMounted(() => {
+  offSettings = desktop.bridge.value?.onSettings?.(() => void refresh())
+})
+onBeforeUnmount(() => offSettings?.())
 
 /** A Save refused before anything was sent: the words in the save bar, beside Save (UX3 R56). */
 function refuse(out: SaveOutcome) {
@@ -245,6 +280,10 @@ async function save() {
   } finally {
     saving.value = false
     holding.value = false
+    if (refreshAfterSave) {
+      refreshAfterSave = false
+      void refresh()
+    }
   }
 }
 

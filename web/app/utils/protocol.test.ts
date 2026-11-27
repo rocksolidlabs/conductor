@@ -665,7 +665,7 @@ describe("the agent's own commands (row 12)", () => {
       (m) => (m.commands[0]!.name = 'fix issue'),
       (m) => (m.commands[0]!.name = 'a@b'),
       (m) => (m.commands[0]!.name = '-x'),
-      (m) => (m.commands[0]!.name = 'x‮y'),
+      (m) => (m.commands[0]!.name = 'x' + String.fromCodePoint(0x202e) + 'y'),
       (m) => (m.commands[1]!.name = m.commands[0]!.name),
       (m) => m.commands[0]!.aliases!.push('c'),
       (m) => (m.commands[0]!.aliases![0] = 'a b'),

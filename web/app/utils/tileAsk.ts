@@ -30,10 +30,11 @@ export const OPEN_TO_ANSWER = 'Open it to answer'
 /**
  * The bar of a member's tile while it asks: who asks and the question whole, then what answers it. With choices the page may press
  * (`answerable`, the run chat's own rule): the choices. Without, where it is answered: a durable decision's question by its decision
- * (`Answer dr-7`, its card), a chat's permission request by the member's own view (`Open it to answer`), and every other (no choices,
- * a startup screen, a dialog whose choices were not read, a line typed and not entered) in its terminal. Null while it does not ask.
+ * (`Answer dr-7`, its card), a member that runs as a chat by its own view, where its Chat answers it (`Open it to answer`: a permission
+ * request, a question with no choices), and every other (no choices, a startup screen, a dialog whose choices were not read, a line
+ * typed and not entered) in its terminal. Null while it does not ask.
  */
-export function tileAskOf(name: string, s: Pick<SessionInfo, 'agentId' | 'attention'> | undefined, answerable: (line: ChatMessage) => boolean): TileAsk | null {
+export function tileAskOf(name: string, s: Pick<SessionInfo, 'agentId' | 'attention' | 'way'> | undefined, answerable: (line: ChatMessage) => boolean): TileAsk | null {
   const a = liveAttention(s?.attention)
   if (a?.state !== 'needs_input') return null
   const { question, line } = memberAsk(name, s)
@@ -41,6 +42,6 @@ export function tileAskOf(name: string, s: Pick<SessionInfo, 'agentId' | 'attent
   if (line && answerable(line)) return { who, question, kind: 'choices', line }
   const decision = decisionOf(a)
   if (decision) return { who, question, kind: 'decision', decision, words: `Answer ${decision}` }
-  if (answersInChat(a)) return { who, question, kind: 'open', words: OPEN_TO_ANSWER }
+  if (answersInChat(a) || s?.way === 'protocol') return { who, question, kind: 'open', words: OPEN_TO_ANSWER }
   return { who, question, kind: 'terminal', words: ANSWER_IN_ITS_TERMINAL }
 }

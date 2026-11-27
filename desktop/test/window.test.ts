@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ownPage, workbenchFrame } from '../src/ipc'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { external, firstBounds, followOrigin, logWindowOptions, permissionAllowed, readBounds, sameOrigin, workbenchPreferences, workbenchWindows, writeBounds } from '../src/window'
@@ -23,13 +24,15 @@ describe('window guards', () => {
     expect(workbenchFrame(sent(frame('https://evil.example/', 'https://evil.example')), wb)).toBe(false)
     expect(workbenchFrame(sent(frame(wb + '/agents', wb)), '')).toBe(false)
     // The setup page: its own window's main frame, at its own file, and nothing else.
-    const setup = '/app/static/setup.html'
-    const top = frame('file://' + setup + '?reason=x', 'file://')
+    // The page's file: address as the system makes it (on Windows, with its drive).
+    const setup = resolve('/app/static/setup.html')
+    const setupUrl = pathToFileURL(setup).href
+    const top = frame(setupUrl + '?reason=x', 'file://')
     const wc = { mainFrame: top, isDestroyed: () => false }
     expect(ownPage({ sender: wc, senderFrame: top }, wc, setup)).toBe(true)
-    expect(ownPage({ sender: wc, senderFrame: frame('file:///app/static/log.html', 'file://') }, wc, setup)).toBe(false)
+    expect(ownPage({ sender: wc, senderFrame: frame(pathToFileURL(resolve('/app/static/log.html')).href, 'file://') }, wc, setup)).toBe(false)
     expect(ownPage({ sender: { mainFrame: top }, senderFrame: top }, wc, setup)).toBe(false)
-    expect(ownPage({ sender: wc, senderFrame: frame('file://' + setup, 'file://', top) }, wc, setup)).toBe(false)
+    expect(ownPage({ sender: wc, senderFrame: frame(setupUrl, 'file://', top) }, wc, setup)).toBe(false)
     const workbenchTop = frame(wb + '/', wb)
     const wbc = { mainFrame: workbenchTop }
     expect(ownPage({ sender: wbc, senderFrame: workbenchTop }, wbc, setup)).toBe(false)
