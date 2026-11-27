@@ -234,7 +234,7 @@ func TestStubACPSpeaksTheClient(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Wait() })
-			c := NewACP(stdin, stdout, ACPOptions{Session: acpSession, Cwd: cmd.Dir})
+			c := NewACP(stdin, stdout, ACPOptions{Session: acpSession, Cwd: cmd.Dir, RawInputKeys: acpTestKeys})
 			rec := &recorder{}
 			ended := make(chan event, 4)
 			rec.after = func(e event) {

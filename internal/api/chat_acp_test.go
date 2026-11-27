@@ -30,10 +30,19 @@ import (
 // agent's live look. The stub's own folder is under the server's HOME.
 func newACPChatEnv(t *testing.T, env map[string]string) (*chatEnvT, string) {
 	t.Helper()
+	return newACPChatEnvWith(t, env, nil)
+}
+
+// newACPChatEnvWith is newACPChatEnv with the agent's entry changed by edit.
+func newACPChatEnvWith(t *testing.T, env map[string]string, edit func(*catalog.Agent)) (*chatEnvT, string) {
+	t.Helper()
 	stub := stubProtocol(t)
 	a, _ := catalog.Default().Get("claude")
 	a = a.Copy()
 	a.Command, a.Env, a.Protocol = []string{stub}, env, &catalog.ProtocolRecipe{Name: agentproto.ACPv1, Args: []string{"acp"}}
+	if edit != nil {
+		edit(&a)
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := os.Mkdir(filepath.Join(home, ".stub-sessions"), 0o700); err != nil {
@@ -95,43 +104,17 @@ func TestACPChatChildThroughPipes(t *testing.T) {
 	})
 }
 
-// An ACP agent's permission request is the session's question, bound to
-// the call the stream announced; the operator's Allow once selects the
-// agent's allow_once option by its own id (OpenCode's "once"), never an
-// always option.
-func TestACPChatAsksThroughThePermissionPath(t *testing.T) {
+// An ACP agent's call whose raw input holds a key the client was not
+// taught for that agent (none is taught before the agent's own look) is
+// declined, never put to the operator: the agent is answered by its
+// reject_once option and no question opens.
+func TestACPChatDeclinesACallWhoseInputItWasNotTaught(t *testing.T) {
 	c, kept := newACPChatEnv(t, map[string]string{"STUB_ACP_OPTIONS": "opencode"})
 	l := c.launch(t)
 	if err := c.enter(t, l); err != nil {
 		t.Fatal(err)
 	}
-	sub, err := l.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "Ada", Owner: true}, quietSink{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err := l.Submit(context.Background(), session.Submission{Text: "ask"}); err != nil && !errors.Is(err, session.ErrSubmitPending) {
-		t.Fatal(err)
-	}
-	var r session.TranscriptEntry
-	es := entriesWhen(t, l, "the request", func(es []session.TranscriptEntry) bool {
-		for _, e := range es {
-			if e.Kind == session.EntryPermission && e.State == session.PermissionOpen {
-				r = e
-				return true
-			}
-		}
-		return false
-	})
-	var step session.TranscriptEntry
-	for _, e := range es {
-		if e.Kind == session.EntryTool && e.Ref == r.Call {
-			step = e
-		}
-	}
-	if r.Call == "" || r.Tool != "execute" || r.InputSha256 != step.InputSha256 {
-		t.Fatalf("the request %+v, its step %+v", r, step)
-	}
-	if err := l.AnswerPermission(context.Background(), sub, proto.PermissionAnswer{T: proto.CtlPermissionAnswer, ReqID: "a1", Question: r.Question, Call: r.Call, Sha256: r.InputSha256, Choice: proto.PermissionAllowOnce}); err != nil {
 		t.Fatal(err)
 	}
 	conv := l.Info().AgentSession.ID
@@ -139,8 +122,14 @@ func TestACPChatAsksThroughThePermissionPath(t *testing.T) {
 		b, _ := os.ReadFile(filepath.Join(kept, conv+".outcome"))
 		return len(b) > 0
 	})
-	if b, _ := os.ReadFile(filepath.Join(kept, conv+".outcome")); strings.TrimSpace(string(b)) != `{"optionId":"once","outcome":"selected"}` {
-		t.Fatalf("the stub was told %s", b)
+	if b, _ := os.ReadFile(filepath.Join(kept, conv+".outcome")); strings.TrimSpace(string(b)) != `{"optionId":"reject","outcome":"selected"}` {
+		t.Fatalf("the stub was told %s, want its reject_once option", b)
+	}
+	es := entriesWhen(t, l, "the turn", func(es []session.TranscriptEntry) bool {
+		return hasEntry(es, func(e session.TranscriptEntry) bool { return e.Kind == session.EntryTurn && e.Phase == "end" })
+	})
+	if hasEntry(es, func(e session.TranscriptEntry) bool { return e.Kind == session.EntryPermission }) {
+		t.Fatal("a declined call reached the session")
 	}
 }
 

@@ -165,7 +165,10 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 		if name == agentproto.ACPv1 {
 			// The terminal's session taken up through the protocol, in the
 			// session's folder.
-			return session.PipesChild(pipes), agentproto.NewACP(pipes.Stdin(), pipes.Stdout(), agentproto.ACPOptions{Session: conversation, Cwd: l.folder.Path(), InitWait: initWait}), nil
+			return session.PipesChild(pipes), agentproto.NewACP(pipes.Stdin(), pipes.Stdout(), agentproto.ACPOptions{
+				Session: conversation, Cwd: l.folder.Path(), InitWait: initWait,
+				RawInputKeys: agentproto.ACPRawInputKeys(l.agent.Adapter),
+			}), nil
 		}
 		driver := agentproto.NewClaude(pipes.Stdin(), pipes.Stdout(), agentproto.ClaudeOptions{
 			Restart:  func() { _ = local.RestartProtocol("restarted", restartedInputWords) },
