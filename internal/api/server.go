@@ -1325,6 +1325,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/people/{name}", s.launching(s.handlePerson))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
 	mux.HandleFunc("GET /api/roots/check", s.launching(s.handleCheckRoot))
+	mux.HandleFunc("POST /api/roots", s.launching(s.handleAddRoot))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
 	mux.HandleFunc("GET /api/runs/{run}", s.readable("GET /api/runs/{run}", s.launchingAny(s.handleGetRun)))
@@ -1606,6 +1607,9 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
 	out := map[string]any{"user": serverUser(), "host": host, "switchyard": s.cfg.Switchyard.Enabled, "version": version.String()}
+	// Where the folders agents may use come from: the desktop app may allow
+	// one more while the server runs, or the configuration alone sets them.
+	out["folders"] = s.foldersFrom()
 	// The server user's home: where the settings picker's Home goes.
 	if home, err := os.UserHomeDir(); err == nil {
 		out["home"] = home

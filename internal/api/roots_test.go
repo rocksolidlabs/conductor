@@ -304,7 +304,7 @@ func TestRootRoutesDocumented(t *testing.T) {
 		t.Fatal(err)
 	}
 	flat := strings.Join(strings.Fields(string(doc)), " ")
-	for _, row := range []string{"| `GET /api/roots/check` | admin |"} {
+	for _, row := range []string{"| `GET /api/roots/check` | admin |", "| `POST /api/roots` | admin and the desktop app's key |", "`folders` `app` when the desktop app"} {
 		if !strings.Contains(flat, row) {
 			t.Errorf("docs/protocol.md has no row %s", row)
 		}

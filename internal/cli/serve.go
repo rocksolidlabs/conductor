@@ -100,12 +100,14 @@ var terminalOf = func(w io.Writer) io.Writer {
 }
 
 // serveConfig is the configuration serve runs with, and once it is read
-// CONDUCTOR_GITHUB_TOKEN is gone from the server's own environment: a
-// process the server starts with no environment built for it inherits the
-// server's (pty.BuildEnv drops CONDUCTOR_* from the ones it builds).
+// CONDUCTOR_GITHUB_TOKEN and CONDUCTOR_DESKTOP_KEY are gone from the
+// server's own environment: a process the server starts with no
+// environment built for it inherits the server's (pty.BuildEnv drops
+// CONDUCTOR_* from the ones it builds).
 func serveConfig(path string) (*config.Config, error) {
 	cfg, err := config.Load(path)
 	_ = os.Unsetenv("CONDUCTOR_GITHUB_TOKEN")
+	_ = os.Unsetenv("CONDUCTOR_DESKTOP_KEY")
 	return cfg, err
 }
 
@@ -289,7 +291,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		log.Warn("serving with a chat's floor whose modes could not be set", "dir", agents.HooksDir(cfg.DataDir), "err", err)
 	}
 	if root := cfg.DataDirOverlap(); root != "" {
-		log.Warn("the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; keep it outside allowedRoots (the default is ~/.conductor), or set dataDir or CONDUCTOR_DATA_DIR to a directory outside them", "dataDir", cfg.DataDir, "allowedRoot", root)
+		log.Warn(config.DataDirOverlapWords, "dataDir", cfg.DataDir, "allowedRoot", root)
 	}
 
 	ui := webUI()

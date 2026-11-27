@@ -17,11 +17,13 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // The folders agents may use (the allowed roots) are held in one place that
-// can change while the server runs, set from the configuration's
-// allowedRoots when the server is made. Every check of a session's working
+// can change while the server runs: the configuration's allowedRoots when
+// the server is made, and every folder the desktop app that started the
+// server has allowed since (POST /api/roots). Every check of a session's working
 // directory reads them here (resolveCwd, openCwd), and so do the listing's
 // refusal and the reads of a run's repository; nothing else reads the
 // configuration's list once the server is made (TestOnlyRootsReadsTheConfiguredRoots).
@@ -29,7 +31,22 @@ import (
 // its launch.
 //
 // GET /api/roots/check says of one folder whether agents may use it and, if
-// not, why not, by trying what a launch tries (its open included).
+// not, why not, by trying what a launch tries (its open included). POST
+// /api/roots allows one more, for the desktop app alone: the workbench token
+// and the key the app gave the server it started (CONDUCTOR_DESKTOP_KEY),
+// both; nothing is written to disk (the app keeps the saved list).
+
+const (
+	// maxRoots bounds the folders held: past it, nothing more is added.
+	maxRoots = 64
+	// maxRootPath bounds the path of a folder to allow, in bytes.
+	maxRootPath = 1024
+	// maxRootBody bounds the body of POST /api/roots.
+	maxRootBody = 8 << 10
+	// desktopKeyHeader carries the key the desktop app gave the server it
+	// started (CONDUCTOR_DESKTOP_KEY).
+	desktopKeyHeader = "X-Conductor-Desktop-Key"
+)
 
 // A folder's state, as the check says it.
 const (
@@ -54,15 +71,22 @@ const (
 	wideHoldsData = "holds_data"
 )
 
-// allowedRoot is one folder agents may use, its path as configured.
+// allowedRoot is one folder agents may use: its path as configured or as
+// added, and whether it was added while the server runs.
 type allowedRoot struct {
-	path string
+	path  string
+	added bool
 }
 
-// resolve is the root's path with its links resolved now.
+// resolve is the root's path with its links resolved now. A root added
+// while the server runs was its own real path when it was added, and is
+// used only while it still is: a link put at its path later leads nowhere.
 func (r allowedRoot) resolve() (string, bool) {
 	real, err := filepath.EvalSymlinks(r.path)
 	if err != nil {
+		return "", false
+	}
+	if r.added && real != r.path {
 		return "", false
 	}
 	return real, true
@@ -76,6 +100,9 @@ type rootList struct {
 	mu     sync.Mutex
 	held   atomic.Pointer[[]allowedRoot]
 	stores atomic.Int64
+	// beforeAdd, when a test sets it before its request, runs under mu
+	// between a folder's judgement and the last look before it is added.
+	beforeAdd func(path string)
 }
 
 // newRootList holds the configuration's allowed roots.
@@ -106,7 +133,7 @@ func (l *rootList) list() []allowedRoot {
 	return nil
 }
 
-// paths is the roots' paths as configured.
+// paths is the roots' paths as configured or added.
 func (l *rootList) paths() []string {
 	roots := l.list()
 	out := make([]string, len(roots))
@@ -128,6 +155,9 @@ type folderVerdict struct {
 	state   string
 	refused string
 	wide    string
+	// id is the folder as the check opened it (an outside folder's), for
+	// the last look before an add (stillTheFolder).
+	id os.FileInfo
 }
 
 // judgeFolder says of path whether agents may use it under roots, by what a
@@ -181,7 +211,7 @@ func (s *Server) judgeFolder(path string, roots []allowedRoot) folderVerdict {
 		return v
 	}
 	g.Close()
-	v.state = folderOutside
+	v.state, v.id = folderOutside, want
 	v.refused = s.refusedKind(real)
 	if v.refused == "" {
 		v.wide = s.wideKind(real)
@@ -315,4 +345,159 @@ func (s *Server) handleCheckRoot(w http.ResponseWriter, r *http.Request) {
 		reply.Real, reply.Link = v.real, v.real != v.path
 	}
 	writeJSON(w, http.StatusOK, reply)
+}
+
+// foldersFrom is whoami's folders: "app" when the desktop app that started
+// the server may allow a folder while it runs (it gave the server its key),
+// "config" when the folders are the configuration's alone.
+func (s *Server) foldersFrom() string {
+	if s.cfg.DesktopKey.Set() {
+		return "app"
+	}
+	return "config"
+}
+
+// fromTheApp reports whether r comes from the desktop app that started the
+// server: the workbench token of this server (no identity provider's
+// principal) and the key the app gave the server, both present and equal.
+// With no key held, nobody is: two empty strings are never compared.
+func (s *Server) fromTheApp(r *http.Request) bool {
+	p := principalOf(r)
+	if !p.admin || p.yard || p.subject != "" {
+		return false
+	}
+	want := s.cfg.DesktopKey.Reveal()
+	got := r.Header.Get(desktopKeyHeader)
+	if want == "" || got == "" {
+		return false
+	}
+	return share.Equal(got, want)
+}
+
+// addRootRequest is POST /api/roots's body.
+type addRootRequest struct {
+	Path      string `json:"path"`
+	Confirmed string `json:"confirmed,omitempty"`
+}
+
+// rootRefusal is an add's refusal, with the one field its code carries.
+type rootRefusal struct {
+	status        int
+	code, message string
+	key, value    string
+}
+
+// handleAddRoot answers POST /api/roots {path, confirmed?}: the desktop app
+// that started the server allows one more folder, from the next request
+// on. Nothing is written to disk and no session is touched. A request
+// without the app's key is refused before its body is read, and counts
+// against its address's limit of refused requests.
+func (s *Server) handleAddRoot(w http.ResponseWriter, r *http.Request) {
+	if !s.fromTheApp(r) {
+		if !s.limiter.allow(clientKey(r)) {
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
+			return
+		}
+		writeError(w, http.StatusForbidden, "not_the_app", "only the Conductor app that started this server may allow a folder")
+		return
+	}
+	var req addRootRequest
+	if err := decodeJSONLimit(w, r, &req, maxRootBody); err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "the body is more than 8 KiB")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	switch req.Confirmed {
+	case "", wideHome, wideAboveHome, wideHoldsData:
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request", "confirmed must be home, above_home or holds_data")
+		return
+	}
+	if len(req.Path) > maxRootPath || !filepath.IsAbs(req.Path) || filepath.Clean(req.Path) != req.Path || strings.ContainsRune(req.Path, 0) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "path must be an absolute path written clean (no . or .. element, no doubled or trailing separator), at most 1024 bytes")
+		return
+	}
+	root, added, no := s.allowRoot(req.Path, req.Confirmed)
+	if no != nil {
+		e := map[string]any{"code": no.code, "message": no.message}
+		if no.key != "" {
+			e[no.key] = no.value
+		}
+		writeJSON(w, no.status, map[string]any{"error": e})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"root": root, "added": added})
+}
+
+// allowRoot adds path to the roots under the holder's lock, judged again
+// there as the check judges it: only a folder that is its own real path, can
+// be opened, is not refused and, when wide, was confirmed as that kind.
+// Just before the add the folder is looked at once more, by identity.
+func (s *Server) allowRoot(path, confirmed string) (string, bool, *rootRefusal) {
+	l := s.roots
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	roots := l.list()
+	v := s.judgeFolder(path, roots)
+	switch v.state {
+	case folderAllowed:
+		return v.real, false, nil
+	case folderMissing:
+		return "", false, &rootRefusal{status: http.StatusConflict, code: "folder_missing", message: "the folder does not exist"}
+	case folderNotDirectory:
+		return "", false, &rootRefusal{status: http.StatusConflict, code: "folder_not_directory", message: "the path is a file, not a folder"}
+	case folderUnreadable:
+		return "", false, &rootRefusal{status: http.StatusConflict, code: "folder_unreadable", message: "Conductor cannot open the folder"}
+	}
+	if v.real != path {
+		return "", false, &rootRefusal{status: http.StatusConflict, code: "folder_is_link", message: "the path goes through a link: only the folder it leads to can be allowed", key: "real", value: v.real}
+	}
+	if v.refused != "" {
+		return "", false, &rootRefusal{status: http.StatusForbidden, code: "folder_refused", message: refusedFolderWords[v.refused], key: "reason", value: v.refused}
+	}
+	if v.wide != "" && confirmed != v.wide {
+		return "", false, &rootRefusal{status: http.StatusConflict, code: "folder_wide", message: "the folder is wide: allow it with confirmed " + v.wide, key: "wide", value: v.wide}
+	}
+	if len(roots) >= maxRoots {
+		return "", false, &rootRefusal{status: http.StatusConflict, code: "too_many_roots", message: "agents may use at most 64 folders"}
+	}
+	if l.beforeAdd != nil {
+		l.beforeAdd(path)
+	}
+	if no := stillTheFolder(path, v.id); no != nil {
+		return "", false, no
+	}
+	l.with(allowedRoot{path: path, added: true})
+	s.log.Info("a folder agents may use was added", "folder", path, "wide", v.wide)
+	if s.cfg.OverlapsDataDir(path) {
+		s.log.Warn(config.DataDirOverlapWords, "dataDir", s.cfg.DataDir, "allowedRoot", path)
+	}
+	return path, true, nil
+}
+
+// refusedFolderWords are a refused folder's words.
+var refusedFolderWords = map[string]string{
+	refusedWholeDisk:     "agents cannot use the whole disk",
+	refusedConductorData: "Conductor keeps its own data in this folder",
+	refusedName:          "the folder's name holds a comma, a control character or a space at an end, which the saved list of folders cannot hold",
+}
+
+// stillTheFolder is the last look before an add: path is still its own
+// real path, and still the directory the judgement opened.
+func stillTheFolder(path string, id os.FileInfo) *rootRefusal {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return &rootRefusal{status: http.StatusConflict, code: "folder_missing", message: "the folder does not exist"}
+	}
+	if real != path {
+		return &rootRefusal{status: http.StatusConflict, code: "folder_is_link", message: "the path goes through a link: only the folder it leads to can be allowed", key: "real", value: real}
+	}
+	fi, err := os.Stat(path)
+	if err != nil || id == nil || !os.SameFile(fi, id) {
+		return &rootRefusal{status: http.StatusConflict, code: "folder_changed", message: "the folder changed while it was checked: check it again"}
+	}
+	return nil
 }

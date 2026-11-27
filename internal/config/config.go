@@ -767,6 +767,13 @@ type Config struct {
 	// unset (Secret).
 	GitHubToken Secret `json:"-"`
 	GitHubHost  string `json:"-"`
+	// DesktopKey is the key the desktop app minted for this run of the
+	// server it starts (CONDUCTOR_DESKTOP_KEY): with it, and the workbench
+	// token, the app alone may allow one more folder while the server runs
+	// (POST /api/roots). 32 to 256 characters of A-Z, a-z, 0-9, _ and -.
+	// Not a config-file key, so no file holds it; its every print is set or
+	// unset (Secret).
+	DesktopKey Secret `json:"-"`
 	// TrackerLoopback admits a tracker on a plain http loopback host
 	// (CONDUCTOR_TRACKER_LOOPBACK=1): tests and the e2e harness only.
 	TrackerLoopback bool `json:"-"`
@@ -904,6 +911,9 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		cfg.GitHubToken = NewSecret(v)
 	}
 	str("CONDUCTOR_GITHUB_HOST", &cfg.GitHubHost)
+	if v := getenv("CONDUCTOR_DESKTOP_KEY"); v != "" {
+		cfg.DesktopKey = NewSecret(v)
+	}
 	if v := getenv("CONDUCTOR_TRACKER_LOOPBACK"); v == "1" || v == "true" {
 		cfg.TrackerLoopback = true
 	}
@@ -1154,6 +1164,10 @@ func (c *Config) Validate() error {
 	}
 	if time.Duration(c.ExitedRetention) < 0 {
 		errs = append(errs, errors.New("exitedRetention must not be negative"))
+	}
+	// The message names the key's form, never a byte of it.
+	if c.DesktopKey.Set() && !desktopKeyForm(c.DesktopKey.Reveal()) {
+		errs = append(errs, errors.New("CONDUCTOR_DESKTOP_KEY must be 32 to 256 characters of A-Z, a-z, 0-9, _ and -"))
 	}
 	if c.GitHubToken.Set() || c.GitHubHost != "" {
 		if c.GitHubHost == "" {
@@ -1571,14 +1585,38 @@ func (c *Config) LoadCatalog() (catalog.Catalog, error) {
 // commit its secrets, and the file viewer refuses the whole data directory, so
 // it reads nothing in a root inside it.
 func (c *Config) DataDirOverlap() string {
-	data := resolved(c.DataDir)
 	for _, root := range c.AllowedRoots {
-		r := resolved(root)
-		if within(data, r) || within(r, data) {
+		if c.OverlapsDataDir(root) {
 			return root
 		}
 	}
 	return ""
+}
+
+// OverlapsDataDir reports whether root overlaps DataDir, as DataDirOverlap
+// judges each allowed root: a root added while the server runs is judged so
+// too.
+func (c *Config) OverlapsDataDir(root string) bool {
+	data, r := resolved(c.DataDir), resolved(root)
+	return within(data, r) || within(r, data)
+}
+
+// DataDirOverlapWords are the log's words for an allowed root that overlaps
+// the data directory, at the start and when a root is added.
+const DataDirOverlapWords = "the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; keep it outside allowedRoots (the default is ~/.conductor), or set dataDir or CONDUCTOR_DATA_DIR to a directory outside them"
+
+// desktopKeyForm reports whether k has the desktop key's form: 32 to 256
+// characters of A-Z, a-z, 0-9, _ and -.
+func desktopKeyForm(k string) bool {
+	if len(k) < 32 || len(k) > 256 {
+		return false
+	}
+	for _, r := range k {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // resolved returns p with its symlinks evaluated. Where p does not exist (yet)
