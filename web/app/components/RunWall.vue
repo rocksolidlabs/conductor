@@ -116,6 +116,19 @@ const gridEl = useTemplateRef<HTMLDivElement>('grid')
 const area = boxOf(areaEl)
 const grid = boxOf(gridEl)
 const narrow = computed(() => area.value.w > 0 && area.value.w < 640)
+
+/**
+ * Shows a member's tile (the message bar's chip of a member that waits on a question): scrolled into view and its frame focused, so its
+ * question is in front of the person. False when the member has no tile drawn.
+ */
+function show(name: string): boolean {
+  const tile = gridEl.value?.querySelector<HTMLElement>(`[data-member="${CSS.escape(name)}"]`)
+  if (!tile) return false
+  tile.scrollIntoView({ block: 'nearest' })
+  ;(tile.querySelector<HTMLElement>('[data-session-tile]') ?? tile).focus()
+  return true
+}
+defineExpose({ show })
 watch(narrow, (n) => (stacked.value = n), { immediate: true })
 const largeIndex = computed(() => props.tiles.findIndex((t) => t.name === props.large))
 const tracks = computed(() => wallTracks(props.layout, props.tiles.length, grid.value.w, grid.value.h, largeIndex.value, props.sizes))
