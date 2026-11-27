@@ -1,6 +1,7 @@
 import { MAX_TRANSCRIPT_ENTRY, MAX_TRANSCRIPT_PAGE, type TranscriptEntry, type TranscriptMessage, type TranscriptReply, type TranscriptRequest, type Welcome } from './protocol'
 import type { MarkView } from './status'
 import { EVENT_INFO, type EventType } from './events'
+import { mentionsIn } from './chatBoxMenu'
 
 // A chat's transcript as the page keeps it (docs/plans/chat-or-terminal.md, designs 5, 6 and 11): the entries the owner sent, each
 // kept at its latest revision by `seq`, the highest `mark` held (the next hello's `transcriptAfter`, so a connection made again is
@@ -536,4 +537,36 @@ export const CHAT_END_SLACK = 48
 /** Whether a chat's scroll shows its end now: what a new entry follows, measured before the entry is drawn. */
 export function atChatEnd(el: Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < CHAT_END_SLACK
+}
+
+/** One part of a message the agent was sent to expand (UX3 R10): its leading command, a file it names, or text. */
+export type PromptPart = { kind: 'text'; text: string } | { kind: 'command'; text: string } | { kind: 'mention'; text: string }
+
+const PART_COMMAND = /^\/([A-Za-z0-9_][A-Za-z0-9_.:-]*)(?=\s|$)/
+
+/**
+ * A message's parts as the conversation draws them (UX3 R10): only for an entry sent for the agent to expand (`expanded`), a leading
+ * `/name` and each `@word` at a word's start; everything else, and every part of an entry sent as written, is text. An address
+ * (a@b) is text.
+ */
+export function promptParts(e: Pick<TranscriptEntry, 'text' | 'expanded' | 'answers'>): PromptPart[] {
+  const text = e.answers ? '' : (e.text ?? '')
+  if (!text) return []
+  if (!e.expanded) return [{ kind: 'text', text }]
+  const parts: PromptPart[] = []
+  let rest = text
+  const cmd = PART_COMMAND.exec(rest)
+  if (cmd) {
+    parts.push({ kind: 'command', text: cmd[0] })
+    rest = rest.slice(cmd[0].length)
+  }
+  let at = 0
+  // Each file as the agent reads it: a quoted path is one mention, a sentence's punctuation after a bare one is text.
+  for (const f of mentionsIn(rest)) {
+    if (f.start > at) parts.push({ kind: 'text', text: rest.slice(at, f.start) })
+    parts.push({ kind: 'mention', text: rest.slice(f.start, f.end) })
+    at = f.end
+  }
+  if (at < rest.length) parts.push({ kind: 'text', text: rest.slice(at) })
+  return parts
 }

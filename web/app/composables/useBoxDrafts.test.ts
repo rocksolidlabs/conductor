@@ -1,6 +1,6 @@
 import { effectScope, nextTick, ref } from 'vue'
 import { describe, expect, it } from 'vitest'
-import { boxDrafts } from './useBoxDrafts'
+import { boxDrafts, ownLines } from './useBoxDrafts'
 
 // The chat boxes' lines, by session (UX3 R4): kept per session past the box that drew one, dropped when sent, emptied, or when the
 // session is no longer listed.
@@ -64,6 +64,53 @@ describe('the chat boxes’ lines', () => {
     listed.value = undefined
     await nextTick()
     expect(drafts.text('a')).toBe('kept')
+    scope.stop()
+  })
+})
+
+describe('whose line it is (UX3 R10): only a line the person typed or pasted, or picked themselves, may go for expand', () => {
+  function own(ids: string[] | undefined) {
+    const listed = ref<string[] | undefined>(ids)
+    const scope = effectScope()
+    const lines = scope.run(() => ownLines(() => listed.value))!
+    return { listed, lines, scope }
+  }
+
+  it("a line the person typed is theirs while the box holds what they left; a send lets it go; one kept while they were away stays theirs", () => {
+    const { lines } = own(['a', 'b'])
+    expect(lines.is('a', '/compact')).toBe(false)
+    lines.typed('a', '/compact')
+    expect(lines.is('a', '/compact')).toBe(true)
+    // They open b and come back: the kept line is still what they typed.
+    expect(lines.is('a', '/compact')).toBe(true)
+    // Any text the person's own input did not leave is not theirs.
+    expect(lines.is('a', '/compact now')).toBe(false)
+    lines.sent('a')
+    expect(lines.is('a', '/compact')).toBe(false)
+  })
+
+  it('a line the page puts back, or one code writes after the person typed, is the page\'s until the person changes it', () => {
+    const { lines } = own(['a'])
+    lines.typed('a', 'x')
+    lines.set('a')
+    expect(lines.is('a', 'x')).toBe(false)
+    lines.typed('a', 'x')
+    // Code writes another text in the box: the record does not hold it.
+    expect(lines.is('a', '/clear')).toBe(false)
+    // An emptied box holds nobody's line, and an empty text is never one.
+    lines.typed('a', '')
+    expect(lines.is('a', '')).toBe(false)
+    expect(lines.is('a', 'x')).toBe(false)
+  })
+
+  it('drops the sessions no longer listed, once the list is read', async () => {
+    const { listed, lines, scope } = own(undefined)
+    lines.typed('a', 'one')
+    lines.typed('b', 'two')
+    listed.value = ['a']
+    await nextTick()
+    expect(lines.is('a', 'one')).toBe(true)
+    expect(lines.is('b', 'two')).toBe(false)
     scope.stop()
   })
 })

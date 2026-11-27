@@ -32,7 +32,7 @@ export interface TerminalTransport extends LaneWire {
    * held the line back, nothing typed; `input_failed`: typed and not entered), the connection's end, or no word in time. To an
    * older owner it goes as a plain `submit` and settles false at once: nothing will say whether it landed.
    */
-  submitAcked(text: string, opts?: { unlessWaiting?: boolean }): Promise<boolean>
+  submitAcked(text: string, opts?: { unlessWaiting?: boolean; expand?: boolean }): Promise<boolean>
   /**
    * Replies to an agent's question, naming it (the attention's `id`) to an owner whose welcome said `answer`: true once the owner
    * took it, a ReplyError when it did not (`question_answered`: the question no longer waits, nothing was sent). To an older owner,

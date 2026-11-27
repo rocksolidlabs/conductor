@@ -10,7 +10,7 @@ import type { MenuRow } from '~/utils/chatBoxMenu'
  * when there is something the person must know to go on.
  */
 const props = defineProps<{ id: string; kind: 'file' | 'command'; rows: MenuRow[]; active: number; foot?: string }>()
-const emit = defineEmits<{ pick: [index: number]; hover: [index: number] }>()
+const emit = defineEmits<{ pick: [index: number, trusted: boolean]; hover: [index: number] }>()
 
 function parts(path: string): { dir: string; name: string } {
   const i = path.lastIndexOf('/')
@@ -36,7 +36,7 @@ defineExpose({ optionId })
         :data-chat-menu-active="i === active || undefined"
         @mousedown.prevent
         @mousemove="emit('hover', i)"
-        @click="emit('pick', i)"
+        @click="(e: MouseEvent) => emit('pick', i, e.isTrusted)"
       >
         <template v-if="kind === 'file'">
           <UIcon name="i-lucide-file" class="size-3.5 flex-none text-muted" aria-hidden="true" />

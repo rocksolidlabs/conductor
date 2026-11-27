@@ -1,5 +1,5 @@
 import { effectScope, reactive, watch } from 'vue'
-import { RowDrafts } from '~/utils/rowDrafts'
+import { OwnLines, RowDrafts } from '~/utils/rowDrafts'
 
 /**
  * The chat boxes' lines, by session (UX3 R4), kept by the app as the sidebar keeps its rows' lines (RowDrafts): a line typed for one
@@ -15,7 +15,20 @@ export function boxDrafts(listed: () => readonly string[] | undefined): RowDraft
   return drafts
 }
 
+/**
+ * Which kept lines the person typed or pasted themselves (UX3 R10, OwnLines), by session: dropped with the lines, when the session is
+ * no longer listed. Its watch lives in the effect scope it is made in.
+ */
+export function ownLines(listed: () => readonly string[] | undefined): OwnLines {
+  const own = reactive(new OwnLines()) as OwnLines
+  watch(listed, (ids) => {
+    if (ids) own.keep(ids)
+  })
+  return own
+}
+
 let shared: RowDrafts | undefined
+let sharedOwn: OwnLines | undefined
 
 /**
  * The app's one store of chat box lines, by session: its sessions as the live store lists them. Made in a scope of the app's own,
@@ -25,8 +38,16 @@ export function useBoxDrafts(): RowDrafts {
   if (!shared) {
     shared = effectScope(true).run(() => {
       const attention = useAttention()
-      return boxDrafts(() => (attention.loaded.value ? attention.sessions.value.map((s) => s.id) : undefined))
+      const listed = () => (attention.loaded.value ? attention.sessions.value.map((s) => s.id) : undefined)
+      sharedOwn = ownLines(listed)
+      return boxDrafts(listed)
     })!
   }
   return shared
+}
+
+/** The app's one record of which kept lines are the person's own typing, beside useBoxDrafts' lines. */
+export function useOwnLines(): OwnLines {
+  useBoxDrafts()
+  return sharedOwn!
 }
