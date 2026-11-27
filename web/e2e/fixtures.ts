@@ -312,6 +312,25 @@ export async function atRest(l: Locator): Promise<void> {
   })
 }
 
+/** The owner's daily window: the desktop app wide and short. A spec of a screen people work in all day measures it at this size too. */
+export const DAILY = { width: 2000, height: 810 }
+
+/**
+ * Opens the fold named More options (MoreOptions.vue) inside `scope` (a dialog, a form) and returns its body (`data-more`) at rest:
+ * the button is pressed only when it is not expanded, so a fold already open stays open. A form that opens its fold by itself
+ * (one remembered open) has drawn that before the caller asks; this never presses twice.
+ */
+export async function openMore(scope: Page | Locator): Promise<Locator> {
+  const button = scope.locator('[data-more-options]')
+  await expect(button).toBeVisible()
+  if ((await button.getAttribute('aria-expanded')) !== 'true') await button.click()
+  await expect(button).toHaveAttribute('aria-expanded', 'true')
+  const body = scope.locator('[data-more]')
+  await expect(body).toBeVisible()
+  await atRest(body)
+  return body
+}
+
 /**
  * Opens a page from the full sidebar's More tile (the pages that have no tile of their own: SidebarTiles.vue) by clicking it and the
  * page's item, and waits for the menu to be gone, so that nothing typed next lands in it.
