@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -137,7 +138,7 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 		_ = reply(session.Verdict{Message: session.NotACallWords})
 		return
 	}
-	if name, _ := local.ProtocolName(); name != "" && name != agentproto.ClaudeStreamJSON {
+	if name, _ := local.ProtocolName(); name != agentproto.ClaudeStreamJSON && slices.Contains(agentproto.Names(), name) {
 		// Only Claude Code's program asks through this route: another
 		// protocol's agent asks in its own stream, and a request here is
 		// none of its calls.
