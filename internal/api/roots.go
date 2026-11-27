@@ -17,7 +17,6 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/session"
-	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // The folders agents may use (the allowed roots) are held in one place that
@@ -561,12 +560,8 @@ func (s *Server) fromTheApp(r *http.Request) bool {
 	if !p.admin || p.yard || p.subject != "" {
 		return false
 	}
-	want := s.cfg.DesktopKey.Reveal()
-	got := r.Header.Get(desktopKeyHeader)
-	if want == "" || got == "" {
-		return false
-	}
-	return share.Equal(got, want)
+	// Compared by the Secret itself: the key is never read out of it.
+	return s.cfg.DesktopKey.Equal(r.Header.Get(desktopKeyHeader))
 }
 
 // addRootRequest is POST /api/roots's body.
