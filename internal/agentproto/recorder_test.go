@@ -37,6 +37,7 @@ type event struct {
 	out  string
 	use  session.Usage
 	code string
+	perm session.PermissionRequest
 }
 
 func (r *recorder) add(e event) {
@@ -81,7 +82,7 @@ func (r *recorder) FileChanged(f session.FileChange) {
 	r.add(event{kind: "file_changed", ref: f.Tool, file: f})
 }
 func (r *recorder) Permission(p session.PermissionRequest) {
-	r.add(event{kind: "permission", ref: p.Ref})
+	r.add(event{kind: "permission", ref: p.Ref, perm: p})
 }
 func (r *recorder) PermissionWithdrawn(ref string) {
 	r.add(event{kind: "permission_withdrawn", ref: ref})
@@ -127,6 +128,8 @@ func (r *recorder) render() string {
 			fmt.Fprintf(&b, "notice %s %q\n", e.code, e.text)
 		case "turn_started":
 			b.WriteString("turn_started\n")
+		case "permission":
+			fmt.Fprintf(&b, "permission %s call=%s %s cwd=%q input=%s\n", e.ref, e.perm.Call, e.perm.Tool, e.perm.Cwd, compact(e.perm.Input))
 		default:
 			fmt.Fprintf(&b, "%s %s\n", e.kind, e.ref)
 		}

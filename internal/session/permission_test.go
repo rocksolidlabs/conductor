@@ -336,6 +336,14 @@ func TestPermissionFloor(t *testing.T) {
 		{"a read of the session's own file", "Read", `{"file_path":"notes.txt"}`, false},
 		{"a command that computes the path", "Bash", bash("D=" + filepath.Dir(data) + "; cat $D/" + filepath.Base(data) + "x/secrets.json"), false},
 		{"a command naming nothing", "Bash", bash("make test"), false},
+		// Codex's steps (internal/agentproto, codex.go): a file change names
+		// its files in a list, and may ask to write under a root; a command
+		// names the folder it runs in.
+		{"a Codex file change of a denied file", "fileChange", `{"changes":[{"path":"notes.txt","kind":"update","diff":""},{"path":"` + secret + `","kind":"update","diff":""}]}`, true},
+		{"a Codex file change asking to write under the folder", "fileChange", `{"changes":[{"path":"notes.txt","kind":"update","diff":""}],"grantRoot":"` + data + `"}`, true},
+		{"a Codex command run in the folder", "commandExecution", `{"command":"cat secrets.json","cwd":"` + data + `"}`, true},
+		{"a Codex command naming nothing", "commandExecution", `{"command":"make test","cwd":""}`, false},
+		{"a Codex file change of the session's own file", "fileChange", `{"changes":[{"path":"notes.txt","kind":"update","diff":"-a\n+b"}]}`, false},
 	}
 	for i, c := range cases {
 		call := fmt.Sprintf("c-%d", i)
@@ -383,7 +391,7 @@ func TestPermissionBound(t *testing.T) {
 		t.Fatalf("the ninth: %+v", v)
 	}
 	// An in-stream one counts against the same bound.
-	f.Permission(PermissionRequest{Ref: "req-past", Tool: "Bash", Input: []byte(`{}`)})
+	askInStream(f, "req-past", "c-in-stream", "Bash", `{}`)
 	if e := lastEntry(t, s); e.State != PermissionDenied || e.Why != TooManyRequestsWords {
 		t.Fatalf("an in-stream ninth %+v", e)
 	}
@@ -617,8 +625,9 @@ func TestPermissionSummaryIsHonest(t *testing.T) {
 // under a digest of the whole.
 func TestPermissionInStreamInputBound(t *testing.T) {
 	s, f, _ := permissionSession(t, Options{})
-	big := []byte(`{"command":"` + strings.Repeat("x", MaxTranscriptPart) + `"}`)
-	f.Permission(PermissionRequest{Ref: "req-1", Call: "c-1", Tool: "Bash", Input: big})
+	big := `{"command":"` + strings.Repeat("x", MaxTranscriptPart) + `"}`
+	f.TurnStarted("")
+	askInStream(f, "req-1", "c-1", "Bash", big)
 	if e := lastEntry(t, s); e.State != PermissionDenied || e.Why != TooLargeWords || e.Question != "" {
 		t.Fatalf("a request past the bound %+v", e)
 	}
@@ -626,8 +635,8 @@ func TestPermissionInStreamInputBound(t *testing.T) {
 	if r := f.Replies(); r[0].Verdict.Allow || r[0].Verdict.Message != TooLargeWords {
 		t.Fatalf("replied %+v", r)
 	}
-	at := []byte(`{"command":"` + strings.Repeat("x", MaxTranscriptPart-len(`{"command":""}`)) + `"}`)
-	f.Permission(PermissionRequest{Ref: "req-2", Call: "c-2", Tool: "Bash", Input: at})
+	at := `{"command":"` + strings.Repeat("x", MaxTranscriptPart-len(`{"command":""}`)) + `"}`
+	askInStream(f, "req-2", "c-2", "Bash", at)
 	if e := lastEntry(t, s); e.State != PermissionOpen {
 		t.Fatalf("a request at the bound %+v", e)
 	}
@@ -700,4 +709,147 @@ func TestPermissionFloorNameEntries(t *testing.T) {
 type floorCase struct {
 	cmd     string
 	floored bool
+}
+
+// inStreamAsked hands over an in-stream request and returns its entry and
+// the verdict replied to it (none while it is open).
+func inStreamAsked(t *testing.T, s *Local, f *sessiontest.FakeProtocol, ref, call, tool, input string) (TranscriptEntry, *Verdict) {
+	t.Helper()
+	f.Permission(PermissionRequest{Ref: ref, Call: call, Tool: tool, Input: []byte(input)})
+	e := lastEntry(t, s)
+	if e.Kind != EntryPermission || e.Ref != ref {
+		t.Fatalf("the request's entry %+v", e)
+	}
+	if e.State == PermissionOpen {
+		return e, nil
+	}
+	waitCalls(t, f, "the reply to "+ref, func(c []string) bool {
+		for _, r := range f.Replies() {
+			if r.Ref == ref {
+				return true
+			}
+		}
+		return false
+	})
+	for _, r := range f.Replies() {
+		if r.Ref == ref {
+			v := r.Verdict
+			return e, &v
+		}
+	}
+	return e, nil
+}
+
+// deniedWith says the request was denied with words, before any question.
+func deniedWith(t *testing.T, s *Local, e TranscriptEntry, v *Verdict, words string) {
+	t.Helper()
+	if e.State != PermissionDenied || e.Why != words || e.Question != "" || v == nil || v.Allow || v.Message != words {
+		t.Fatalf("want denied %q: entry %+v, replied %+v", words, e, v)
+	}
+	if s.isPermissionQuestion(e.Question) {
+		t.Fatalf("a denied request is a question: %+v", e)
+	}
+}
+
+// An in-stream request for a call of the current turn that the stream
+// announced, with that call id, the same tool name and input, and no
+// result yet, is the session's question, bound to that call.
+func TestAnInStreamRequestForAnAnnouncedOpenCallIsTaken(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	// The same input in another spelling has the same canonical form.
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"cwd":"/work","command":"make"}`)})
+	e, v := inStreamAsked(t, s, f, "req-1", "c1", "commandExecution", `{"command":"make", "cwd":"/work"}`)
+	if v != nil || e.State != PermissionOpen || e.Call != "c1" || e.Question == "" {
+		t.Fatalf("the request %+v, replied %+v", e, v)
+	}
+	if att := s.Info().Attention; att.Kind != KindPermission || att.ID != e.Question {
+		t.Fatalf("the attention %+v", att)
+	}
+}
+
+// An in-stream request for a call the stream never showed is denied at
+// once, "Not a call this session is making.": nothing waits for it to be
+// announced later, and its call announced after does not take it.
+func TestAnInStreamRequestForACallNeverShownIsDenied(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	e, v := inStreamAsked(t, s, f, "req-1", "c1", "commandExecution", `{"command":"make"}`)
+	deniedWith(t, s, e, v, NotACallWords)
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"make"}`)})
+	if att := s.Info().Attention; att.Kind == KindPermission {
+		t.Fatalf("the denied request was asked once its call came: %+v", att)
+	}
+	// None names no call either: with no call announced, nothing matches.
+	e, v = inStreamAsked(t, s, f, "req-2", "", "fileChange", `{"changes":[]}`)
+	deniedWith(t, s, e, v, NotACallWords)
+}
+
+// An in-stream request whose tool name or input differs from the call it
+// names as the stream announced it is denied: what the person would be
+// asked about is not the call shown.
+func TestAnInStreamRequestWhoseNameOrInputDiffersIsDenied(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"make","cwd":"/work"}`)})
+	e, v := inStreamAsked(t, s, f, "req-1", "c1", "fileChange", `{"command":"make","cwd":"/work"}`)
+	deniedWith(t, s, e, v, NotACallWords)
+	e, v = inStreamAsked(t, s, f, "req-2", "c1", "commandExecution", `{"command":"make install","cwd":"/work"}`)
+	deniedWith(t, s, e, v, NotACallWords)
+	e, v = inStreamAsked(t, s, f, "req-3", "c1", "commandExecution", `{"command":"make","cwd":"/work/sub"}`)
+	deniedWith(t, s, e, v, NotACallWords)
+	// The call itself is still open to a request that matches it.
+	e, v = inStreamAsked(t, s, f, "req-4", "c1", "commandExecution", `{"command":"make","cwd":"/work"}`)
+	if v != nil || e.State != PermissionOpen {
+		t.Fatalf("the matching request %+v, replied %+v", e, v)
+	}
+}
+
+// An in-stream request for a call whose result the stream has shown is
+// denied: the agent's own rules answered it.
+func TestAnInStreamRequestForACallWithItsResultIsDenied(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"ls"}`)})
+	f.ToolEnded("c1", ToolResult{Status: ToolOK})
+	e, v := inStreamAsked(t, s, f, "req-1", "c1", "commandExecution", `{"command":"ls"}`)
+	deniedWith(t, s, e, v, NotACallWords)
+}
+
+// One request per call: a second in-stream request for a call already
+// asked about is denied "Already asked.", while the first stays open.
+func TestASecondInStreamRequestForTheSameCallIsAlreadyAsked(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"ls"}`)})
+	first, v := inStreamAsked(t, s, f, "req-1", "c1", "commandExecution", `{"command":"ls"}`)
+	if v != nil || first.State != PermissionOpen {
+		t.Fatalf("the first %+v, replied %+v", first, v)
+	}
+	e, v := inStreamAsked(t, s, f, "req-2", "c1", "commandExecution", `{"command":"ls"}`)
+	deniedWith(t, s, e, v, AlreadyAskedWords)
+	if got := entryOf(t, s, first.Seq); got.State != PermissionOpen {
+		t.Fatalf("the first after the second %+v", got)
+	}
+	// Answered, it is still asked: a third is "Already asked." too.
+	f.PermissionWithdrawn("req-1")
+	e, v = inStreamAsked(t, s, f, "req-3", "c1", "commandExecution", `{"command":"ls"}`)
+	deniedWith(t, s, e, v, AlreadyAskedWords)
+}
+
+// An in-stream request naming a call of an earlier turn is denied: a call
+// is the current turn's alone.
+func TestAnInStreamRequestForACallOfAnEarlierTurnIsDenied(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"ls"}`)})
+	f.TurnEnded("done", Usage{})
+	f.TurnStarted("")
+	e, v := inStreamAsked(t, s, f, "req-1", "c1", "commandExecution", `{"command":"ls"}`)
+	deniedWith(t, s, e, v, NotACallWords)
+	// And between turns, no call is this session's.
+	f.TurnEnded("done", Usage{})
+	f.ToolStarted(ToolStep{Ref: "c2", Name: "commandExecution", Input: []byte(`{"command":"ls"}`)})
+	e, v = inStreamAsked(t, s, f, "req-2", "c2", "commandExecution", `{"command":"ls"}`)
+	deniedWith(t, s, e, v, NotACallWords)
 }

@@ -557,7 +557,10 @@ func TestClaudeGate(t *testing.T) {
 	if err := Check(nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(&catalog.ProtocolRecipe{Name: "codex-app-server"}); err == nil {
+	if err := Check(&catalog.ProtocolRecipe{Name: "codex-app-server"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(&catalog.ProtocolRecipe{Name: "acp-v1"}); err == nil {
 		t.Fatal("a protocol Conductor does not speak yet was taken")
 	}
 

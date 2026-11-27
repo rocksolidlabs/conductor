@@ -1,0 +1,16 @@
+Usage of helper:
+  --add-dir                       Adds a folder it may read (repeatable) (default [])
+  -c                              Short alias for --continue
+  --continue                      Goes on with the last talk
+  --dangerously-skip-permissions  Asks nothing at all
+  --effort                        How hard it thinks (low|medium|high)
+  --mode                          How it works (edit, plan, review)
+  --model                         The model for this run
+  -p                              Short alias for --print
+  --print                         Prints one answer and ends
+  --prompt                        Alias for --print
+  --output-format                 How the answer is printed (text, json) (default text)
+
+Available subcommands:
+  help    Shows the help of a subcommand
+  models  Lists the models

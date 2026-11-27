@@ -429,11 +429,14 @@ func TestMoveWaitsForTheTurnsEnd(t *testing.T) {
 	})
 	t.Run("a request open", func(t *testing.T) {
 		s, f, ts, sink := chat(t)
-		f.Permission(PermissionRequest{Ref: "r1", Tool: "Bash", Input: []byte(`{"command":"ls"}`)})
+		f.TurnStarted("t")
+		askInStream(f, "r1", "c1", "Bash", `{"command":"ls"}`)
 		moveWaitFor(t, "the request open", func() bool { why, _ := s.atRestWhy(); return why == RequestWaitsWords })
 		press(t, s, ts, sink, RequestWaitsWords)
 		stays(t, s, ts)
 		f.PermissionWithdrawn("r1")
+		stays(t, s, ts)
+		f.TurnEnded("done", Usage{})
 		made(t, s, ts, sink)
 	})
 	t.Run("background work", func(t *testing.T) {
