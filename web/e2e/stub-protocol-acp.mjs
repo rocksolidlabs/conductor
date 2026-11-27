@@ -93,6 +93,8 @@ async function ask(kind) {
 
 async function run(text) {
   cancelled = false
+  // The turn begins with a thought, as an agent at work tells its client.
+  update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } })
   if (/\btool\b/.test(text)) {
     const call = next('call')
     update({ sessionUpdate: 'tool_call', toolCallId: call, title: 'ls', kind: 'execute', status: 'in_progress', rawInput: { command: 'ls' } })
