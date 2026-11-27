@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -230,5 +232,36 @@ func TestASwitchyardTakesNoSecretsOnStdin(t *testing.T) {
 	code, err := runServe(t.Context(), []string{"--switchyard", "--secrets-stdin"}, strings.NewReader(secretsLine(stdinToken, stdinKey)), io.Discard, &logs)
 	if code != 2 || err == nil || !strings.Contains(err.Error(), "a switchyard takes no secrets on stdin") {
 		t.Fatalf("serve --switchyard --secrets-stdin: exit %d: %v", code, err)
+	}
+	// Turned on by the environment, or by the configuration file: refused all the same, nothing bound.
+	dir := t.TempDir()
+	file := filepath.Join(dir, "conductor.json")
+	if err := os.WriteFile(file, []byte(`{"switchyard":{"enabled":true},"dataDir":`+strconv.Quote(filepath.Join(dir, "data"))+`}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		env  map[string]string
+		args []string
+	}{
+		{"CONDUCTOR_SWITCHYARD=1", map[string]string{"CONDUCTOR_SWITCHYARD": "1", "CONDUCTOR_DATA_DIR": filepath.Join(dir, "data")}, []string{"--secrets-stdin", "--listen", "127.0.0.1:0"}},
+		{"switchyard.enabled in the file", nil, []string{"--secrets-stdin", "--config", file, "--listen", "127.0.0.1:0"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			var out syncBuffer
+			// The refusal comes before anything is bound; the bound ends a server that would run instead.
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			code, err := runServe(ctx, c.args, strings.NewReader(secretsLine(stdinToken, stdinKey)), &out, &logs)
+			if code != 2 || err == nil || !strings.Contains(err.Error(), "a switchyard takes no secrets on stdin") {
+				t.Fatalf("exit %d: %v", code, err)
+			}
+			if strings.Contains(out.String(), "listen") {
+				t.Fatalf("a handshake was printed: %s", out.String())
+			}
+		})
 	}
 }
