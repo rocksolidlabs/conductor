@@ -9,9 +9,10 @@ import { bestGrid, lastItemSpan, type RunWallTile } from '~/utils/wall'
 
 /**
  * The run page's Members view: a tile for every member of one run in the run's order (a live terminal where the member has a session,
- * else a placeholder that says its state and offers Start now or Resume), and the run's activity. Every tile and the activity card fit
- * the area, as on the wall; on a narrow area they stack and the area scrolls. The page hands it the run and its tiles and takes back
- * what a person asks of a tile (open, start); a member's question is answered through the page's `answer`.
+ * else a placeholder that says its state and offers Start now or Resume), and, when the person turned it on, the run's Activity as a
+ * column at the right. The tiles fit their area, as on the wall, the last one taking the cells its row leaves; on a narrow area they
+ * stack, Activity under them, and the area scrolls. The page hands it the run and its tiles and takes back what a person asks of a
+ * tile (open, start); a member's question is answered through the page's `answer`.
  */
 const props = defineProps<{
   tiles: RunWallTile[]
@@ -29,6 +30,8 @@ const props = defineProps<{
   answer: (line: ChatMessage, index: number) => Promise<void>
   /** The members that will get the next line from the run's message bar: their tiles carry the ring. */
   receiving?: readonly string[]
+  /** Whether the run's Activity shows beside the tiles. */
+  activity: boolean
 }>()
 
 const emit = defineEmits<{ open: [sessionId: string]; start: [name: string] }>()
@@ -64,38 +67,49 @@ function tileAsk(t: RunWallTile) {
   return line && props.answerable(line) ? line : null
 }
 
-// Every tile and the activity card fit on screen, as on the wall; on a narrow screen they stack and the page scrolls.
-const grid = useTemplateRef<HTMLDivElement>('grid')
-const box = ref({ w: 0, h: 0 })
-watch(
-  grid,
-  (el, _prev, onCleanup) => {
-    if (!el) return
-    const observer = new ResizeObserver((entries) => {
-      const r = entries[0]?.contentRect
-      if (r) box.value = { w: r.width, h: r.height }
-    })
-    observer.observe(el)
-    onCleanup(() => observer.disconnect())
-  },
-  { immediate: true },
-)
-const narrow = computed(() => box.value.w > 0 && box.value.w < 640)
-const layout = computed(() => bestGrid(props.tiles.length + 1, box.value.w, box.value.h, 12, 1.4))
-const feedSpan = computed(() => lastItemSpan(props.tiles.length + 1, layout.value))
+/** Follows an element's content box. */
+function boxOf(name: string) {
+  const el = useTemplateRef<HTMLDivElement>(name)
+  const box = ref({ w: 0, h: 0 })
+  watch(
+    el,
+    (node, _prev, onCleanup) => {
+      if (!node) return
+      const observer = new ResizeObserver((entries) => {
+        const r = entries[0]?.contentRect
+        if (r) box.value = { w: r.width, h: r.height }
+      })
+      observer.observe(node)
+      onCleanup(() => observer.disconnect())
+    },
+    { immediate: true },
+  )
+  return box
+}
+// The whole area decides whether the tiles stack; the tiles' own box (the area less Activity's column) decides their grid.
+const area = boxOf('area')
+const grid = boxOf('grid')
+const narrow = computed(() => area.value.w > 0 && area.value.w < 640)
+const layout = computed(() => bestGrid(props.tiles.length, grid.value.w, grid.value.h, 12, 1.4))
+const lastSpan = computed(() => lastItemSpan(props.tiles.length, layout.value))
 const gridStyle = computed(() =>
   narrow.value
     ? { gridTemplateColumns: 'minmax(0, 1fr)', gridAutoRows: '16rem' }
     : { gridTemplateColumns: `repeat(${layout.value.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.value.rows}, minmax(0, 1fr))` },
 )
+/** The last tile takes the cells its row leaves empty, so the grid has no hole. */
+function cellStyle(i: number) {
+  return !narrow.value && i === props.tiles.length - 1 && lastSpan.value > 1 ? { gridColumn: `span ${lastSpan.value} / span ${lastSpan.value}` } : undefined
+}
 </script>
 
 <template>
-  <div ref="grid" class="min-h-0 flex-1 p-3" :class="narrow ? 'overflow-y-auto' : 'overflow-hidden'">
-    <div class="grid h-full w-full gap-3" :class="narrow && 'h-auto'" :style="gridStyle" data-run-grid>
-      <template v-for="t in props.tiles" :key="t.session?.id ?? `m-${t.name}`">
+  <div ref="area" class="flex min-h-0 flex-1 gap-3 p-3" :class="narrow ? 'flex-col overflow-y-auto' : 'overflow-hidden'" :data-activity-shown="props.activity || undefined">
+    <div ref="grid" class="grid min-h-0 min-w-0 flex-1 gap-3" :class="narrow ? 'flex-none' : 'h-full'" :style="gridStyle" data-run-grid>
+      <template v-for="(t, i) in props.tiles" :key="t.session?.id ?? `m-${t.name}`">
         <SessionTile
           v-if="t.session"
+          :style="cellStyle(i)"
           :session="t.session"
           :status="looked(t)?.view"
           :create-transport="props.createTransport(t.session)"
@@ -114,7 +128,7 @@ const gridStyle = computed(() =>
             <span class="ml-auto flex-none font-mono" data-mono="measure" data-diff>{{ footer(t).diff }}</span>
           </template>
         </SessionTile>
-        <div v-else class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-dashed border-accented" :data-member="t.name">
+        <div v-else class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-dashed border-accented" :style="cellStyle(i)" :data-member="t.name">
           <div class="flex items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs">
             <SessionAvatar :agent-id="t.member?.agentId ?? ''" dashed />
             <span class="flex-1 truncate text-[13px] font-semibold">{{ t.name }}</span>
@@ -138,7 +152,7 @@ const gridStyle = computed(() =>
           </div>
         </div>
       </template>
-      <CrewFeed :items="props.feed" :style="narrow ? undefined : { gridColumn: `span ${feedSpan} / span ${feedSpan}` }" />
     </div>
+    <CrewFeed v-if="props.activity" :items="props.feed" :run-id="props.runId" class="flex-none" :class="narrow ? 'h-80' : 'w-80'" />
   </div>
 </template>

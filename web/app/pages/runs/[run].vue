@@ -12,6 +12,7 @@ import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import type { RunWallTile } from '~/utils/wall'
+import { choiceFor, choose, crewOfRun, readRunTiles, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
@@ -229,12 +230,32 @@ watch(view, (v) => {
 })
 const viewItems = computed(() => [
   ...(run.value?.managed ? [{ label: 'Tasks', value: 'tasks', icon: 'i-lucide-list-checks' }] : []),
-  { label: 'Grid', value: 'grid', icon: 'i-lucide-layout-grid' },
+  { label: 'Members', value: 'grid', icon: 'i-lucide-users' },
   { label: 'Graph', value: 'graph', icon: 'i-lucide-git-fork' },
   { label: 'Timeline', value: 'timeline', icon: 'i-lucide-chart-gantt' },
 ])
 /** The view shown: Tasks is a managed run's alone, so a legacy run asked for it gets the grid. */
 const shownView = computed(() => (view.value === 'tasks' && !run.value?.managed ? 'grid' : view.value))
+
+// How the Members view draws the crew's tiles (runTiles): whether Activity shows beside them. Kept for the crew in this app's storage;
+// a crew opened for the first time takes the last choice made for any crew.
+function pageStorage(): Storage | null {
+  try {
+    return localStorage
+  } catch {
+    return null
+  }
+}
+const tilesRecord = ref(readRunTiles(pageStorage()))
+const crew = computed(() => crewOfRun(runId.value, run.value?.crewId))
+const tilesChoice = computed(() => choiceFor(tilesRecord.value, crew.value))
+function chooseTiles(change: Partial<RunTilesChoice>) {
+  tilesRecord.value = choose(tilesRecord.value, crew.value, change)
+  writeRunTiles(pageStorage(), tilesRecord.value)
+}
+function setActivity(on: boolean) {
+  chooseTiles({ activity: on })
+}
 
 // The task selected in the Tasks view (`?task=`), in the URL so a link opens on it (#334, row 7).
 const selectedTask = computed(() => (typeof route.query.task === 'string' ? route.query.task : ''))
@@ -401,7 +422,7 @@ palette.registerPage(() => {
   const sel = selection.value
   const views: Array<[RunView, string, string]> = [
     ...(r.managed ? [['tasks', 'View the tasks', 'i-lucide-list-checks'] as [RunView, string, string]] : []),
-    ['grid', 'View as a grid', 'i-lucide-layout-grid'],
+    ['grid', 'View the members', 'i-lucide-users'],
     ['graph', 'View as a graph', 'i-lucide-git-fork'],
     ['timeline', 'View as a timeline', 'i-lucide-chart-gantt'],
   ]
@@ -493,6 +514,18 @@ palette.registerPage(() => {
       },
       { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: !runOffer(r).add, run: () => header.value?.openAdd() },
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
+      // Activity is the Members view's column: showing it from another view shows the members too.
+      tilesChoice.value.activity
+        ? { key: 'page:activity', label: 'Hide activity', icon: 'i-lucide-activity', run: () => setActivity(false) }
+        : {
+            key: 'page:activity',
+            label: 'Show activity',
+            icon: 'i-lucide-activity',
+            run: () => {
+              setActivity(true)
+              view.value = 'grid'
+            },
+          },
       { key: 'page:share', label: 'Share run', icon: 'i-lucide-share-2', kbds: ['S'], run: () => header.value?.share() },
       ...(r.managed && !stopped && !r.record && !header.value?.isEnded() ? [{ key: 'page:pause', label: r.paused ? 'Resume scheduling' : 'Pause scheduling', icon: r.paused ? 'i-lucide-play' : 'i-lucide-pause', run: () => header.value?.togglePause() }] : []),
       ...(bk.available.value === true
@@ -555,8 +588,20 @@ palette.registerPage(() => {
       <PageEmpty v-if="gone" state="missing" :words="`No run has the id ${runId}. The server forgets runs when it restarts.`" :actions="[{ label: 'Crews', icon: 'i-lucide-arrow-left', to: '/crews' }]" data-run-missing />
 
       <template v-else>
-        <div class="flex flex-none items-center px-3 pt-3">
+        <div class="flex flex-none items-center gap-2 px-3 pt-3">
           <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-run-view />
+          <UButton
+            v-if="shownView === 'grid'"
+            label="Activity"
+            icon="i-lucide-activity"
+            size="xs"
+            color="neutral"
+            :variant="tilesChoice.activity ? 'soft' : 'outline'"
+            class="ml-auto"
+            :aria-pressed="tilesChoice.activity"
+            data-activity-toggle
+            @click="setActivity(!tilesChoice.activity)"
+          />
         </div>
         <div v-if="shownView === 'graph'" class="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" data-run-graph>
           <CrewGraph
@@ -604,6 +649,7 @@ palette.registerPage(() => {
           :create-transport="transportFor"
           :answerable="runChatAnswers.answerable"
           :answer="runChatAnswers.answer"
+          :activity="tilesChoice.activity"
           @open="router.push(`/sessions/${$event}`)"
           @start="startMember"
         >

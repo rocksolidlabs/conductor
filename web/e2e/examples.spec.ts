@@ -97,6 +97,11 @@ test('each prompt runs without a person, the members start in order, the handoff
     .toContain('Handoff from tester: stub tester: over to core')
   // The feed shows the same steps.
   await page.goto(`/runs/${encodeURIComponent(runId)}`)
+  // Activity is off at first: one press shows it beside the tiles.
+  const toggle = page.locator('[data-activity-toggle]')
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
   const feed = page.locator('[data-crew-feed]')
   for (const text of ["typed lead's prompt", 'lead is done: starting core, cli', 'cli is done: starting tester', 'handoff delivered from tester to core']) {
     await expect(feed).toContainText(text)

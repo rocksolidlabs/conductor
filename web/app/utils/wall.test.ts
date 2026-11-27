@@ -68,6 +68,31 @@ describe('lastItemSpan', () => {
   })
 })
 
+describe("a run's wall of member tiles", () => {
+  // The Members view's tile area at 2000 x 810 (no Activity), with Activity's 320 px column beside it, and at 1440 x 900.
+  const boxes = [
+    [1680, 600],
+    [1348, 600],
+    [1120, 690],
+  ] as const
+  it('fits the members alone, the last tile taking the cells its row leaves, for 1, 2, 3, 5, 6 and 12 members', () => {
+    for (const [w, h] of boxes) {
+      for (const n of [1, 2, 3, 5, 6, 12]) {
+        const g = bestGrid(n, w, h, 12, 1.4)
+        const span = lastItemSpan(n, g)
+        // Every cell is filled once: n - 1 tiles of one cell and the last of `span`.
+        expect(n - 1 + span).toBe(g.cols * g.rows)
+        expect(span).toBeLessThanOrEqual(g.cols)
+      }
+    }
+  })
+  it('puts three members in one row on the wide window, and wraps six into two rows', () => {
+    expect(bestGrid(3, 1680, 600, 12, 1.4)).toEqual({ cols: 3, rows: 1 })
+    expect(bestGrid(6, 1680, 600, 12, 1.4)).toEqual({ cols: 3, rows: 2 })
+    expect(lastItemSpan(5, bestGrid(5, 1680, 600, 12, 1.4))).toBe(2)
+  })
+})
+
 // The Yard's chips over a table of sessions: one in each live state, a starting one, an ended session that still carries its question,
 // a host that is away and asks, a question answered in the terminal, and a question that mirrors a durable decision.
 const NOW = Date.UTC(2026, 10, 16, 10, 0)

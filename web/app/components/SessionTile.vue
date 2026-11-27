@@ -66,7 +66,7 @@ const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.val
         <ResumeButton v-if="isEnded(props.session.status)" :session="props.session" stay :icon-only="!props.resumeWord" size="xs" />
         <!-- One more button of the page's own (a run's tile: show it large), before the open button. -->
         <slot name="header-action" />
-        <UTooltip text="Open in full (or double-click here)">
+        <UTooltip text="Full size (or double-click here)">
           <UButton icon="i-lucide-maximize-2" size="xs" color="neutral" variant="ghost" :aria-label="`Open ${props.session.name}`" data-tile-open @click.stop="emit('select')" />
         </UTooltip>
       </div>
