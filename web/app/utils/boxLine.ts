@@ -49,6 +49,24 @@ export function freeHeld(lines: RowDrafts, own: OwnLines, id: string, raw: strin
   return true
 }
 
+/**
+ * Whose the line is after a pick from the box's list (UX3 R10): the person's only when their own press picked into a line that was
+ * already theirs; a pick never makes the page's line the person's.
+ */
+export function afterPick(own: OwnLines, id: string, text: string, o: { trusted: boolean; wasMine: boolean }): void {
+  if (o.trusted && o.wasMine) own.typed(id, text)
+  else own.set(id)
+}
+
+/**
+ * Whether the box's lists open (UX3 R10): only on the person's own line (a line the page put there goes as it is, with no list to
+ * turn it into theirs), never while the box would answer a question, and for files only where the box may expand a line and read
+ * files.
+ */
+export function listsOpen(o: { mine: boolean; answering: boolean }): boolean {
+  return o.mine && !o.answering
+}
+
 /** Whether a line goes for the agent to expand: the server's word for this connection, and the person's own line, unchanged. */
 export function expandsLine(canExpand: boolean, own: OwnLines, id: string, text: string): boolean {
   return canExpand && own.is(id, text)

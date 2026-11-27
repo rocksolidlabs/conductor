@@ -78,13 +78,18 @@ test('a folder outside is allowed from the app with no restart, kept in its sett
     expect(before.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(new URL(page.url()).origin).toBe(before.origin)
     const origin = before.origin!
+    // Each answer's status is asserted before its body is read: a failure says which step refused.
+    const ok = async (method: string, path: string, status: number, body?: unknown) => {
+      const r = await api(method, origin, path, body)
+      expect(r.status, `${method} ${path}: ${JSON.stringify(r.body)}`).toBe(status)
+      return r.body
+    }
     // whoami says the app may allow a folder; the folder is outside, and a launch there is refused.
-    expect((await api('GET', origin, '/api/whoami')).body?.folders).toBe('app')
-    expect((await api('GET', origin, `/api/roots/check?path=${encodeURIComponent(outside)}`)).body?.state).toBe('outside')
+    expect((await ok('GET', '/api/whoami', 200))?.folders).toBe('app')
+    expect((await ok('GET', `/api/roots/check?path=${encodeURIComponent(outside)}`, 200))?.state).toBe('outside')
     expect((await api('POST', origin, '/api/sessions', { agentId: 'cat', cwd: outside })).status).toBe(400)
     // A session started before the press, in the home folder.
-    const first = await api('POST', origin, '/api/sessions', { agentId: 'cat', cwd: home })
-    expect(first.status).toBe(201)
+    const first = { body: await ok('POST', '/api/sessions', 201, { agentId: 'cat', cwd: home }) }
     // The workbench token alone may not allow it: the key is the app's.
     expect((await api('POST', origin, '/api/roots', { path: outside })).status).toBe(403)
 
@@ -99,10 +104,11 @@ test('a folder outside is allowed from the app with no restart, kept in its sett
     const after = await state()
     expect(after.pid).toBe(before.pid)
     expect(after.url).toBe(before.url)
-    expect((await api('GET', origin, `/api/sessions/${first.body?.id}`)).body?.status).toBe('running')
-    const there = await api('POST', origin, '/api/sessions', { agentId: 'cat', cwd: outside })
-    expect(there.status).toBe(201)
-    expect(there.body?.cwd).toBe(outside)
+    // The session's record is under `session` (GET /api/sessions/{id}).
+    const read = (await ok('GET', `/api/sessions/${first.body?.id}`, 200)) as { session?: { status?: string } } | null
+    expect(read?.session?.status).toBe('running')
+    const there = await ok('POST', '/api/sessions', 201, { agentId: 'cat', cwd: outside })
+    expect(there?.cwd).toBe(outside)
     // The token and the key the app handed its server, by their values: in neither the settings file nor either log, and in
     // neither the server's starting environment nor its command line as the system shows them.
     const secrets = JSON.parse(readFileSync(secretsFile, 'utf8')) as { workbenchToken: string; desktopKey: string }

@@ -305,7 +305,7 @@ describe('what the form says of the folder as it is picked, and of a save the se
   })
 
   it("keeps the server's words and says what was kept", () => {
-    expect(notSavedWords('compare: a comparison has 2 to 4 candidates, not 1')).toBe('Compare: a comparison has 2 to 4 candidates, not 1. What you typed is kept.')
+    expect(notSavedWords('compare: a trial has 2 to 4 candidates, not 1')).toBe('Compare: a trial has 2 to 4 candidates, not 1. What you typed is kept.')
     expect(notSavedWords('Crews are off here. ')).toBe('Crews are off here. What you typed is kept.')
   })
 })

@@ -93,6 +93,8 @@ export class ServerSupervisor extends EventEmitter {
   private stopping: Promise<void> | null = null
   /** The restart under way, whose outcome a start it stopped reports. */
   private restarting: Promise<Handshake> | null = null
+  /** The generation of the restart's own start, once it has begun: that start's outcome is the restart's, never the reverse. */
+  private restartingGen: number | undefined
   private healthTimer: NodeJS.Timeout | null = null
   private restartTimer: NodeJS.Timeout | null = null
   private failTimes: number[] = []
@@ -188,11 +190,13 @@ export class ServerSupervisor extends EventEmitter {
       })
     })
     child.on('exit', (code, signal) => this.onExit(child, code, signal))
-    // A start told to stop while it started (a stop or a restart before its handshake): never trusted, whatever it prints.
-    const superseded = () => !this.wanted || this.child !== child || gen !== this.generation
-    // Its outcome is the restart's that stopped it, or the newer start's; a plain stop's is StartStopped.
+    // A start told to stop while it started (a stop, a restart or a newer start before its handshake): never trusted, whatever it
+    // prints. A server that exited by itself is no such start: its start failed.
+    const superseded = () => !this.wanted || gen !== this.generation || (this.child !== null && this.child !== child)
+    // Its outcome is the restart's that stopped it (never for that restart's own start, whose outcome the restart is), or the newer
+    // start's; a plain stop's is StartStopped.
     const stale = (): Promise<Handshake> => {
-      if (this.restarting) return this.restarting
+      if (this.restarting && this.restartingGen !== gen) return this.restarting
       if (gen !== this.generation && this.current && this.wanted) return this.current
       throw new StartStopped()
     }
@@ -311,12 +315,18 @@ export class ServerSupervisor extends EventEmitter {
 
   /** restart stops and starts again, with the same settings read afresh (env()). */
   async restart(): Promise<Handshake> {
-    const next = (async () => {
+    // Assigned before the body's first await returns: the body reads it after.
+    let next!: Promise<Handshake>
+    next = (async () => {
       await this.stop()
       this.failTimes = []
-      return this.start()
+      const own = this.start()
+      // start spawns at once up to its preparation: the generation is its own.
+      if (this.restarting === next) this.restartingGen = this.generation
+      return own
     })()
     this.restarting = next
+    this.restartingGen = undefined
     try {
       return await next
     } finally {

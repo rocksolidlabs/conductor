@@ -19,8 +19,9 @@ describe('tileAskOf', () => {
 
   it('says where a question the tile cannot answer is answered, from the same cases as a reply field', () => {
     // No choices, a startup screen, a permission dialog whose choices were not read, a line typed and not entered: its terminal.
-    for (const a of [asks({}), asks({ source: 'trust' }), asks({ kind: 'permission', source: 'hook' }), asks({ source: 'submit', options })]) {
-      expect(tileAskOf('review', a, (l) => !!l.options?.length && a.attention.source !== 'submit')).toMatchObject({ who: 'review asks:', question, kind: 'terminal', words: ANSWER_IN_ITS_TERMINAL })
+    // (A line typed and not entered carries no choices: the server posts it with none.)
+    for (const a of [asks({}), asks({ source: 'trust' }), asks({ kind: 'permission', source: 'hook' }), asks({ source: 'submit' })]) {
+      expect(tileAskOf('review', a, yes)).toMatchObject({ who: 'review asks:', question, kind: 'terminal', words: ANSWER_IN_ITS_TERMINAL })
     }
     expect(ANSWER_IN_ITS_TERMINAL).toBe('Answer it in its terminal')
     // A durable decision's question: its card, by its id.
@@ -28,6 +29,12 @@ describe('tileAskOf', () => {
     // A chat's permission request: the member's own view.
     expect(tileAskOf('review', asks({ kind: 'permission', source: 'protocol' }), yes)).toMatchObject({ kind: 'open', words: OPEN_TO_ANSWER })
     expect(OPEN_TO_ANSWER).toBe('Open it to answer')
+    // A member that runs as a chat: its question with no choices is answered in its Chat, never in a terminal it does not show.
+    expect(tileAskOf('review', { ...asks({}), way: 'protocol' as const }, yes)).toMatchObject({ kind: 'open', words: OPEN_TO_ANSWER })
+    expect(tileAskOf('review', { ...asks({ options }), way: 'protocol' as const }, () => false)).toMatchObject({ kind: 'open' })
+    // Its choices the page may press stay choices, and a decision's question stays its decision's.
+    expect(tileAskOf('review', { ...asks({ options }), way: 'protocol' as const }, yes)).toMatchObject({ kind: 'choices' })
+    expect(tileAskOf('review', { ...asks({ options, decision: 'dr-7' }), way: 'protocol' as const }, yes)).toMatchObject({ kind: 'decision' })
     // Choices the page may not press: answered in its terminal.
     expect(tileAskOf('review', asks({ options }), () => false)).toMatchObject({ kind: 'terminal' })
   })

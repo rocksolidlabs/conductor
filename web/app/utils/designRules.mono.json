@@ -60,6 +60,7 @@
   "components/SessionAvatar.vue": 1,
   "components/SessionInspector.vue": 3,
   "components/SessionTile.vue": 1,
+  "components/SessionView.vue": 1,
   "components/ShareLinksModal.vue": 3,
   "components/SidebarRail.vue": 1,
   "components/SidebarRailSquare.vue": 1,
@@ -76,6 +77,5 @@
   "pages/history/sessions/[id].vue": 6,
   "pages/join/[token].vue": 1,
   "pages/people/[name].vue": 2,
-  "pages/roundhouse.vue": 1,
-  "pages/sessions/[id].vue": 1
+  "pages/roundhouse.vue": 1
 }

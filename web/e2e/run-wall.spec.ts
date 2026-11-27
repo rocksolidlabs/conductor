@@ -265,7 +265,7 @@ test("the last layout and Activity come back from the server when the page's sto
   await toggle.click()
   await expect(toggle).toHaveAttribute('aria-pressed', 'true')
   await expect(grid).toHaveAttribute('data-run-layout', 'large')
-  await expect.poll(async () => (await api.ok<{ runTiles?: unknown }>('GET', '/api/ui/layout')).runTiles, { timeout: 15_000, message: 'the server keeps the choice' }).toEqual({ layout: 'large', activity: true })
+  await expect.poll(async () => (await api.ok<{ runTiles?: unknown }>('GET', '/api/ui/layout')).runTiles, { timeout: 15_000, message: 'the server keeps the choice' }).toMatchObject({ layout: 'large', activity: true })
   // The page's storage as a fresh address has it: no tiles record, no last choice.
   await page.evaluate((keys) => keys.forEach((k) => localStorage.removeItem(k)), TILE_KEYS)
   const read = page.waitForResponse((r) => r.url().endsWith('/api/ui/layout') && r.request().method() === 'GET')
@@ -274,6 +274,28 @@ test("the last layout and Activity come back from the server when the page's sto
   await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'large')
   await expect(page.locator('[data-activity-toggle]')).toHaveAttribute('aria-pressed', 'true')
   await expect(page.locator('[data-crew-feed]')).toBeVisible()
+})
+
+test("a crew's own layout comes back from the server too, beside a different last choice", async ({ page, api }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  // second: One large, its own; then first: Grid, the last choice made anywhere.
+  await open(page, second, 2)
+  await page.locator('[data-run-layout-choice="large"]').click()
+  await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'large')
+  await open(page, first, 3)
+  await page.locator('[data-run-layout-choice="grid"]').click()
+  await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'grid')
+  await expect
+    .poll(async () => {
+      const t = (await api.ok<{ runTiles?: { layout?: string; crews?: Array<{ layout: string }> } }>('GET', '/api/ui/layout')).runTiles
+      return `${t?.layout} ${t?.crews?.map((c) => c.layout).join(',')}`
+    }, { timeout: 15_000, message: 'the server keeps both crews and the last choice' })
+    .toBe('grid grid,large')
+  await page.evaluate((keys) => keys.forEach((k) => localStorage.removeItem(k)), TILE_KEYS)
+  const read = page.waitForResponse((r) => r.url().endsWith('/api/ui/layout') && r.request().method() === 'GET')
+  await page.goto(`/runs/${encodeURIComponent(second)}`)
+  await read
+  await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'large')
 })
 
 test('a phone-width window keeps its Activity to itself and writes no layout for the server', async ({ page, api }) => {
@@ -480,12 +502,33 @@ test("a number key on an asking tile's frame answers it; in its terminal the key
   await page.keyboard.press('7')
   await expect(tile.locator('[data-run-ask-choice]')).toHaveCount(3)
   expect(transcript()).not.toMatch(/main|release/)
-  // On the frame, 3 answers release.
+  // On the frame, 1 is the mode choice's place, which has no number: it answers nothing. Then 3 answers release: had 1 answered
+  // (auto mode), the question would be gone and 3 refused, so release in the transcript and no yolo prove 1 sent nothing.
   await tile.focus()
+  await page.keyboard.press('1')
+  await expect(tile.locator('[data-run-ask-choice]')).toHaveCount(3)
   await page.keyboard.press('3')
   await expect.poll(transcript, { timeout: 30_000, message: 'core got the choice from the frame' }).toContain('release')
   await expect(tile.locator('[data-run-ask-choices]')).toHaveCount(0)
   expect(transcript()).not.toContain('yolo')
+  // A held key answers once: the next question appears under the same focus, and the key's repeat answers nothing. Had the
+  // repeat (1, alpha) answered it, the fresh press (2, beta) would be refused: beta in the transcript and no alpha prove it.
+  await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 30_000, message: 'the answer turn is done' }).toBe('done')
+  await api.ok('POST', `/api/sessions/${id}/attention`, {
+    state: 'needs_input',
+    message: 'Which one next?',
+    options: [
+      { label: 'alpha', input: 'alpha\r' },
+      { label: 'beta', input: 'beta\r' },
+    ],
+  })
+  await expect(tile.locator('[data-run-ask-choice]')).toHaveCount(2)
+  await tile.focus()
+  await tile.dispatchEvent('keydown', { key: '1', code: 'Digit1', repeat: true, bubbles: true, cancelable: true })
+  await expect(tile.locator('[data-run-ask-choice]')).toHaveCount(2)
+  await page.keyboard.press('2')
+  await expect.poll(transcript, { timeout: 30_000, message: 'core got beta from the fresh press' }).toContain('beta')
+  expect(transcript()).not.toContain('alpha')
   // Enter on the frame still opens the member.
   await tile.focus()
   await page.keyboard.press('Enter')
@@ -537,3 +580,43 @@ for (const touch of [false, true]) {
     void day
   })
 }
+
+// The Needs you pill over a focused asking tile (R22): the frame keeps its digits, as a focused list's option does.
+test("with the Needs you pill showing, a digit on a focused asking tile's frame answers the tile, not the pill", async ({ page, api, state }) => {
+  test.setTimeout(4 * 30_000 + 10 * 15_000 + 30_000)
+  // The pill lives for the test's length (the page's seam), so a press is judged with it shown, never after it went by itself.
+  await page.addInitScript((ms) => ((window as Window & { conductorPillMs?: number }).conductorPillMs = ms), test.info().timeout)
+  const core = member(await api.run(first), 'core').sessionId ?? ''
+  const solo = member(await api.run(second), 'solo').sessionId ?? ''
+  const read = async (id: string) => {
+    const s = await api.session(id)
+    const file = join(state.home, '.stub-sessions', `${s.agentSession?.id ?? ''}.txt`)
+    return () => (existsSync(file) ? readFileSync(file, 'utf8') : '')
+  }
+  const coreText = await read(core)
+  const soloText = await read(solo)
+  await expect.poll(async () => (await api.session(core)).attention?.state, { timeout: 30_000 }).not.toBe('needs_input')
+  await api.ok('POST', `/api/sessions/${core}/attention`, { state: 'needs_input', message: 'Which side?', options: [{ label: 'left', input: 'left\r' }, { label: 'right', input: 'right\r' }] })
+  await api.ok('POST', `/api/sessions/${solo}/attention`, { state: 'needs_input', message: 'Which way?', options: [{ label: 'up', input: 'up\r' }, { label: 'down', input: 'down\r' }] })
+  const { grid } = await open(page, first, 3)
+  const tile = grid.locator(':scope > [data-member="core"] [data-session-tile]')
+  await expect(tile.locator('[data-run-ask-choice]')).toHaveCount(2)
+  await tile.focus()
+  // ] steps through what needs you, the focus left on the frame, until the pill shows the other run's member.
+  const pill = page.locator('[data-needs-pill]')
+  await expect
+    .poll(
+      async () => {
+        await page.keyboard.press(']')
+        await expect(pill).toBeVisible()
+        return pill.getAttribute('data-pill-session')
+      },
+      { timeout: 30_000, message: 'the pill shows solo' },
+    )
+    .toBe(solo)
+  await expect(tile).toBeFocused()
+  await page.keyboard.press('2')
+  await expect.poll(coreText, { timeout: 30_000, message: 'core got right from its frame' }).toContain('right')
+  expect(soloText()).not.toContain('down')
+  await expect(pill).toBeVisible()
+})

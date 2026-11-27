@@ -35,9 +35,9 @@ CONDUCTOR_WORKBENCH_TOKEN=change-me ./bin/conductor serve
 
 Open <http://localhost:8080>: the page Connect to Conductor asks for the
 workbench token and says where it is; paste it and press **Connect**. A
-server with no session shows a welcome: the agents found on this machine, each
-with its version (press one to launch it), how to bring one in from another
-machine, and the example crews, then each page of the app in one line. Without `CONDUCTOR_WORKBENCH_TOKEN` the server makes a random
+server with no session shows a welcome: one button that launches the first
+coding agent found on this machine, the others on one line under it, and,
+folded, how to bring one in from another machine and the example crews. Without `CONDUCTOR_WORKBENCH_TOKEN` the server makes a random
 token at startup and keeps it in `workbench-token` in its data directory, mode
 0600, while it runs: `cat ~/.conductor/workbench-token` (the default data
 directory) as the server's user. The terminal and the log name the file, never
@@ -400,7 +400,7 @@ beside the tiles or with a member open in full) opens it as a drawer beside
 the tiles, a sheet on a phone. A message says which member its sender was
 looking at ("on review"). A person with control picks beside Send where a
 message goes: **Chat only**, or **Also send to core**, typed into that
-member's terminal as the broadcast bar types it; a member waiting on a prompt
+member's terminal as the message bar types it; a member waiting on a prompt
 is skipped, with the same words; hovering a message offers **Send to…** the
 same way. The run keeps the last 500 messages, replays them to whoever
 joins, and keeps them in its record once it ends, read-only there; a resumed
@@ -736,7 +736,7 @@ needs you first: each waiting session with its question and its choices as
 numbered buttons, then the page's own actions (Share, Stop, the marks, the
 inspector's views and the open tabs on a session page, and with a file open
 the editor's Keys → Neovim, Save, Close file and Ask the agent about the
-selection; the broadcast, the
+selection; Message the crew…, the
 view, the chat and the members on a run page; the chips on the Yard, the
 rotation on the Roundhouse, Launch on Crews, History's Search and Live, Save on
 Settings), then Running, Exited (folded to a line), Runs, Shared with you,
@@ -1382,17 +1382,22 @@ ends every session and leaves the worktrees, and a stopped run offers **Resume
 as new run**. A run that ended with nothing left for a person offers neither
 **Pause** nor **Stop**.
 
-- **Broadcast.** Every member with a session is ticked, and one that starts
-  later is ticked when its tile appears; untick the ones to leave out (the
-  ticks stay when the page reads the run again). Type one line and it goes into
-  all of them at once. The button counts the members the line will reach and
-  says apart how many it will skip because they wait on a prompt: such a member
-  is skipped, so the line cannot answer it by accident, as is one that is not
-  running, and one where a question comes up in the 250 ms before its Enter
+- **Message the crew.** The bar under the tiles reads "Message to" with a chip
+  for each member. Everyone who can get a line is ticked, and one that starts
+  later, or is answered, joins while "All" is on; press a chip to leave that
+  member out (then nobody joins by themselves until you press "All"). A member
+  waiting on a question reads "· answer it first" and cannot be ticked, so a
+  line never answers it by accident; one that ended, is starting or has not
+  started says so. Double-click a chip to write to that member alone; press a
+  waiting member's chip to see its question; while you write, the tiles that
+  will get the line are ringed. Type one line and it goes into the ticked
+  members at once; one where a question comes up in the 250 ms before its Enter
   keeps the line in its input without Enter. The toast names who got the line
   and who was skipped, and why. Each line is recorded as an input in the
   member's activity under your display name, or the server's user when you
-  have not set one.
+  have not set one. A line everyone got is confirmed in the bar itself; a
+  toast opens only when someone was skipped, or nothing was sent. The field
+  counts a long line's bytes from 3,072, up to the bound of 4,096.
 - **Share** creates a run link with the **View** or **Control** role. It
   grants that role on the session of every member of the run, members added
   later included, and on no other session; the join page lists the members.
@@ -1893,13 +1898,14 @@ revision 3, in .conductor/ticket.md. Now at revision 9: the description
 changed; 2 comments since."): the run follows the ticket as launched, and a
 change is a person's to decide.
 
-**Compare approaches.** A ticket's plan revision can be a comparison: **New
-comparison** on the Crews page makes its crew from a goal, the criteria, the
+**Compare approaches.** A ticket's plan revision can be an agent trial: **New
+agent trial** on the Crews page asks for a task, the agents, a check and a
+folder; the rest is under More options. It makes its crew from a goal, the criteria, the
 checks and two to four candidates (each an agent and its approach), and the
 launch from the approved revision says what it starts and asks you to send
 the count of candidates you read. Each candidate works from the same base in
 a lane of its own, and no lane reaches another's work. The ticket page's
-**Comparison** (also linked from the run's header and its card) shows what
+**Trial results** (also linked from the run's header and its card) shows what
 Conductor measured from git and the ledger alone (each candidate's commit,
 size, dependency changes, test and build files, whether it shares commits
 with another, and every check per candidate with whether the results are
@@ -1969,10 +1975,9 @@ its scope (all of it, or the projects, crews, runs and sessions picked from
 the lists Settings shows or typed by id, and repositories added by folder;
 an id saved but no longer listed stays as a chip you can take off); whether
 it wakes on events, with its briefing times as a list of times (below); and,
-under **Advanced**, its budget (15 minutes and 300 reads a turn, 40 turns and
+under **Limits**, in view, its budget (15 minutes and 300 reads a turn, 40 turns and
 240 minutes a day by default) and the background role's window, cooldown and
-question wait (Advanced says on its toggle how many of its fields hold a
-value that would be refused). The page's one Save sends it all at the
+question wait (a value that would be refused is said at its field). The page's one Save sends it all at the
 revision Settings read: changed elsewhere since, it is refused and your
 edits are kept. A turn always runs in the agent's own read-only mode and
 never with yolo. Under Codex, Settings says what that mode does not hold: Codex 0.163.0's
@@ -2216,8 +2221,7 @@ permission prompts, and the server says so in a warning at startup.
 `CONDUCTOR_YOLO` set to `0` or `false` turns the config file's `yolo` off. A
 launch overrides the server: the Launch dialog has a **Yolo** switch, and
 `POST /api/sessions` takes `yolo: true` or `false`; so does a crew (its
-**Permission prompts** under **More options**: the server's default, ask, or
-skip). Each built-in
+**Yolo**, in view on its Setup: the server's default, off, or on). Each built-in
 carries a yolo recipe, arguments put after its command and your extra
 arguments, and variables set in its environment through the same filtered
 environment as its own `env` (a recipe cannot set `CONDUCTOR_*`):
@@ -2429,7 +2433,7 @@ workbench in a window signed in with it, keeps the server in the tray when
 the window closes, and stops it when the app quits. Its **Settings** page
 holds what the server starts with (the data directory, the allowed roots,
 the default directory, yolo, reach) and restarts the server when those
-change, which the save's toast then says; **Open in browser** opens the same server in your browser, signed
+change, which its save bar says first; **Open in browser**, in Settings › The app, opens the same server in your browser, signed
 in. On Windows the server runs inside your WSL 2 distribution (the app sets
 it up on first run; the agents are the ones installed there). While the
 server starts, a small splash shows the version and what the app is doing.
@@ -2524,6 +2528,7 @@ file must run `compinit` before that line.
 | `workbenchToken` | `CONDUCTOR_WORKBENCH_TOKEN` | generated (kept in `<dataDir>/workbench-token` while the server runs) | the operator's token: opens the workbench and every management route (the old names `adminToken` and `CONDUCTOR_ADMIN_TOKEN` are still read, with a warning at start) |
 | `hostTokens` | `CONDUCTOR_HOST_TOKENS` | workbench token only | tokens accepted from `conductor host` |
 | `allowedRoots` | `CONDUCTOR_ALLOWED_ROOTS` | current directory | where server sessions may run |
+| — | `CONDUCTOR_PRESSED_ROOTS` | none | set by the desktop app: the folders it allowed while its server ran, a JSON array of `{path, confirmed?}`, kept apart from the folders typed in Settings. The server judges each again as it starts, as when it was allowed (its own real path, owned by the server's user, neither refused nor wider than the kind it was confirmed as); one that fails, or is not there, is not used for that run. |
 | `defaultCwd` | `CONDUCTOR_DEFAULT_CWD` | current directory | working directory when a launch omits one |
 | `allowedOrigins` | `CONDUCTOR_ALLOWED_ORIGINS` | same host | extra WebSocket origin patterns |
 | `iceServers` | `CONDUCTOR_ICE_SERVERS` | Google STUN | handed to browsers and hosts |
@@ -2535,6 +2540,7 @@ file must run `compinit` before that line.
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 | — | `conductor serve --token-env NAME` | off | the workbench token is the value of the environment variable `NAME`: it takes the place of a configured token (`workbenchToken`, `CONDUCTOR_WORKBENCH_TOKEN`) and of a generated one. Refused at start, with nothing written or bound and no other token taken instead, when the flag's value is not a variable's name (an empty one included) or the variable is unset or empty; no error or log line repeats what the flag was given. The variable is taken out of the environment the server hands on, so no process it starts inherits it, and its value is printed, logged and kept nowhere (not in the `--print-listen` line, not in a token file). For a server started by a program that holds a token an argument should not carry, such as a tree of this repository's own manifest |
+| — | `conductor serve --secrets-stdin` | off | the workbench token, and the desktop app's key, are read from the first line of stdin, one JSON object `{workbenchToken, desktopKey?}`, before anything else is read, written or bound: they take the place of a configured token and of a generated one, and reach the server through no environment variable or argument. Bounded to 4,096 bytes and 60 s; unknown fields refused; the key 32 to 256 characters of A-Z, a-z, 0-9, `_` and `-`; no error repeats a byte of the line. Not with `--token-env`, and not for a switchyard (`conductor switchyard` has no such flag). The desktop app starts its server so; with a key, the app alone may allow one more folder while the server runs. |
 | — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, workbenchToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
 | — | `CONDUCTOR_DESKTOP_DIR` | none | the desktop app's own directory, named by the app for the server it starts (on Windows, its folder in the Windows profile as WSL mounts it): no session's file read reaches it; an absolute path, not a config-file key |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
@@ -2841,8 +2847,9 @@ that matches neither an empty id nor one that begins with a dash.
 - Server sessions run with an allowlisted environment and a working directory
   under `allowedRoots`. Hosted sessions run as you, with your environment.
 - Yolo launches agents without their permission prompts, as the user running
-  `conductor serve`, and Codex's recipe turns its sandbox off too: turn it on
-  only on a server whose allowed roots you would let an agent change unasked.
+  `conductor serve`, and Codex's recipe turns its sandbox off too: it removes
+  the agent's own questions, so turn it on only where you would let an agent
+  act as you unasked.
   Recipes are catalog data, held to the catalog's limits, passed as arguments
   and through the filtered environment. An agent session id that Resume passes
   to an agent must match its agent's `idPattern` and begin with a letter or a

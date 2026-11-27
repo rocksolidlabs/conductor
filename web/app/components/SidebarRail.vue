@@ -63,7 +63,7 @@ function openExited() {
             :data-rail-run="it.id.slice(4)"
             :data-rail-dashed="it.dashed ? '' : undefined"
           >
-            <NuxtLink :to="it.to" class="relative grid size-5 place-items-center rounded-full hover:bg-canvas-hover" :aria-label="it.label" :aria-current="$route.path === it.to ? 'page' : undefined">
+            <NuxtLink :to="it.to" class="relative grid size-5 place-items-center rounded-full hover:bg-canvas-hover" :aria-label="it.label" :aria-current="$route.path === it.to && typeof $route.query.session !== 'string' ? 'page' : undefined">
               <UIcon name="i-lucide-play" class="size-3.5" :class="it.amber && needsDot ? 'text-warning' : 'text-muted'" :data-rail-play="it.amber && needsDot ? 'needs' : undefined" />
               <!-- The run's state: its busiest member's (blockStatus). -->
               <StatusMark v-if="it.status" :status="it.status" :quiet="!needsDot" badge class="absolute -right-1 -top-1" />

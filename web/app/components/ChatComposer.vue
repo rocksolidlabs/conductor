@@ -4,7 +4,7 @@ import { chatBytes, chatCounter, chatTooLong, cleanChatText } from '~/utils/chat
 import { MAX_SUBMIT } from '~/utils/protocol'
 import { giveFocusBack, type ReplyTaken } from '~/utils/reply'
 import { OwnLines, RowDrafts } from '~/utils/rowDrafts'
-import { expandsLine, freeHeld, markInput } from '~/utils/boxLine'
+import { afterPick, expandsLine, freeHeld, listsOpen, markInput } from '~/utils/boxLine'
 import { boxKey, commandAt, commandRows, fileRows, mentionAt, offeredCommands, outsideMention, pickCommand, pickMention, type CommandWord, type Mention, type MenuRow } from '~/utils/chatBoxMenu'
 import type { AgentCommand } from '~/utils/protocol'
 
@@ -142,7 +142,9 @@ const boxPlaceholder = computed(() => {
 /** The agent's line begins with /: what the session does with a command is said then, and only then. */
 const slash = computed(() => !!props.agent && !props.agent.expand && draft.value.trimStart().startsWith('/'))
 /** Where the box may expand a line, a line beginning with / that is not the person's own goes as plain text: said, with the way on. */
-const plainSlash = computed(() => !!props.agent?.expand && draft.value.trimStart().startsWith('/') && !mineNow.value)
+const plainSlash = computed(() => !!props.agent?.expand && !answering.value && draft.value.trimStart().startsWith('/') && !mineNow.value)
+/** Messages the owner refused that wait for this box to be emptied: said, with the way on. */
+const waitingBack = computed(() => (props.agent ? lines.waiting(lineKey.value) : 0))
 /** A file the line names that lies outside the folder, where the agent would attach it: said, so that the person can take it out. */
 const outside = computed(() => (props.agent?.expand ? outsideMention(draft.value) : ''))
 const folderName = computed(() => props.agent?.folder?.replace(/\/+$/, '').split('/').pop() || 'the folder')
@@ -193,6 +195,8 @@ function answer() {
   const bound = lines.get(key)?.question
   const from = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)
   if (bound && bound !== ASKED) answeredHere.add(bound)
+  // The answer leaves the box: its record of whose it was goes with it, so that a line put back with the same words is not theirs.
+  own.sent(key)
   emit('answer', raw.trim(), bound === ASKED ? undefined : bound, (outcome) => {
     // This page had already sent its answer to that question (a choice, a line before): the line goes free, a message now, and says so.
     if (outcome === 'held') {
@@ -201,8 +205,8 @@ function answer() {
     }
     if (outcome === 'refused' && bound) answeredHere.delete(bound)
     lines.settle(key, raw, outcome)
-    // What comes back into the box is the page's now, until the person changes it.
-    if (outcome === 'refused') own.set(key)
+    // What comes back into the box is the page's now, until the person changes it; a line they typed meanwhile stays theirs.
+    if (outcome === 'refused' && lines.text(key) === raw) own.set(key)
     if (outcome === 'refused') giveFocusBack(from)
   })
   keepCursor()
@@ -219,7 +223,9 @@ function noteCaret() {
   const el = input.value?.textareaRef
   if (el) caret.value = el.selectionStart ?? el.value.length
 }
-const mention = computed<Mention | null>(() => (props.agent && props.files ? mentionAt(draft.value, caret.value) : null))
+/** The lists open on the person's own line alone, never while the box would answer (listsOpen). */
+const listsOn = computed(() => listsOpen({ mine: mineNow.value || draft.value === '', answering: answering.value || !!props.agent?.asked?.reply }))
+const mention = computed<Mention | null>(() => (props.agent && props.files && listsOn.value ? mentionAt(draft.value, caret.value) : null))
 const fileList = ref<{ words: string; rows: MenuRow[]; more: boolean } | null>(null)
 const finding = ref(false)
 const active = ref(0)
@@ -325,10 +331,10 @@ function pick(i: number, trusted: boolean) {
   const m = mention.value
   const row = menuRows.value[i]
   if ((!c && !m) || !row?.pickable) return
+  const wasMine = mineNow.value
   const put = c ? pickCommand(draft.value, c, row.value) : pickMention(draft.value, m!, row.value)
   draft.value = put.text
-  if (trusted) own.typed(lineKey.value, put.text)
-  else own.set(lineKey.value)
+  afterPick(own, lineKey.value, put.text, { trusted, wasMine })
   caret.value = put.caret
   fileList.value = null
   void nextTick(() => {
@@ -380,7 +386,7 @@ function keepTyping(e: Event) {
 
 <template>
   <!-- The agent's box: one row, the field, Stop turn while a turn runs, Send; under it only what the person must know now. -->
-  <form v-if="agent" ref="form" class="relative flex flex-col gap-1.5 px-3 py-2.5" data-chat-composer @submit.prevent="send('')">
+  <form v-if="agent" ref="form" class="relative flex flex-col gap-1.5 px-3 py-2.5" data-chat-composer @submit.prevent="(e: Event) => e.isTrusted && send('')">
     <ChatBoxMenu v-if="menuOpen" :id="menuId" :kind="menuKind" :rows="menuRows" :active="active" :foot="menuFoot" @pick="(i, trusted) => pick(i, trusted)" @hover="(i) => (active = i)" />
     <div class="flex items-end gap-2">
       <UTextarea
@@ -420,6 +426,7 @@ function keepTyping(e: Event) {
     <p v-if="outside" class="text-[11px] text-warning" role="status" data-chat-outside><span class="font-mono" data-mono="path">{{ outside }}</span> is outside {{ folderName }}. The agent attaches it without asking.</p>
     <p v-if="note || stale" class="text-[11px] text-warning" role="status" data-chat-box-note>{{ note || 'Its question was answered. Empty the box to write a message instead.' }}</p>
     <p v-if="agent.said" class="text-[11px] text-warning" role="status" data-chat-said>{{ agent.said }}</p>
+    <p v-if="waitingBack" class="text-[11px] text-warning" role="status" data-chat-waiting>{{ waitingBack === 1 ? 'A line was not sent: it comes back here once you send or clear this one.' : `${waitingBack} lines were not sent: each comes back here once you send or clear the one before.` }}</p>
     <span v-if="counter" class="self-end font-mono text-[11px] text-muted" :class="tooLong && 'text-error'" data-mono="measure" data-chat-counter>{{ counter }}</span>
   </form>
   <form v-else class="flex flex-col gap-1.5 border-t border-default px-3 py-2.5" data-chat-composer @submit.prevent="send(scope)">

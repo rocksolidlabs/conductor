@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { Launcher } from '../src/launcher'
+import { FolderAllow } from '../src/allow'
+import { SettingsSaver } from '../src/save'
 import { loopbackOrigin, ServerSupervisor, StartStopped, trustedOrigin } from '../src/server'
+import { defaultSettings } from '../src/settings'
 
 /** A fake server: a node script that prints the handshake (after optional noise), serves /api/health, and exits when stdin closes. */
 function fakeServer(opts: { noise?: boolean; crashAfterMs?: number; silent?: boolean }): string {
@@ -237,7 +240,107 @@ process.stdin.resume()
     expect(trustedOrigin(s.status)).toBe('http://' + h.listen)
     await s.stop()
   })
-  it('writes a fresh first line at every start, and a server answers only its own token', async () => {
+  it("fails a first start whose server exits before its handshake with the server's words, never as a stop", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const file = join(dir, 'server.js')
+    writeFileSync(file, `process.stderr.write('the data folder is in use\\n'); process.exit(4)\n`)
+    const s = new ServerSupervisor({ launcher: new ScriptLauncher(file), args: [], env: () => ({ PATH: process.env.PATH ?? '' }), backoffMinMs: 60_000, log: quiet })
+    const started = s.start()
+    // What the app's first start takes for a failure to say (main.ts: anything but StartStopped is the dialog and the log).
+    const e = await started.then(
+      () => null,
+      (x: unknown) => x,
+    )
+    expect(e).toBeInstanceOf(Error)
+    expect(e).not.toBeInstanceOf(StartStopped)
+    expect((e as Error).message).toMatch(/exited before it listened \(4\)/)
+    expect(s.status.state).toBe('failed')
+    expect(trustedOrigin(s.status)).toBe('')
+    await s.stop()
+  })
+  it('fails a restart whose server exits before its handshake: the save answers, and a press after it is not held', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const count = join(dir, 'count')
+    writeFileSync(count, '0')
+    const file = join(dir, 'server.js')
+    // The first spawn serves; every later one exits at once.
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+const fs = require('fs')
+const n = Number(fs.readFileSync(${JSON.stringify(count)}, 'utf8')) + 1
+fs.writeFileSync(${JSON.stringify(count)}, String(n))
+if (n > 1) process.exit(5)
+const srv = http.createServer((req, res) => res.end('{}'))
+srv.listen(0, '127.0.0.1', () => process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + srv.address().port, publicUrl: 'http://127.0.0.1:' + srv.address().port, pid: process.pid, version: 'fake' }) + '\\n'))
+process.stdin.on('end', () => process.exit(0))
+process.stdin.resume()
+`,
+    )
+    const s = new ServerSupervisor({ launcher: new ScriptLauncher(file), args: [], env: () => ({ PATH: process.env.PATH ?? '' }), backoffMinMs: 60_000, healthMs: 60_000, log: quiet })
+    await s.start()
+    // The settings in the distribution's form, as the app keeps them on Windows too (posix): no path joined on this system.
+    let stored = { ...defaultSettings('/home/me', '/ud'), dataDir: '/ud/conductor' }
+    const allow = new FolderAllow({
+      get: () => stored,
+      set: (x) => void (stored = x),
+      server: () => ({ url: s.status.origin ?? '', pid: s.status.pid, running: s.status.state === 'running' }),
+      token: () => 'token-0123456789',
+      key: () => 'key-0123456789',
+      fetch: async () => ({ status: 500, json: async () => ({}) }),
+      posix: true,
+      told: () => {},
+    })
+    const saver = new SettingsSaver()
+    // A Settings save that restarts the server, as ipc.ts runs it: behind the press, through the supervisor's restart.
+    const saved = allow.save(() => saver.save({ get: () => stored, set: (x) => void (stored = x), restart: () => s.restart(), posix: true }, { reach: 'off' }))
+    await expect(saved).rejects.toThrow(/exited before it listened \(5\)/)
+    expect(s.status.state).toBe('failed')
+    // The press after it is not held behind a save: it is told no server runs.
+    const pressed = await allow.allow('/srv/proj', '')
+    expect(pressed).toMatchObject({ ok: false, code: 'busy', message: 'Conductor is restarting: try again' })
+    await s.stop()
+  })
+  it("a stop during a restart's start fails the restart as stopped", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const count = join(dir, 'count')
+    writeFileSync(count, '0')
+    const gate = join(dir, 'gate')
+    const file = join(dir, 'server.js')
+    // The first spawn serves at once; the second waits for the gate before its handshake.
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+const fs = require('fs')
+const n = Number(fs.readFileSync(${JSON.stringify(count)}, 'utf8')) + 1
+fs.writeFileSync(${JSON.stringify(count)}, String(n))
+const srv = http.createServer((req, res) => res.end('{}'))
+srv.listen(0, '127.0.0.1', () => {
+  const print = () => process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + srv.address().port, publicUrl: 'http://127.0.0.1:' + srv.address().port, pid: process.pid, version: 'fake' }) + '\\n')
+  if (n === 1) return print()
+  const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(gate)})) { clearInterval(t); print() } }, 10)
+})
+process.stdin.on('end', () => process.exit(0))
+process.stdin.resume()
+`,
+    )
+    const s = new ServerSupervisor({ launcher: new ScriptLauncher(file), args: [], env: () => ({ PATH: process.env.PATH ?? '' }), backoffMinMs: 60_000, healthMs: 60_000, log: quiet })
+    const states: string[] = []
+    await s.start()
+    s.on('state', (st) => states.push(st.state))
+    const restarted = s.restart()
+    restarted.catch(() => {})
+    await vi.waitFor(() => expect(readFileSync(count, 'utf8')).toBe('2'))
+    const stopping = s.stop()
+    writeFileSync(gate, '')
+    await expect(restarted).rejects.toBeInstanceOf(StartStopped)
+    await stopping
+    expect(states).not.toContain('running')
+    expect(trustedOrigin(s.status)).toBe('')
+  })
+  it('asks for its first line again at every start, so a server answers only the token of its own line', async () => {
     // A server that takes its token from its first line and answers 401 to any other.
     const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
     const file = join(dir, 'server.js')

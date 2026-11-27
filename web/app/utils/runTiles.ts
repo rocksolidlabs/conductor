@@ -90,16 +90,41 @@ export function parseRunTiles(raw: string | null): RunTilesRecord {
   const out = emptyRecord()
   const last = choiceOf(o.last)
   if (last) out.last = last
-  if (Array.isArray(o.crews)) {
-    const seen = new Set<string>()
-    for (const e of o.crews) {
-      const c = choiceOf(e)
-      const crew = (e as { crew?: unknown } | null)?.crew
-      if (!c || typeof crew !== 'string' || !CREW.test(crew) || seen.has(crew)) continue
-      seen.add(crew)
-      out.crews.push({ crew, ...c })
-      if (out.crews.length === RUN_TILES_CREWS) break
-    }
+  out.crews = crewsOf(o.crews)
+  return out
+}
+
+/** One axis's shares as the layout document takes them: fractions of their sum, four decimals, each above 0 and at most 1. */
+function fractions(shares: readonly number[]): number[] {
+  const sum = shares.reduce((a, b) => a + b, 0)
+  return shares.map((s) => Math.min(1, Math.max(0.0001, +(s / sum).toFixed(4))))
+}
+
+/**
+ * The crews' choices as the layout document keeps them (R73): the shares of each crew's own layout alone, made fractions, so thirty
+ * crews of twelve members stay inside the document's bound. The other layouts' sizes stay in this page's storage.
+ */
+export function crewsForDoc(crews: RunTilesRecord['crews']): RunTilesRecord['crews'] {
+  return crews.map((c) => {
+    const { sizes: all, ...rest } = c
+    const s: WallShares | undefined = all?.[c.layout]
+    if (!s || (!s.cols && !s.rows)) return rest
+    return { ...rest, sizes: { [c.layout]: { ...(s.cols ? { cols: fractions(s.cols) } : {}), ...(s.rows ? { rows: fractions(s.rows) } : {}) } } }
+  })
+}
+
+/** Each crew's choice as stored or as the layout document holds it: an entry that does not read, or a crew named twice, left out. */
+export function crewsOf(v: unknown): RunTilesRecord['crews'] {
+  const out: RunTilesRecord['crews'] = []
+  if (!Array.isArray(v)) return out
+  const seen = new Set<string>()
+  for (const e of v) {
+    const c = choiceOf(e)
+    const crew = (e as { crew?: unknown } | null)?.crew
+    if (!c || typeof crew !== 'string' || !CREW.test(crew) || seen.has(crew)) continue
+    seen.add(crew)
+    out.push({ crew, ...c })
+    if (out.length === RUN_TILES_CREWS) break
   }
   return out
 }
@@ -123,17 +148,27 @@ export function withShares(choice: RunTilesChoice, layout: RunLayout, axis: 'col
   return { sizes: { ...choice.sizes, [layout]: { ...choice.sizes?.[layout], [axis]: shares.map((s) => +s.toFixed(4)) } } }
 }
 
+/** `c` as the document holds it, with the sizes of its other layouts from the page's own entry for the crew. */
+function keepOtherSizes(c: RunTilesRecord['crews'][number], mine: RunTilesRecord['crews'][number] | undefined): RunTilesRecord['crews'][number] {
+  const others = Object.fromEntries(Object.entries(mine?.sizes ?? {}).filter(([l]) => l !== c.layout)) as NonNullable<RunTilesChoice['sizes']>
+  const sizes = { ...others, ...c.sizes }
+  return Object.keys(sizes).length ? { ...c, sizes } : c
+}
+
 /**
- * The record with the server's copy of the last choice taken up (the layout document's `runTiles`, R88): what the page's storage
- * lost at a restart of the server comes back, and a crew with a choice of its own keeps it. A layout this page does not draw is
- * left as it was.
+ * The record with the server's copy taken up (the layout document's `runTiles`): the last choice (R88) and, when the copy holds
+ * them, each crew's own (R73), so what the page's storage lost at a restart of the server comes back, and a crew's choice made on
+ * another machine arrives. A layout this page does not draw is left as it was; the same record comes back when nothing changed.
  */
-export function takeLast(record: RunTilesRecord, kept: { layout?: string; activity?: boolean } | undefined): RunTilesRecord {
+export function takeKept(record: RunTilesRecord, kept: { layout?: string; activity?: boolean; crews?: unknown } | undefined): RunTilesRecord {
   if (!kept) return record
   const last = { ...record.last }
   if (isRunLayout(kept.layout)) last.layout = kept.layout
   if (typeof kept.activity === 'boolean') last.activity = kept.activity
-  return last.layout === record.last.layout && last.activity === record.last.activity ? record : { ...record, last }
+  // A crew's sizes for its other layouts, which the document does not hold, are kept from this page's record.
+  const crews = kept.crews === undefined ? record.crews : crewsOf(kept.crews).map((c) => keepOtherSizes(c, record.crews.find((m) => m.crew === c.crew)))
+  const same = last.layout === record.last.layout && last.activity === record.last.activity && JSON.stringify(crews) === JSON.stringify(record.crews)
+  return same ? record : { last, crews }
 }
 
 /** The member One large draws large among `names` (the run's order): the one chosen while it is still a member, else the first. */

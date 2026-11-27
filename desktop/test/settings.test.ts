@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { defaultSettings, loadSettings, rootPaths, shownSettings, splitRoots, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, refusedSwitchyardNote, switchyardExtra, switchyardRefusal, switchyardRefused, switchyardShape, validate } from '../src/settings'
+import { defaultSettings, loadSettings, rootPaths, shownSettings, splitRoots, typedDefault, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, refusedSwitchyardNote, switchyardExtra, switchyardRefusal, switchyardRefused, switchyardShape, validate } from '../src/settings'
 import { secretsLine, serverEnv, SERVE_ARGS } from '../src/env'
 
 // On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
@@ -79,12 +79,19 @@ describe('server environment', () => {
     const shown = shownSettings(s)
     expect(shown.allowedRoots).toEqual(['/home/me', '/srv/a'])
     expect(shown).not.toHaveProperty('pressedRoots')
+    expect(shown.pressedPaths).toEqual(['/srv/a'])
     expect(rootPaths(s)).toEqual(['/home/me', '/srv/a'])
     expect(splitRoots(s, ['/home/me', '/srv/a', '/srv/b'])).toEqual({ allowedRoots: ['/home/me', '/srv/b'], pressedRoots: [{ path: '/srv/a', confirmed: '' }] })
     expect(splitRoots(s, ['/home/me'])).toEqual({ allowedRoots: ['/home/me'], pressedRoots: [] })
     expect(splitRoots(s, undefined)).toEqual({ allowedRoots: ['/home/me'], pressedRoots: [{ path: '/srv/a', confirmed: '' }] })
-    // The default folder may lie under a pressed folder; a pressed folder is held to the paths' rule.
-    expect(validate({ ...s, defaultCwd: '/srv/a/x' })).toEqual([])
+    // The default folder lies under a typed folder, as the release before reads it; choosing one inside a pressed folder makes
+    // that folder a typed one. A pressed folder is held to the paths' rule.
+    expect(validate({ ...s, defaultCwd: '/srv/a/x' })).toEqual(['the default working directory must lie under an allowed root'])
+    const typed = typedDefault({ ...s, defaultCwd: '/srv/a/x' })
+    expect(typed.allowedRoots).toEqual(['/home/me', '/srv/a'])
+    expect(typed.pressedRoots).toEqual([])
+    expect(validate(typed)).toEqual([])
+    expect(typedDefault(s)).toBe(s)
     expect(validate({ ...s, pressedRoots: [{ path: 'rel', confirmed: '' }] })).not.toEqual([])
   })
   it("hands the server its token and its key on stdin alone: neither is in the environment it builds", () => {
@@ -327,5 +334,11 @@ describe("the press's folders in the settings file", () => {
     expect(loadSettings(file, d).pressedRoots).toEqual([{ path: '/srv/a', confirmed: 'home' }, { path: '/srv/b', confirmed: '' }])
     writeFileSync(file, JSON.stringify(d))
     expect(loadSettings(file, d).pressedRoots).toEqual([])
+    // A file whose default folder lies in a pressed folder loads whole, that folder a typed one.
+    writeFileSync(file, JSON.stringify({ ...d, reach: 'off', defaultCwd: '/srv/a/x', pressedRoots: [{ path: '/srv/a', confirmed: '' }] }))
+    const loaded = loadSettings(file, d)
+    expect(loaded.reach).toBe('off')
+    expect(loaded.allowedRoots).toEqual(['/home/me', '/srv/a'])
+    expect(loaded.pressedRoots).toEqual([])
   })
 })

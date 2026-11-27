@@ -68,7 +68,7 @@ describe("the agent's box", () => {
     expect(src).toContain("return a.choices ? 'Pick an answer above, or type your own' : `Answer ${who.value}…`")
     // The chat hands the answer to its page, which answers through answerQuestion; the card in Chat draws no field of its own.
     expect(view).toContain(`@answer="(text, question, taken) => emit('reply', text, question, taken)"`)
-    const page = readFileSync(new URL('../pages/sessions/[id].vue', import.meta.url), 'utf8')
+    const page = readFileSync(new URL('./SessionView.vue', import.meta.url), 'utf8') // the session's whole view (UX3 R72)
     expect(page).toMatch(/:asked="chatAsked"\s*@reply="reply"/)
     expect(page).toContain('answers pastes :field="false"')
     const bar = readFileSync(new URL('./QuickReplyBar.vue', import.meta.url), 'utf8')
@@ -82,7 +82,6 @@ describe("the agent's box", () => {
     // The agent's box draws the list; the people's chat has none.
     expect(agentForm).toContain('<ChatBoxMenu v-if="menuOpen"')
     expect(src.slice(src.indexOf('<form v-else'))).not.toContain('ChatBoxMenu')
-    expect(src).toContain('const mention = computed<Mention | null>(() => (props.agent && props.files ? mentionAt(draft.value, caret.value) : null))')
     // Only where this box may expand a line: a picked file there is attached; elsewhere no list reads like it would be (UX3 R10).
     expect(view).toContain(':files="canExpand && conn.fileView.value ? files : undefined"')
     // The box's keys are boxKey's (chatBoxMenu.test.ts proves them): the box acts on its answer alone.
@@ -104,7 +103,14 @@ describe("the agent's box", () => {
     // The box hands every input to markInput with the text it left, and asks expandsLine at a send: the rules are boxLine.test.ts's.
     expect(src).toMatch(/function onInput\(e: Event\) \{\s*markInput\(own, lineKey\.value, e as InputEvent, \(e\.target as HTMLTextAreaElement \| null\)\?\.value \?\? ''\)/)
     expect(src).toContain('const mine = expandsLine(true, own, key, draft.value)')
-    expect(src).toContain('if (trusted) own.typed(lineKey.value, put.text)')
+    expect(src).toContain('afterPick(own, lineKey.value, put.text, { trusted, wasMine })')
+    expect(src).toContain('const mention = computed<Mention | null>(() => (props.agent && props.files && listsOn.value ? mentionAt(draft.value, caret.value) : null))')
+    // An answer that leaves the box ends its record; a refused one is the page's only while the box still holds it.
+    expect(src).toMatch(/answeredHere\.add\(bound\)\s*\/\/[^\n]*\n\s*own\.sent\(key\)/)
+    expect(src).toContain("if (outcome === 'refused' && lines.text(key) === raw) own.set(key)")
+    // The Send button sends only for the person's own submit; refused lines that wait are said.
+    expect(src).toContain('@submit.prevent="(e: Event) => e.isTrusted && send(\'\')"')
+    expect(src).toContain('const waitingBack = computed(() => (props.agent ? lines.waiting(lineKey.value) : 0))')
     expect(src).toContain("if (v === '') own.set(lineKey.value)")
     expect(src).toContain('if (freeHeld(lines, own, key, raw))')
     expect(src).toContain('const back = (text: string) => lines.putBack(key, text)')

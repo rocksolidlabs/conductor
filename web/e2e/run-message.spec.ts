@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, member, standingRoute, test, type Api, type Session } from './fixtures'
+import { atRest, expect, member, standingRoute, test, type Api, type Session } from './fixtures'
 
 // The run page's message bar (UX3 R23a): `Message to`, a chip `All` and one for each member. A chip that can be ticked is a
 // button, pressed or not; a member that cannot get a line says why on its chip and is not a button: `review · answer it first`
@@ -300,8 +300,46 @@ test('an answered member comes back ticked only while All is on', async ({ page,
 test.describe('on a phone', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
 
-  test('the chips wrap, each at least 44 px tall, and a tap leaves one out', async ({ page }) => {
+  test('at rest the bar is one row, the asking member in view, and the last tile scrolls whole above it', async ({ page }) => {
     await openRun(page)
+    const b = bar(page)
+    await expect(b).toHaveAttribute('data-bar-folded', 'true')
+    // Who gets the line, short; the asking member's amber chip, without opening anything; the field and Send. No chip of the rest.
+    await expect(b.locator('[data-message-to]')).toHaveText('To all')
+    await expect(chip(page, 'review')).toBeInViewport()
+    await expect(chip(page, 'review').locator('[data-status-mark="needs"]')).toHaveCount(1)
+    await expect(chip(page, 'review')).toHaveText('review')
+    await expect(b.locator('[data-message-chip="all"], [data-message-chip="lead"], [data-message-chip="tests"]')).toHaveCount(0)
+    await expect(b.locator('[data-broadcast-send]')).toHaveAccessibleName('Send to 2')
+    await atRest(b)
+    const parts = await b.locator('[data-message-to], [data-message-chip], input[data-message-field], [data-broadcast-send]').evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom, right: r.right, h: r.height })))
+    const barBox = (await b.boundingBox())!
+    expect(barBox.height, 'one row').toBeLessThan(70)
+    for (const p of parts) {
+      expect(p.top, 'on the bar').toBeGreaterThanOrEqual(barBox.y - 0.5)
+      expect(p.bottom, 'on the bar').toBeLessThanOrEqual(barBox.y + barBox.height + 0.5)
+      expect(p.right, 'inside the window').toBeLessThanOrEqual(390)
+    }
+    for (const p of parts.filter((x) => x.h > 40)) expect(p.h).toBeGreaterThanOrEqual(44)
+    // The wall scrolls clear of the bar: scrolled to its end, its last tile stands whole between the view row and the bar, the wall's
+    // own room under it.
+    const last = page.locator('[data-run-grid] > [data-member]').last()
+    await page.locator('[data-run-grid]').evaluate((g) => {
+      const area = g.parentElement!
+      area.scrollTop = area.scrollHeight
+    })
+    await atRest(last)
+    const t = (await last.boundingBox())!
+    const area = (await page.locator('[data-run-grid]').evaluate((g) => g.parentElement!.getBoundingClientRect().toJSON())) as DOMRect
+    expect(t.y, 'its top in the wall').toBeGreaterThanOrEqual(area.top - 0.5)
+    expect(t.y + t.height, 'its foot above the bar').toBeLessThanOrEqual(barBox.y - 4)
+  })
+
+  test('a press on who gets it opens the chips, 44 px tall, and leaving the bar folds them', async ({ page }) => {
+    await openRun(page)
+    await bar(page).locator('[data-message-to]').tap()
+    await expect(bar(page)).not.toHaveAttribute('data-bar-folded')
+    await expect(field(page)).toBeFocused()
     const chips = bar(page).locator('[data-message-chip]')
     await expect(chips).toHaveCount(5)
     const boxes = await chips.evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => ({ top: r.top, height: r.height, right: r.right })))
@@ -313,6 +351,14 @@ test.describe('on a phone', () => {
     await chip(page, 'lead').tap()
     await expect(chip(page, 'lead')).toHaveAttribute('aria-pressed', 'false')
     await expect(bar(page).locator('[data-broadcast-send]')).toHaveText('Send to 1')
+    // Out of the bar: folded again, saying who gets the line.
+    await page.locator('[data-run-view]').getByRole('tab', { name: 'Members' }).tap()
+    await expect(bar(page)).toHaveAttribute('data-bar-folded', 'true')
+    await expect(bar(page).locator('[data-message-to]')).toHaveText('To core')
+    // The cursor in the field opens them too.
+    await field(page).tap()
+    await expect(bar(page)).not.toHaveAttribute('data-bar-folded')
+    await expect(chip(page, 'lead')).toBeVisible()
   })
 })
 

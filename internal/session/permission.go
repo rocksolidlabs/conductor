@@ -52,6 +52,9 @@ const (
 	NotExactWords           = "Conductor cannot show this call exactly."
 	WithdrawnElsewhereWords = "Withdrawn: answered elsewhere."
 	TooLargeWords           = "This call's input is too large for Conductor to show it whole."
+	// TooMuchToCheckWords is the refusal of a call past the bounds of the
+	// floor's walk of its strings.
+	TooMuchToCheckWords = "This call holds too much for Conductor to check; ask the agent for smaller steps."
 	// NotDeliveredWords is the activity line of an operator's answer
 	// recorded and then not delivered: its request had gone.
 	NotDeliveredWords = "The answer was not delivered: the request was lost."
@@ -599,6 +602,19 @@ func strictCanonical(input []byte) ([]byte, bool) {
 	return bytes.TrimSuffix(b.Bytes(), []byte{'\n'}), true
 }
 
+// StrictCanonical is strictCanonical, for a driver that judges a line or a
+// value as the session does: false for what does not decode cleanly.
+func StrictCanonical(input []byte) ([]byte, bool) { return strictCanonical(input) }
+
+// KeysOnce says input, one JSON value, gives no object a key twice, its
+// nesting within maxInputDepth.
+func KeysOnce(input []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(input))
+	dec.UseNumber()
+	_, err := strictValue(dec, 0)
+	return err == nil
+}
+
 // maxInputDepth bounds the nesting of a request's input.
 const maxInputDepth = 256
 
@@ -806,12 +822,13 @@ func (s *Local) runsInDenied(text, cwd string, deny []string) bool {
 var callFolderKeys = []string{"cwd", "workdir", "directory", "dir", "working_directory", "workingDirectory", "working_dir"}
 
 // Bounds of the walk of an in-stream call's strings (streamFloored): a call
-// past one is floored.
+// past one is refused (TooMuchToCheckWords).
 const (
 	// maxWalkStrings is the most strings a call's walk judges.
 	maxWalkStrings = 4096
-	// maxWalkPath is the longest string judged as a path: a longer one is no
-	// path the system opens (PATH_MAX), and is judged as words alone.
+	// maxWalkPath is the longest string judged as a path as written (the
+	// system opens no longer one, PATH_MAX): a longer one is judged by its
+	// cleaned letters when they are within it, else as words alone.
 	maxWalkPath = 4096
 	// maxLinkSteps is the most parts linksFirst walks, its links' own parts
 	// counted.
@@ -819,31 +836,34 @@ const (
 )
 
 // streamFloored is the floor's walk of a call that came in an agent's
-// stream: a call whose input holds its raw input, its locations or its
-// content (an ACP agent's tool call: rawInput, locations, content's diffs)
-// names a place of the deny list anywhere in them or in its title, whatever
-// the call's kind. Every string they hold is judged as a command line's
-// words, from the session's folder and from each folder the raw input says
+// stream: a call whose input holds its raw input, its locations, its
+// content or its title (an ACP agent's tool call: rawInput, locations,
+// content's diffs, title) names a place of the deny list anywhere in them,
+// whatever the call's kind. Every string they hold but the text a file is
+// to hold (writtenText) is judged as a command line's words, from the session's folder and from each folder the raw input says
 // the call runs in (each folder judged once, before the walk: under the
 // list, as it is spelled, and as its links lead), and, where it looks like a
 // path, as a path; a file URI as its path. Past a bound (maxWalkStrings, a
-// path's maxLinkSteps) the call is floored. It reads only what does not
-// change over the session (its folder, the deny list), so the caller holds
-// no lock: the walk is the driver's, before the session's lock is taken.
-func (s *Local) streamFloored(input []byte) bool {
+// path's maxLinkSteps) the call is refused with TooMuchToCheckWords. The
+// answer is the refusal's words, "" for none. It reads the session's
+// folder, which does not change, and the deny list, computed at each call
+// (it only grows), so the caller holds no lock: the walk is the driver's,
+// before the session's lock is taken.
+func (s *Local) streamFloored(input []byte) string {
 	deny := s.fileDeny()
 	if len(deny) == 0 {
-		return false
+		return ""
 	}
 	var fields map[string]any
 	if json.Unmarshal(input, &fields) != nil {
-		return false
+		return ""
 	}
 	_, hasRaw := fields["rawInput"]
 	_, hasLoc := fields["locations"]
 	_, hasContent := fields["content"]
-	if !hasRaw && !hasLoc && !hasContent {
-		return false
+	_, hasTitle := fields["title"]
+	if !hasRaw && !hasLoc && !hasContent && !hasTitle {
+		return ""
 	}
 	// The folders the words are read from: the session's, and each the raw
 	// input names, as spelled and as its links lead.
@@ -854,8 +874,10 @@ func (s *Local) streamFloored(input []byte) bool {
 			if !ok || f == "" {
 				continue
 			}
-			if s.pathDenied(f, deny) {
-				return true
+			if denied, bounded := s.pathJudged(f, deny); bounded {
+				return TooMuchToCheckWords
+			} else if denied {
+				return FloorWords
 			}
 			from := filepath.Clean(f)
 			if !filepath.IsAbs(from) {
@@ -867,7 +889,7 @@ func (s *Local) streamFloored(input []byte) bool {
 			bases = append(bases, from)
 			linked, ok := linksFirst(from)
 			if !ok {
-				return true
+				return TooMuchToCheckWords
 			}
 			if real, err := evalExisting(linked); err == nil && real != from {
 				bases = append(bases, real)
@@ -875,10 +897,10 @@ func (s *Local) streamFloored(input []byte) bool {
 		}
 	}
 	strs := 0
-	denied := false
+	why := ""
 	var walk func(v any)
 	walk = func(v any) {
-		if denied {
+		if why != "" {
 			return
 		}
 		switch t := v.(type) {
@@ -887,27 +909,39 @@ func (s *Local) streamFloored(input []byte) bool {
 				return
 			}
 			if strs++; strs > maxWalkStrings {
-				denied = true
+				why = TooMuchToCheckWords
 				return
 			}
 			for _, b := range bases {
 				if commandNamesDenied(t, deny, b) {
-					denied = true
+					why = FloorWords
 					return
 				}
 			}
 			if p, ok := strings.CutPrefix(t, "file://"); ok {
 				t = p
 			}
-			if len(t) <= maxWalkPath && looksLikePath(t) && s.pathDenied(t, deny) {
-				denied = true
+			if looksLikePath(t) && len(t) > maxWalkPath {
+				// Longer than the system opens as written: judged where a
+				// writer that cleans it first opens it.
+				t = filepath.Clean(t)
+			}
+			if len(t) <= maxWalkPath && looksLikePath(t) {
+				if denied, bounded := s.pathJudged(t, deny); bounded {
+					why = TooMuchToCheckWords
+				} else if denied {
+					why = FloorWords
+				}
 			}
 		case []any:
 			for _, x := range t {
 				walk(x)
 			}
 		case map[string]any:
-			for _, x := range t {
+			for k, x := range t {
+				if writtenText(k, x, t) {
+					continue
+				}
 				walk(x)
 			}
 		}
@@ -915,7 +949,29 @@ func (s *Local) streamFloored(input []byte) bool {
 	for _, k := range []string{"rawInput", "locations", "content", "title"} {
 		walk(fields[k])
 	}
-	return denied
+	return why
+}
+
+// writtenTextKeys name the text a call is to write (a diff's old and new
+// text, an edit's strings, a file's text), never judged as words.
+var writtenTextKeys = []string{"oldText", "newText", "old_string", "new_string", "old_str", "new_str", "file_text"}
+
+// writtenText says the value v under the key k of the object m is text a
+// file is to hold, or bytes, which the walk does not judge: a diff's
+// oldText and newText and an edit's old and new strings, a write's content
+// when it is a string, an embedded resource's text (an object with a uri),
+// and a blob or data. What can name a place or a command is judged: a title,
+// a location's path, a diff's path, a uri, a text block's text, the other
+// values of the raw input.
+func writtenText(k string, v any, m map[string]any) bool {
+	if slices.Contains(writtenTextKeys, k) || k == "blob" || k == "data" {
+		return true
+	}
+	if _, ok := v.(string); ok && k == "content" {
+		return true
+	}
+	_, hasURI := m["uri"]
+	return k == "text" && hasURI
 }
 
 // looksLikePath says a string may name a place: one line, with a slash, or
@@ -965,7 +1021,9 @@ func linksFirst(p string) (string, bool) {
 		}
 		hops++
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(cur, target)
+			// Joined as the system joins it, not cleaned by its letters: a
+			// link inside the target is followed before the ".." after it.
+			target = cur + string(filepath.Separator) + target
 		}
 		// The link's target, its own parts walked the same way, then the
 		// rest.
@@ -1025,8 +1083,16 @@ func literalPrefix(pattern string) string {
 }
 
 // pathDenied reports whether path, relative to the session's folder when it
-// is not absolute, is under the deny list, its links followed.
+// is not absolute, is under the deny list, its links followed; a path past
+// the bound of its walk is denied too.
 func (s *Local) pathDenied(path string, deny []string) bool {
+	denied, bounded := s.pathJudged(path, deny)
+	return denied || bounded
+}
+
+// pathJudged is pathDenied's judgement, bounded saying the path's walk went
+// past maxLinkSteps (the path is not judged).
+func (s *Local) pathJudged(path string, deny []string) (denied, bounded bool) {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			path = filepath.Join(home, path[2:])
@@ -1034,7 +1100,7 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 	}
 	if !filepath.IsAbs(path) {
 		if s.info.Cwd == "" {
-			return false
+			return false, false
 		}
 		path = filepath.Join(s.info.Cwd, path)
 	}
@@ -1042,21 +1108,21 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 	// as its letters read.
 	linked, ok := linksFirst(path)
 	if !ok {
-		return true
+		return false, true
 	}
 	if linked != filepath.Clean(path) {
 		if insideAny(linked, deny) {
-			return true
+			return true, false
 		}
 		if real, err := evalExisting(linked); err == nil && insideAny(real, deny) {
-			return true
+			return true, false
 		}
 	}
 	path = filepath.Clean(path)
 	if real, err := evalExisting(path); err == nil && insideAny(real, deny) {
-		return true
+		return true, false
 	}
-	return insideAny(path, deny)
+	return insideAny(path, deny), false
 }
 
 // CommandNamesDenied reports whether a command's text names a path of the
