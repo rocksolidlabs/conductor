@@ -175,7 +175,7 @@
 # --input-format stream-json) it is web/e2e/stub-protocol.mjs, run by
 # STUB_NODE (node unless set), on the same transcript; STUB_CLAUDE_VERSION
 # is the version the claude identity says (2.1.287 unless set). Started as a
-# chat's child of Codex (`app-server` with CONDUCTOR_PROTOCOL=1) it is the
+# chat's child of Codex (`app-server` with CONDUCTOR_PROTOCOL=codex-app-server) it is the
 # same stub in its Codex mode; STUB_CODEX_VERSION is the version the codex
 # identity says (0.159.0 unless set).
 # The agent's session: --session-id ID names it, --resume ID (or a leading
@@ -412,15 +412,15 @@ auth)
 	fi
 	;;
 acp | --acp)
-	# A chat's child of an Agent Client Protocol agent (CONDUCTOR_PROTOCOL set): the protocol stub's third mode.
-	if [[ ${CONDUCTOR_PROTOCOL:-} == 1 ]]; then
+	# A chat's child of an Agent Client Protocol agent (CONDUCTOR_PROTOCOL=acp-v1): the protocol stub's third mode.
+	if [[ ${CONDUCTOR_PROTOCOL:-} == acp-v1 ]]; then
 		exec "${STUB_NODE:-node}" "$(dirname "${BASH_SOURCE[0]}")/stub-protocol.mjs" "$@"
 	fi
 	;;
 app-server)
-	# A chat's child of Codex (the protocol way, CONDUCTOR_PROTOCOL set): the protocol stub's Codex mode speaks its app
+	# A chat's child of Codex (the protocol way, CONDUCTOR_PROTOCOL=codex-app-server): the protocol stub's Codex mode speaks its app
 	# server, on the same conversation's transcript (STUB_NODE is the suite's node); a usage read sets no CONDUCTOR_PROTOCOL.
-	if [[ ${CONDUCTOR_PROTOCOL:-} == 1 ]]; then
+	if [[ ${CONDUCTOR_PROTOCOL:-} == codex-app-server ]]; then
 		exec "${STUB_NODE:-node}" "$(dirname "${BASH_SOURCE[0]}")/stub-protocol.mjs" "$@"
 	fi
 	[[ $identity == codex && -n $usage_state ]] || exit 1

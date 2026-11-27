@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({ app: {}, BrowserWindow: class {}, screen: {}, shell: {}, session: {} }))
-import { mainFrameAllowed, ServerWindows, type ShownWindow } from '../src/window'
+import { EventEmitter } from 'node:events'
+import { followTrusted, mainFrameAllowed, ServerWindows, type ShownWindow } from '../src/window'
 
 /** A window showing url: what it is told to load, kept. */
 function win(id: number, url: string) {
@@ -74,5 +75,44 @@ describe('every window follows the server the app trusts', () => {
     // A frame's or a request's own address is not a window's page.
     expect(mainFrameAllowed('subFrame', 'http://127.0.0.1:5173/', NEW)).toBe(true)
     expect(mainFrameAllowed('xhr', OLD + '/api/events', NEW)).toBe(true)
+  })
+
+  it("is what the app runs: a state of its server moves every window, the session's loads are gated, and Reload loads the target", () => {
+    const supervisor = new EventEmitter()
+    let trusted = OLD
+    let gate: ((d: { resourceType: string; url: string }, cb: (r: { cancel: boolean }) => void) => void) | null = null
+    const main = win(1, OLD + '/agents')
+    const child = win(2, OLD + '/files')
+    const wired = followTrusted({
+      supervisor: supervisor as never,
+      windows: () => [main, child] as unknown as ShownWindow[],
+      requests: { onBeforeRequest: (_f, fn) => void (gate = fn) },
+      origin: () => trusted,
+    })
+    supervisor.emit('state')
+    const cancelled = (url: string, type = 'mainFrame') => {
+      let out: boolean | undefined
+      gate!({ resourceType: type, url }, (r) => (out = r.cancel))
+      return out
+    }
+    expect(cancelled(OLD + '/agents')).toBe(false)
+    trusted = ''
+    supervisor.emit('state')
+    expect(main.url).toBe('about:blank')
+    expect(child.url).toBe('about:blank')
+    expect(cancelled(OLD + '/agents')).toBe(true)
+    // Reload while no server runs loads nothing.
+    wired.reload(main as unknown as ShownWindow)
+    expect(main.url).toBe('about:blank')
+    trusted = NEW
+    supervisor.emit('state')
+    expect(main.url).toBe(NEW + '/agents')
+    expect(child.url).toBe(NEW + '/files')
+    expect(cancelled(OLD + '/agents')).toBe(true)
+    expect(cancelled(NEW + '/agents')).toBe(false)
+    main.loads.length = 0
+    wired.reload(main as unknown as ShownWindow)
+    expect(main.loads).toEqual([NEW + '/agents'])
+    wired.reload(null)
   })
 })

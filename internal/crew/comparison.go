@@ -33,11 +33,11 @@ const maxCompareChain = 256
 
 // ErrRunChanging is the answer when the chain moved through every read of
 // its comparison: the route answers 503 run_changing and asks again.
-var ErrRunChanging = errors.New("the run changed through every read of its comparison; ask again")
+var ErrRunChanging = errors.New("the run changed through every read of its trial; ask again")
 
 // errCompareChain refuses a comparison whose chain is longer than a
 // comparison walks.
-var errCompareChain = fmt.Errorf("%w: the comparison's chain is longer than %d runs", ErrChainTooLong, maxCompareChain)
+var errCompareChain = fmt.Errorf("%w: the trial's chain is longer than %d runs", ErrChainTooLong, maxCompareChain)
 
 // The comparison's bounds (the plan's table), each measured as encoded.
 const (
@@ -392,7 +392,7 @@ func (e *Engine) comparisonAt(ctx context.Context, runID string, adjust func(*ch
 	}
 	cl, ok := e.ledger.(compareLedger)
 	if !ok {
-		return Comparison{}, nil, fmt.Errorf("%w: this ledger cannot read a comparison", ErrNoLedger)
+		return Comparison{}, nil, fmt.Errorf("%w: this ledger cannot read a trial", ErrNoLedger)
 	}
 	var cr chainRead
 	for try := 1; ; try++ {
@@ -476,7 +476,7 @@ func (e *Engine) readChain(ctx context.Context, cl compareLedger, runID string) 
 	}
 	cr.launched = row
 	if err := json.Unmarshal([]byte(row.Crew), &cr.crew); err != nil || cr.crew.Compare == nil {
-		return cr, fmt.Errorf("%w: %s is of no comparison", ErrRunNotFound, runID)
+		return cr, fmt.Errorf("%w: %s is of no trial", ErrRunNotFound, runID)
 	}
 	newest := chain[len(chain)-1].ID
 	if cr.tasks, err = cl.Tasks(ctx, newest); err != nil {

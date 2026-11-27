@@ -74,7 +74,7 @@ func TestACompareLaunchSaysHowMany(t *testing.T) {
 	plain := simplePlan(t, s, key)
 	rc, err = s.LaunchAdmitted(ctx, testOp("p1"), key, plain, "", 1, nil)
 	want(t, rc, err, StatusFailed, RefusalInvalid)
-	if rc.Error != "candidates is sent with the launch of a comparison: revision 2 starts none" {
+	if rc.Error != "candidates is sent with the launch of a trial: revision 2 starts none" {
 		t.Fatalf("a count on an ordinary revision: %q", rc.Error)
 	}
 	rc, err = s.Launch(ctx, testOp("p2"), key, plain, "")

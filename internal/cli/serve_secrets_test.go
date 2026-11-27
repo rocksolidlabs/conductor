@@ -218,3 +218,17 @@ func TestServePrintsNoHandshakeOnceStdinHasEnded(t *testing.T) {
 		t.Fatalf("a handshake was printed after stdin ended: %q", out.String())
 	}
 }
+
+// A switchyard takes no secrets on stdin: conductor switchyard has no such
+// flag, and serve refuses it beside --switchyard.
+func TestASwitchyardTakesNoSecretsOnStdin(t *testing.T) {
+	clearConductorEnv(t)
+	var logs syncBuffer
+	if code, err := runSwitchyard(t.Context(), []string{"--secrets-stdin"}, strings.NewReader(""), io.Discard, &logs); code != 2 || err == nil {
+		t.Fatalf("conductor switchyard --secrets-stdin: exit %d: %v", code, err)
+	}
+	code, err := runServe(t.Context(), []string{"--switchyard", "--secrets-stdin"}, strings.NewReader(secretsLine(stdinToken, stdinKey)), io.Discard, &logs)
+	if code != 2 || err == nil || !strings.Contains(err.Error(), "a switchyard takes no secrets on stdin") {
+		t.Fatalf("serve --switchyard --secrets-stdin: exit %d: %v", code, err)
+	}
+}

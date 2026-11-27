@@ -54,4 +54,17 @@ describe('RowDrafts', () => {
     expect(d.get('s2')).toBeUndefined()
     expect(d.text('s3')).toBe('three')
   })
+  it('rebinds a line begun before its question had an id, and frees a line whose question was already answered here (UX3 R5)', () => {
+    const d = new RowDrafts()
+    d.edit('s1', 'blue', 'ASKED')
+    d.rebind('s1', 'ASKED', 'q7')
+    expect(d.get('s1')).toEqual({ text: 'blue', question: 'q7' })
+    // Only a line bound to that marker.
+    d.rebind('s1', 'ASKED', 'q8')
+    expect(d.get('s1')?.question).toBe('q7')
+    d.free('s1')
+    expect(d.get('s1')).toEqual({ text: 'blue' })
+    d.free('none')
+    expect(d.get('none')).toBeUndefined()
+  })
 })
