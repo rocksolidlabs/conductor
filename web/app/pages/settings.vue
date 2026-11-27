@@ -4,7 +4,7 @@ import { restartQuestion, saveRestartQuestion } from '~/utils/actions'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
 import { NOT_INSTALLED_BADGE, identityBadge } from '~/utils/agentBadges'
-import { PUBLIC_SWITCHYARD, plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
+import { PUBLIC_SWITCHYARD, folderProblems, foldersHeld, plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
 import { followSaved, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
 import { SETTINGS_FIELD_UI, SETTINGS_SWITCH_UI, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsAddress, type SettingsSectionId } from '~/utils/settingsSections'
 
@@ -53,10 +53,11 @@ async function allowFirewall() {
 }
 const agents = ref<AgentInfo[]>([])
 const versions = ref<{ app: string; electron: string; node: string; chrome: string; server: string } | null>(null)
-const rootsText = computed({
-  get: () => form.allowedRoots.join('\n'),
-  set: (v: string) => (form.allowedRoots = v.split('\n').map((s) => s.trim()).filter(Boolean)),
-})
+/** The folder fields checked as they are picked (UX3 R55): the words at each field, and whether they hold Save. */
+const folders = computed(() => folderProblems(form))
+function removeRoot(root: string) {
+  if (form.allowedRoots.length > 1) form.allowedRoots = form.allowedRoots.filter((r) => r !== root)
+}
 const reachItems = [
   { label: 'Automatic: map the port on your router', value: 'auto' },
   { label: 'Manual: find the public address only', value: 'manual' },
@@ -68,7 +69,9 @@ const appDirty = computed(() => !!settings.value && JSON.stringify({ ...settings
 /** Brakeman's section, saved by the page's one Save with the rest (#707); in a browser, alone. */
 const brakemanCard = useTemplateRef<{ dirty: boolean; blocked: boolean; take: () => BrakemanPart | null }>('brakemanCard')
 /** Brakeman's form holds a change the form's own checks refuse: nothing is saved until it is fixed, where it says. */
-const blocked = computed(() => !!brakemanCard.value?.dirty && !!brakemanCard.value?.blocked)
+const brakemanBlocked = computed(() => !!brakemanCard.value?.dirty && !!brakemanCard.value?.blocked)
+/** A change that cannot be saved as it is: Brakeman's form refuses a value, or a folder field holds what the app refuses. Said at the field. */
+const blocked = computed(() => brakemanBlocked.value || (appDirty.value && foldersHeld(folders.value)))
 const dirty = computed(() => appDirty.value || !!brakemanCard.value?.dirty)
 // The switchyard as last loaded or saved: a plain one on another machine is
 // refused with the words why (switchyardProblem, which the app's validate
@@ -179,7 +182,7 @@ async function save() {
 // The folder picker browses the server's own folders (on Windows, the WSL distribution's), never the native dialog.
 const picker = ref<{ field: PickerField; start: string; title: string; expect?: 'under-roots' | 'outside-roots' } | null>(null)
 const pickerOpen = ref(false)
-const pickerTitles: Record<PickerField, string> = { root: 'Add an allowed root', defaultCwd: 'Default working directory', dataDir: 'Data directory' }
+const pickerTitles: Record<PickerField, string> = { root: 'Add a folder agents can use', defaultCwd: 'Default folder', dataDir: 'Where Conductor keeps its data' }
 function openPicker(field: PickerField) {
   picker.value = { field, start: pickerStart(field, form), title: pickerTitles[field], expect: field === 'defaultCwd' ? 'under-roots' : field === 'dataDir' ? 'outside-roots' : undefined }
   pickerOpen.value = true
@@ -448,25 +451,33 @@ usePalette().registerPage(() => {
           data-server-state
         />
         <UCard :ui="cardUi" :class="sectionClass" data-settings-section="folders">
-          <template #header><SettingsCardTitle title="Where agents work" description="The folders sessions may run in, and where the server keeps its data." /></template>
+          <template #header><SettingsCardTitle title="Where agents work" description="The folders agents may use." /></template>
           <div class="flex flex-col gap-4">
             <p v-if="onWindows" class="text-sm text-muted" data-wsl-paths>
               These are paths inside your WSL distribution, such as <code class="font-mono">/home/&lt;user&gt;/code</code>; the folder picker browses the distribution. Windows folders are under <code class="font-mono">/mnt</code>.
             </p>
-            <UFormField label="Allowed roots" description="Directories server sessions may run in, one per line. The agents can read and change everything under them." :ui="fieldUi">
-              <div class="flex gap-2">
-                <UTextarea v-model="rootsText" :rows="3" class="min-w-0 flex-1 font-mono text-xs" />
-                <IconButton icon="i-lucide-folder-plus" color="neutral" variant="outline" label="Add a root" data-pick-dir="root" @click="openPicker('root')" />
-              </div>
+            <!-- One chip a folder, wrapping and never scrolling sideways; the last cannot be taken away (UX3 R55). -->
+            <UFormField label="Folders agents can use" description="Agents can read and change anything inside." :error="folders.roots" :ui="fieldUi" data-allowed-roots>
+              <ul class="flex flex-wrap items-center gap-2">
+                <li v-for="r in form.allowedRoots" :key="r" class="flex min-w-0 max-w-full items-center gap-0.5 rounded-md border border-default bg-elevated/40 ps-2" :data-root-chip="r">
+                  <span class="min-w-0 font-mono text-xs [overflow-wrap:anywhere]" :title="r" data-mono="path">{{ r }}</span>
+                  <span :title="form.allowedRoots.length > 1 ? undefined : 'Agents need at least one folder.'" class="flex-none">
+                    <IconButton :label="`Remove ${r}`" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :disabled="form.allowedRoots.length <= 1" data-root-remove @click="removeRoot(r)" />
+                  </span>
+                </li>
+                <li class="flex-none">
+                  <UButton label="Add folder" icon="i-lucide-plus" size="sm" color="neutral" variant="outline" data-pick-dir="root" @click="openPicker('root')" />
+                </li>
+              </ul>
             </UFormField>
             <UFormField v-if="onWindows" label="Also allow your Windows folders" description="Your Windows profile under /mnt. Slower." :ui="switchUi">
               <USwitch v-model="form.wslWindowsHome" aria-label="Also allow your Windows folders" data-wsl-windows-home />
             </UFormField>
-            <UFormField label="Default working directory" description="Where a launch runs when it names no directory; under an allowed root." :ui="fieldUi">
-              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the default working directory" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
+            <UFormField label="Default folder" description="Where a launch runs when you pick no folder." :error="folders.defaultCwd" :ui="fieldUi" data-default-folder>
+              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the default folder" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
             </UFormField>
-            <UFormField label="Data directory" description="The server's catalog, crews, hooks and certificates. Keep it outside the allowed roots." :ui="fieldUi">
-              <div class="flex gap-2"><UInput v-model="form.dataDir" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the data directory" data-pick-dir="dataDir" @click="openPicker('dataDir')" /></div>
+            <UFormField label="Where Conductor keeps its data" description="Its catalog, crews and certificates. Keep it outside the folders agents can use." :help="folders.dataDir" :ui="{ ...fieldUi, help: 'text-warning' }" data-data-folder>
+              <div class="flex gap-2"><UInput v-model="form.dataDir" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick where Conductor keeps its data" data-pick-dir="dataDir" @click="openPicker('dataDir')" /></div>
             </UFormField>
           </div>
         </UCard>
@@ -571,7 +582,7 @@ usePalette().registerPage(() => {
          Save at its right end, its note in the room left of it, wrapping there, so a phone never pushes the button out of view (#1154). -->
     <template v-if="desktop.isDesktop.value || brakeman.available.value !== false" #footer>
       <div class="flex items-center gap-3 border-t border-default px-4 py-3 sm:px-6" data-settings-save-bar>
-        <span v-if="blocked" class="min-w-0 flex-1 text-xs text-error" data-settings-blocked>Brakeman's settings hold a value it refuses: fix it, where it says, to save.</span>
+        <span v-if="blocked" class="min-w-0 flex-1 text-xs text-error" data-settings-blocked>Fix the marked field to save.</span>
         <span v-else-if="restarts" class="min-w-0 flex-1 text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
         <UButton class="ms-auto shrink-0" :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty || blocked" data-save-settings @click="save" />
       </div>

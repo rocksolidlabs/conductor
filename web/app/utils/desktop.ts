@@ -90,6 +90,39 @@ function thisMachine(raw: string, u: URL): boolean {
   return !!quad && quad.slice(1).every((p) => (p === '0' || !p.startsWith('0')) && Number(p) <= 255)
 }
 
+/** What Settings says at a folder field, checked as it is picked (UX3 R55): the app's validate (desktop/src/settings.ts) refuses the first two. */
+export const FOLDER_WORDS = {
+  /** The last folder agents can use cannot be taken away: validate's "at least one allowed root is needed". */
+  lastRoot: 'Agents need at least one folder.',
+  /** The default folder outside every folder agents can use: validate's "the default working directory must lie under an allowed root". */
+  defaultOutside: 'Pick a folder inside one that agents can use.',
+  /** The data folder inside a folder agents can use: said, never held (the server keeps its own guard). */
+  dataInside: 'Keep this outside the folders agents can use.',
+} as const
+
+/** Whether path is root or lies under it, as validate reads it (a trailing slash on the root aside). */
+export function underRoot(path: string, root: string): boolean {
+  return path === root || path.startsWith(root.replace(/\/+$/, '') + '/')
+}
+
+/**
+ * The folder fields' problems, checked as they are picked (UX3 R55), in the words said at each field: `roots` and `defaultCwd` hold
+ * Save (the app's validate refuses them), `dataDir` only says so. None for a field that is fine.
+ */
+export function folderProblems(s: Pick<DesktopSettings, 'allowedRoots' | 'defaultCwd' | 'dataDir'>): { roots?: string; defaultCwd?: string; dataDir?: string } {
+  const out: { roots?: string; defaultCwd?: string; dataDir?: string } = {}
+  const roots = s.allowedRoots ?? []
+  if (roots.length === 0) out.roots = FOLDER_WORDS.lastRoot
+  if (roots.length && s.defaultCwd && !roots.some((r) => underRoot(s.defaultCwd, r))) out.defaultCwd = FOLDER_WORDS.defaultOutside
+  if (s.dataDir && roots.some((r) => underRoot(s.dataDir, r))) out.dataDir = FOLDER_WORDS.dataInside
+  return out
+}
+
+/** Whether the folder problems hold Save: the ones the app's validate refuses. */
+export function foldersHeld(p: ReturnType<typeof folderProblems>): boolean {
+  return !!(p.roots || p.defaultCwd)
+}
+
 /** The words of a one-time notice the desktop app hands the workbench; null for one this build does not know. */
 export function noticeWords(notice: string): { title: string; description: string } | null {
   if (notice === 'publishing') {
