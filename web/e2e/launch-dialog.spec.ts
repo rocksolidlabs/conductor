@@ -17,20 +17,21 @@ test.describe.configure({ mode: 'serial' })
 
 /** The stub's own prompt, "> " and what is typed after it as the last row: what the server recognises before it types a first message. */
 const STUB_PROMPT = String.raw`(?m)^> ?[^\n]*\s*\z`
-const PROMPTED = 'Claude Code (e2e stub), prompted'
-const PROMPTED_CODEX = 'Codex CLI (e2e stub), prompted-codex'
+const PROMPTED = 'Claude Code'
+const PROMPTED_CODEX = 'Codex CLI'
 const PLAIN = 'Plain (e2e stub)'
 const re = (name: string) => new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)
 
 test.beforeAll(async () => {
   test.setTimeout(120_000)
-  // The half dozen agents a person has (the e2e catalog's sixteen would make any dialog scroll).
+  // The few agents a person has, named as a person's catalog names them (the e2e catalog's sixteen, each named twice as long,
+  // would make any dialog scroll): Claude Code and Codex CLI, both taking a task, Plain, which takes none, and the built-in shell.
   own = await ownServer('launch-dialog', {
     agents: [
-      { id: 'prompted', from: 'claude', env: { STUB_TUI: '1' }, promptShape: STUB_PROMPT },
-      { id: 'prompted-codex', from: 'codex', env: { STUB_TUI: '1' }, promptShape: STUB_PROMPT },
+      { id: 'prompted', from: 'claude', env: { STUB_TUI: '1' }, promptShape: STUB_PROMPT, name: PROMPTED },
+      { id: 'prompted-codex', from: 'codex', env: { STUB_TUI: '1' }, promptShape: STUB_PROMPT, name: PROMPTED_CODEX },
     ],
-    keep: ['claude', 'codex', 'plain', 'yolo-login'],
+    keep: ['plain'],
   })
 })
 
