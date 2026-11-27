@@ -506,7 +506,8 @@ test('a read that answers while the person is already on the way elsewhere moves
     releaseCode()
     await going
     // Where the person went, once that page has loaded: the read's answer sent the page nowhere.
-    await expect.poll(() => pagePath(page), { timeout: LONG_MS }).toBe('/carousel')
+    // (The carousel's address is the Roundhouse's old one: it lands there.)
+    await expect.poll(() => pagePath(page), { timeout: LONG_MS }).toBe('/roundhouse')
     await expect(page.locator('[data-member-strip]')).toHaveCount(0)
   } finally {
     await page.context().close()
@@ -622,7 +623,8 @@ test("only the run's own member is drawn on its address: a session of its own, o
 
 test("a member with its switch, Yolo, a long name and three here keeps its name readable and its buttons in the row, at 1500, 1700 and 2000", async ({ browser }) => {
   const api = own.api
-  const LONG = 'reviewer-of-the-refund-split-and-every-test-it-runs'
+  // A member's name at the most a crew allows (forty characters).
+  const LONG = 'reviewer-of-the-refund-split-and-its-run'
   const members = [
     { name: LONG, agentId: 'claude-proto', prompt: 'say hello', start: { when: 'immediately' } },
     ...Array.from({ length: 11 }, (_, i) => ({ name: `member-${String(i + 1).padStart(2, '0')}`, agentId: 'shell', prompt: '', start: { when: 'immediately' } })),
@@ -656,21 +658,31 @@ test("a member with its switch, Yolo, a long name and three here keeps its name 
       await expect(strip.locator('[data-member-tab]')).toHaveCount(12, { timeout: LONG_MS })
       const bar = page.locator('[data-session-bar]')
       await atRest(bar)
-      await noOverlap(bar)
-      // The name keeps a readable width; the buttons at the right stay inside the row.
-      const [name, right, row] = [await page.locator('[data-session-title]').boundingBox(), await bar.locator('[data-slot="right"]').boundingBox(), await bar.boundingBox()]
+      // The name keeps a readable width, clear of the buttons at the right, which stay inside the row. (The switch's two sides share a
+      // border by design, so the bar is judged by its parts rather than by noOverlap.)
+      const [name, line, right, row] = [await page.locator('[data-session-title]').boundingBox(), await page.locator('[data-session-name-line]').boundingBox(), await bar.locator('[data-slot="right"]').boundingBox(), await bar.boundingBox()]
       expect(name!.width, `the name at ${width}`).toBeGreaterThanOrEqual(150)
+      expect(line!.x + line!.width, `the name line clear of the buttons at ${width}`).toBeLessThanOrEqual(right!.x + 0.5)
       expect(right!.x + right!.width, `the buttons inside the row at ${width}`).toBeLessThanOrEqual(row!.x + row!.width + 0.5)
       // The open tab whole; a tab reached by the keyboard is scrolled clear of the fade.
       const tabs = strip.locator('[data-member-tabs]')
       await uncut(tabs.locator(`[data-member-tab="${LONG}"]`))
       const last = tabs.locator('[data-member-tab="member-11"]')
       await last.focus()
-      await expect.poll(async () => {
-        const [l, t] = [await tabs.boundingBox(), await last.boundingBox()]
-        return !!l && !!t && t.x + t.width <= l.x + l.width - 20 + 0.5
-      }, { message: `the focused tab clear of the fade at ${width}` }).toBe(true)
+      // Clear of an edge's fade where that edge fades (an edge the tabs end at does not).
+      const clear = async (t: typeof last) => {
+        const [l, b, more] = [await tabs.boundingBox(), await t.boundingBox(), (await tabs.getAttribute('data-tabs-more')) ?? '']
+        if (!l || !b) return false
+        const left = /left|both/.test(more) ? 20 : 0
+        const right = /right|both/.test(more) ? 20 : 0
+        return b.x >= l.x + left - 0.5 && b.x + b.width <= l.x + l.width - right + 0.5
+      }
+      await expect.poll(() => clear(last), { message: `the focused tab clear of the fade at ${width}` }).toBe(true)
       await uncut(last)
+      const middle = tabs.locator('[data-member-tab="member-05"]')
+      await middle.focus()
+      await expect.poll(() => clear(middle), { message: `a middle tab, focused, clear of the fade at ${width}` }).toBe(true)
+      await uncut(middle)
     }
   } finally {
     for (const p of pages) await p.context().close()
@@ -690,7 +702,8 @@ test('Alt+Q goes to Crews while the run is missing; the rail marks the open memb
     await page.getByRole('menuitem', { name: /Collapse to the rail/ }).click()
     await expect(page.locator('[data-rail]')).toBeVisible()
     await expect(page.locator(`[data-rail-session="${lead}"]`)).toHaveAttribute('aria-current', 'page', { timeout: LONG_MS })
-    await expect(page.locator(`[data-rail-run="${run.id}"] a[aria-current="page"]`)).toHaveCount(0)
+    // The capsule's own link (its play mark, its first), not the member's square inside it.
+    await expect(page.locator(`[data-rail-run="${run.id}"] > a`).first()).not.toHaveAttribute('aria-current', 'page')
     await page.locator('[data-rail-expand]').click()
     await expect(page.locator('[data-rail]')).toHaveCount(0)
     await page.context().close()
