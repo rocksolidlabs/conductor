@@ -997,7 +997,7 @@ export function useSessions() {
     /** Starts a new session like a server session (#434): what the body leaves out is the source's launch; the name must be no listed session's. */
     clone: (id: string, body: CloneRequest) => request<SessionInfo>(`/api/sessions/${encodeURIComponent(id)}/clone`, { method: 'POST', body }),
     /** `yolo` overrides the server's default for this launch; left out, the default holds. */
-    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean; account?: string; model?: string; message?: string }) =>
+    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean; account?: string; model?: string; message?: string; way?: 'terminal' | 'protocol' }) =>
       request<SessionInfo>('/api/sessions', { method: 'POST', body }),
     /** Starts an ended session again: resumed with its agent's recipe when it has had a turn, else relaunched (`notice` says why). */
     resumeSession: (id: string) => request<ResumeResult>(`/api/sessions/${encodeURIComponent(id)}/resume`, { method: 'POST' }),

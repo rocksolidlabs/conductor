@@ -7,6 +7,8 @@ export const FIRST_REPLY = "Chat opens after the agent's first reply."
 export const NOT_QUALIFIED = 'This version of Claude Code can only run in its terminal.'
 export const MOVES_TO_CHAT = 'Moves to Chat when this turn ends.'
 export const MOVES_TO_TERMINAL = 'Moves to the terminal when this turn ends.'
+/** A move to Chat noted at the launch (the Launch agent dialog's Run as Chat, issue 1174), before the agent's first reply has ended. */
+export const AFTER_FIRST_REPLY = "Moves to Chat after the agent's first reply."
 export const MOVING = 'The session is moving; try again in a moment.'
 /** A move to Chat at rest ends what the agent left running in its terminal (the move's notice says it was ended). */
 export const ENDS_TERMINAL_WORK = 'Moving to Chat ends what the agent left running in its terminal.'
@@ -53,6 +55,14 @@ export function movesWhenTurnEnds(to: SessionWay): string {
   return to === 'protocol' ? MOVES_TO_CHAT : MOVES_TO_TERMINAL
 }
 
+/**
+ * The words of a noted move to `to` that its `way` message gave no sentence for (a welcome carries `noted` alone): before the first
+ * reply has ended, a move to Chat can only have been noted at the launch, and waits for that reply; else it waits for the turn's end.
+ */
+export function notedWords(to: SessionWay, firstReply: boolean): string {
+  return to === 'protocol' && !firstReply ? AFTER_FIRST_REPLY : movesWhenTurnEnds(to)
+}
+
 /** The switch's state from its facts. */
 export function switchState(f: SwitchFacts): SwitchState {
   const off: SwitchState = { shown: false, selected: f.way, pressable: false, line: '', noted: '' }
@@ -62,7 +72,7 @@ export function switchState(f: SwitchFacts): SwitchState {
   const other: SessionWay = f.way === 'terminal' ? 'protocol' : 'terminal'
   if (f.moving) s.line = MOVING
   else if (f.refused) s.line = f.refused
-  else if (f.noted) s.line = f.why || movesWhenTurnEnds(f.noted)
+  else if (f.noted) s.line = f.why || notedWords(f.noted, f.firstReply)
   else if (f.why) s.line = f.why
   else if (other === 'protocol' && !f.firstReply) s.line = FIRST_REPLY
   else if (other === 'protocol' && !f.qualified) s.line = NOT_QUALIFIED
