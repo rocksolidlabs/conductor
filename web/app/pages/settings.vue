@@ -3,9 +3,10 @@ import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import { restartQuestion, saveRestartQuestion } from '~/utils/actions'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
-import { plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
+import { NOT_INSTALLED_BADGE, identityBadge } from '~/utils/agentBadges'
+import { PUBLIC_SWITCHYARD, plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
 import { followSaved, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
-import { SETTINGS_FIELD_UI, sectionFromQuery, sectionInView, shownSections, type SectionBox, type SettingsSectionId } from '~/utils/settingsSections'
+import { SETTINGS_FIELD_UI, SETTINGS_SWITCH_UI, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsAddress, type SettingsSectionId } from '~/utils/settingsSections'
 
 // The desktop app's settings: what its shell starts the server with. In a
 // browser against a server configured by its file, the page says so.
@@ -17,6 +18,7 @@ const serverHost = useServerHost()
 /** The cards' spacing: a title close to its content (#366). */
 const cardUi = { header: 'px-4 py-3 sm:px-5', body: 'p-4 sm:p-5' }
 const fieldUi = SETTINGS_FIELD_UI
+const switchUi = SETTINGS_SWITCH_UI
 /** A section's card: scrolled to, it clears the phone's sticky row of links, and on a wide window keeps the body's padding above it. */
 const sectionClass = 'scroll-mt-16 sm:scroll-mt-18 lg:scroll-mt-6'
 /** The navbar's buttons: their words from sm, their icons alone below it (each has an aria-label and a tooltip). */
@@ -31,17 +33,20 @@ const saving = ref(false)
 const holding = ref(false)
 const error = ref('')
 const reach = ref<ReachInfo | null>(null)
-/** Windows: what the app forwards for WebRTC from WSL (null elsewhere). */
+/** Windows: what the app forwards for WebRTC from WSL (null elsewhere), shown as Switchyard's Windows firewall row. */
 const ice = ref<DesktopIceStatus | null>(null)
 const allowing = ref(false)
+/** An Allow that failed: said in the firewall's row, where it was pressed. */
+const iceError = ref('')
 async function allowFirewall() {
   const b = desktop.bridge.value
   if (!b || !ice.value) return
   allowing.value = true
+  iceError.value = ''
   try {
     ice.value = { ...ice.value, firewall: await b.allowIceFirewall() }
   } catch (e) {
-    error.value = (e as Error).message
+    iceError.value = (e as Error).message
   } finally {
     allowing.value = false
   }
@@ -53,10 +58,12 @@ const rootsText = computed({
   set: (v: string) => (form.allowedRoots = v.split('\n').map((s) => s.trim()).filter(Boolean)),
 })
 const reachItems = [
-  { label: 'Auto: map the TLS port on the router when there is one', value: 'auto' },
+  { label: 'Automatic: map the port on your router', value: 'auto' },
   { label: 'Manual: find the public address only', value: 'manual' },
   { label: 'Off', value: 'off' },
 ]
+/** The Windows-only rows (the WSL distribution, the Windows folders, the firewall). */
+const onWindows = computed(() => desktop.bridge.value?.platform === 'win32')
 const appDirty = computed(() => !!settings.value && JSON.stringify({ ...settings.value }) !== JSON.stringify({ ...form }))
 /** Brakeman's section, saved by the page's one Save with the rest (#707); in a browser, alone. */
 const brakemanCard = useTemplateRef<{ dirty: boolean; blocked: boolean; take: () => BrakemanPart | null }>('brakemanCard')
@@ -196,7 +203,7 @@ const brakeman = useBrakeman()
 const accounts = useAccounts()
 const github = useTracker()
 const sections = computed(() =>
-  shownSections({ desktop: desktop.isDesktop.value, platform: desktop.bridge.value?.platform, ice: !!ice.value, agents: agents.value.length, brakeman: brakeman.available.value !== false, accounts: accounts.available.value !== false, github: github.available.value !== false }),
+  shownSections({ desktop: desktop.isDesktop.value, platform: desktop.bridge.value?.platform, agents: agents.value.length, brakeman: brakeman.available.value !== false, accounts: accounts.available.value !== false, github: github.available.value !== false }),
 )
 const layout = ref<HTMLElement | null>(null)
 const nav = ref<HTMLElement | null>(null)
@@ -209,9 +216,9 @@ let chosen: SettingsSectionId | null = null
 /** Set once the page's sections have rendered (the bridge and the catalog answered): an address read before waits for it. */
 const loaded = ref(false)
 /** The address this page wrote without a choice (keepSectionInQuery): a section, or none at the top. No scroll follows it. */
-let kept: { id: SettingsSectionId | null } | null = null
+let kept: { id: SettingsAddress | null } | null = null
 const body = () => layout.value?.closest<HTMLElement>('[data-slot="body"]') ?? null
-const sectionEl = (id: SettingsSectionId) => layout.value?.querySelector<HTMLElement>(`[data-settings-section="${id}"]`) ?? null
+const sectionEl = (id: SettingsAddress) => layout.value?.querySelector<HTMLElement>(`[data-settings-section="${id}"]`) ?? null
 /** What the phone's sticky row of links covers at the top of the body; nothing beside the sections on a wide window. */
 const cover = () => (nav.value && getComputedStyle(nav.value).flexDirection === 'row' ? nav.value.offsetHeight : 0)
 function spy() {
@@ -239,13 +246,13 @@ const onScroll = () => {
  * The section brought into view and held there until the person scrolls, types or clicks: what renders after it was chosen (an
  * agent's badge, Brakeman's form, a card above it that the bridge or the catalog answered for) would move it out of place.
  */
-let pinned: SettingsSectionId | null = null
+let pinned: SettingsAddress | null = null
 const unpin = () => {
   pinned = null
   chosen = null
 }
-/** Puts a section's top at the top of the body, less its scroll margin (which clears the phone's row of links). The body alone scrolls. */
-function align(id: SettingsSectionId): boolean {
+/** Puts a section's top (or a row's that has an address) at the top of the body, less its scroll margin (which clears the phone's row of links). The body alone scrolls. */
+function align(id: SettingsAddress): boolean {
   const b = body()
   const el = sectionEl(id)
   if (!b || !el) return false
@@ -253,10 +260,10 @@ function align(id: SettingsSectionId): boolean {
   b.scrollTop += el.getBoundingClientRect().top - b.getBoundingClientRect().top - margin
   return true
 }
-/** Brings a section into view; none, or one not shown, opens at the top. */
-function scrollToSection(id: SettingsSectionId | null) {
+/** Brings a section, or a row with an address, into view, its section marked; none, or one not shown, opens at the top. */
+function scrollToSection(id: SettingsAddress | null) {
   const shown = id ? align(id) : false
-  chosen = shown ? id : null
+  chosen = shown && id ? sectionOf(id) : null
   pinned = shown ? id : null
   if (!shown) body()?.scrollTo({ top: 0 })
   spy()
@@ -440,51 +447,20 @@ usePalette().registerPage(() => {
           :description="desktop.serverState.value.lastError || (desktop.serverState.value.version ? `conductor ${desktop.serverState.value.version}` : '')"
           data-server-state
         />
-        <UCard v-if="ice" :ui="cardUi" :class="sectionClass" data-settings-section="webrtc" data-ice-status>
-          <template #header><SettingsCardTitle title="WebRTC from WSL" description="What the app forwards so a shared session connects from inside the distribution." /></template>
-          <div class="flex flex-col gap-3 text-sm">
-            <p v-if="ice.forwarding">
-              The app forwards UDP port <code>{{ ice.port }}</code> on <code>{{ ice.publicIp }}</code> into the distribution at <code>{{ ice.wslAddress }}</code>, so a shared session connects peer to peer through your router only. WSL's own networking is left as it is.
-            </p>
-            <p v-else class="text-muted">Nothing is forwarded{{ ice.reason ? `: ${ice.reason}` : '' }}.</p>
-            <div v-if="ice.forwarding" class="flex flex-wrap items-center gap-2">
-              <UBadge :label="ice.firewall === 'present' ? 'firewall rule present' : ice.firewall === 'missing' ? 'firewall rule missing' : 'firewall rule unknown'" :color="ice.firewall === 'present' ? 'success' : ice.firewall === 'missing' ? 'warning' : 'neutral'" variant="subtle" data-ice-firewall />
-              <UButton v-if="ice.firewall !== 'present'" label="Allow through the Windows firewall" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="allowing" data-ice-allow @click="allowFirewall" />
-              <span v-if="ice.firewall !== 'present'" class="text-xs text-muted">One elevation prompt adds an inbound rule for UDP {{ ice.port }}.</span>
-            </div>
-          </div>
-        </UCard>
-
-        <UCard :ui="cardUi" :class="sectionClass" data-settings-section="switchyard" data-switchyard-settings>
-          <template #header><SettingsCardTitle title="Switchyard" description="Share links that work from anywhere, through a switchyard." /></template>
-          <div class="flex flex-col gap-4">
-            <USwitch v-model="form.switchyardEnabled" label="Publish sessions to a switchyard" description="So a share link works from anywhere." data-switchyard-enabled />
-            <p class="text-sm text-muted">
-              Every session here is published to a switchyard, switchyard.rslabs.net unless you name another. It is told each session's name, agent and folder name, this machine's name, and whether the session waits on you; never its chat, activity or command line. It mints and checks the links and decides who joins, and the terminal goes between the viewer and this machine over WebRTC, or through the switchyard's relay, which can read it, when no direct path forms. Publish only to a switchyard whose operator you trust. Off, links work where this machine is reachable.
-            </p>
-            <UFormField label="Switchyard" description="Leave empty for the public one. https://, or http:// only for one on this machine (localhost)." :error="switchyardError || undefined" :ui="fieldUi" data-switchyard-server>
-              <UInput v-model="form.switchyardServer" class="w-full font-mono text-xs" placeholder="https://switchyard.rslabs.net" :disabled="!form.switchyardEnabled" />
-            </UFormField>
-            <UFormField label="Host token" description="Optional: a host token for a private switchyard, or a trusted seat on the public one, outside its per-address limits." :ui="fieldUi">
-              <UInput v-model="form.switchyardToken" type="password" class="w-full font-mono text-xs" autocomplete="off" :disabled="!form.switchyardEnabled" />
-            </UFormField>
-            <UFormField label="Shown there as" description="How this machine is named at the switchyard; its host name when empty." :ui="fieldUi">
-              <UInput v-model="form.switchyardName" class="w-full" maxlength="64" :disabled="!form.switchyardEnabled" />
-            </UFormField>
-          </div>
-        </UCard>
-
         <UCard :ui="cardUi" :class="sectionClass" data-settings-section="folders">
           <template #header><SettingsCardTitle title="Where agents work" description="The folders sessions may run in, and where the server keeps its data." /></template>
           <div class="flex flex-col gap-4">
-            <p v-if="desktop.bridge.value?.platform === 'win32'" class="text-sm text-muted" data-wsl-paths>
-              The server runs inside your WSL distribution, so these are its paths (such as <code class="font-mono">/home/&lt;user&gt;/code</code>); the folder picker browses the distribution. Windows folders need the switch under "How agents run" and live under <code class="font-mono">/mnt</code>.
+            <p v-if="onWindows" class="text-sm text-muted" data-wsl-paths>
+              These are paths inside your WSL distribution, such as <code class="font-mono">/home/&lt;user&gt;/code</code>; the folder picker browses the distribution. Windows folders are under <code class="font-mono">/mnt</code>.
             </p>
             <UFormField label="Allowed roots" description="Directories server sessions may run in, one per line. The agents can read and change everything under them." :ui="fieldUi">
               <div class="flex gap-2">
                 <UTextarea v-model="rootsText" :rows="3" class="min-w-0 flex-1 font-mono text-xs" />
                 <IconButton icon="i-lucide-folder-plus" color="neutral" variant="outline" label="Add a root" data-pick-dir="root" @click="openPicker('root')" />
               </div>
+            </UFormField>
+            <UFormField v-if="onWindows" label="Also allow your Windows folders" description="Your Windows profile under /mnt. Slower." :ui="switchUi">
+              <USwitch v-model="form.wslWindowsHome" aria-label="Also allow your Windows folders" data-wsl-windows-home />
             </UFormField>
             <UFormField label="Default working directory" description="Where a launch runs when it names no directory; under an allowed root." :ui="fieldUi">
               <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the default working directory" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
@@ -496,22 +472,13 @@ usePalette().registerPage(() => {
         </UCard>
 
         <UCard :ui="cardUi" :class="sectionClass" data-settings-section="running">
-          <template #header><SettingsCardTitle title="How agents run" description="Permission prompts, reach from outside your network, and the WSL distribution." /></template>
+          <template #header><SettingsCardTitle title="How agents run" description="Whether agents ask before they act." /></template>
           <div class="flex flex-col gap-4">
-            <UFormField label="Yolo" description="Launch every agent with its yolo recipe, skipping its permission prompts (Codex's drops its sandbox). Only for roots you would let an agent change unasked." :ui="fieldUi">
-              <USwitch v-model="form.yolo" label="Skip permission prompts" data-yolo-switch />
+            <UFormField label="Yolo" description="Skips permission prompts: agents run commands and change files without asking you. The default for new launches. Changing it restarts the server." :ui="switchUi">
+              <USwitch v-model="form.yolo" aria-label="Yolo" data-yolo-switch />
             </UFormField>
-            <UFormField label="Reach" description="How the server finds out it can be reached from outside your network. Links become public only once a TLS listener has a certificate." :ui="fieldUi">
-              <USelect v-model="form.reach" :items="reachItems" class="w-full" />
-            </UFormField>
-            <div v-if="reach" class="rounded-md bg-elevated px-3 py-2 text-xs font-mono" data-reach-state>
-              reach {{ reach.mode }}<template v-if="reach.externalIp"> · public address {{ reach.externalIp }}</template><template v-if="reach.mapped"> · port {{ reach.externalPort }} mapped via {{ reach.method }}</template><template v-if="reach.tls"> · certificate {{ reach.tls.ready ? 'ready' : 'pending' }}</template><template v-if="reach.error"> · {{ reach.error }}</template>
-            </div>
-            <UFormField v-if="desktop.bridge.value?.platform === 'win32'" label="WSL distribution" description="The distribution the server runs in; empty for the default. Agents are found on its PATH." :ui="fieldUi">
+            <UFormField v-if="onWindows" label="WSL distribution" description="Where Conductor runs. Empty for the default." :ui="fieldUi">
               <UInput v-model="form.wslDistro" class="w-full font-mono text-xs" placeholder="Ubuntu" />
-            </UFormField>
-            <UFormField v-if="desktop.bridge.value?.platform === 'win32'" label="Windows folders" :ui="fieldUi">
-              <USwitch v-model="form.wslWindowsHome" label="Also allow your Windows profile under /mnt (slower)" />
             </UFormField>
           </div>
         </UCard>
@@ -519,22 +486,73 @@ usePalette().registerPage(() => {
         <UCard v-if="agents.length" :ui="cardUi" :class="sectionClass" data-settings-section="agents">
           <template #header>
             <div class="flex items-start gap-3">
-              <SettingsCardTitle class="min-w-0 flex-1" title="Agents on this machine" description="What the server finds on its PATH; a restart reads the PATH again." />
+              <SettingsCardTitle class="min-w-0 flex-1" title="Agents on this machine" description="What Conductor finds on this machine's PATH. Restart the server after you change your PATH." />
               <UButton label="Open Agents" to="/agents" icon="i-lucide-bot" size="xs" color="neutral" variant="outline" class="flex-none" data-settings-agents-link />
             </div>
           </template>
-          <!-- Two columns once the column has room, so a long catalog stays within the visible body (#433). -->
+          <!-- Two columns once the column has room, so a long catalog stays within the visible body (#433). The badges are drawn as on the Agents page (utils/agentBadges.ts). -->
           <ul class="grid gap-x-8 gap-y-1.5 text-sm @3xl:grid-cols-2">
             <li v-for="a in agents" :key="a.id" class="flex min-w-0 items-center gap-2" :data-agent="a.id">
               <span class="min-w-0 truncate font-medium" :title="a.name">{{ a.name }}</span>
-              <UBadge v-if="a.available === false" class="flex-none" label="not installed" :title="notInstalledBadge(a, serverHost.host.value).title" color="warning" variant="subtle" size="sm" :data-not-agent="notInstalledBadge(a, serverHost.host.value).notAgent || undefined" />
-              <UBadge v-else-if="identity(a, serverHost.host.value).state !== 'unprobed'" class="flex-none" :label="identity(a, serverHost.host.value).label" :title="identity(a, serverHost.host.value).title" :color="identity(a, serverHost.host.value).state === 'ok' ? 'success' : identity(a, serverHost.host.value).state === 'impostor' ? 'error' : 'neutral'" variant="subtle" size="sm" />
+              <UBadge v-if="a.available === false" class="flex-none" label="not installed" :title="notInstalledBadge(a, serverHost.host.value).title" :icon="NOT_INSTALLED_BADGE.icon" :color="NOT_INSTALLED_BADGE.color" variant="subtle" size="sm" data-not-installed :data-not-agent="notInstalledBadge(a, serverHost.host.value).notAgent || undefined" />
+              <UBadge
+                v-else-if="identityBadge(identity(a, serverHost.host.value).state)"
+                class="flex-none"
+                :label="identity(a, serverHost.host.value).label"
+                :title="identity(a, serverHost.host.value).title"
+                :icon="identityBadge(identity(a, serverHost.host.value).state)!.icon"
+                :color="identityBadge(identity(a, serverHost.host.value).state)!.color"
+                variant="subtle"
+                size="sm"
+                :data-identity="identity(a, serverHost.host.value).state"
+              />
               <code class="min-w-0 flex-1 truncate text-right text-xs text-muted" :title="a.command.join(' ')">{{ a.command.join(' ') }}</code>
             </li>
           </ul>
         </UCard>
 
         <AccountsCard :class="sectionClass" data-settings-section="accounts" />
+
+        <UCard :ui="cardUi" :class="sectionClass" data-settings-section="switchyard" data-switchyard-settings>
+          <template #header><SettingsCardTitle title="Switchyard" description="How a share link reaches this machine." /></template>
+          <div class="flex flex-col gap-4">
+            <!-- What the switchyard is told and does: a statement about links, every fact of it kept (UX3 R54). -->
+            <UFormField
+              label="Share links work from anywhere"
+              description="Through a switchyard. It is told each session's name, agent and folder name, this machine's name, and whether it waits on you; never its chat, activity or command line. It mints and checks the links and decides who joins. What a viewer sees goes straight to them, or through its relay, which can read it, when no direct path forms. Publish only to a switchyard whose operator you trust."
+              :ui="switchUi"
+            >
+              <USwitch v-model="form.switchyardEnabled" aria-label="Share links work from anywhere" data-switchyard-enabled />
+            </UFormField>
+            <UFormField label="Switchyard address" :description="`Empty for the public one, ${PUBLIC_SWITCHYARD}.`" :error="switchyardError || undefined" :ui="fieldUi" data-switchyard-server>
+              <UInput v-model="form.switchyardServer" class="w-full font-mono text-xs" :placeholder="`https://${PUBLIC_SWITCHYARD}`" :disabled="!form.switchyardEnabled" />
+            </UFormField>
+            <UFormField label="Host token" description="Only for a private switchyard, or a trusted seat on the public one." :ui="fieldUi">
+              <UInput v-model="form.switchyardToken" type="password" class="w-full font-mono text-xs" autocomplete="off" :disabled="!form.switchyardEnabled" />
+            </UFormField>
+            <UFormField label="This machine's name there" description="Its host name when empty." :ui="fieldUi">
+              <UInput v-model="form.switchyardName" class="w-full" maxlength="64" :disabled="!form.switchyardEnabled" />
+            </UFormField>
+            <UFormField label="Reach from outside your network" description="How Conductor finds out it can be reached from outside your network. A link uses the public address only once it has a certificate." :ui="fieldUi">
+              <USelect v-model="form.reach" :items="reachItems" class="w-full" aria-label="Reach from outside your network" />
+              <p v-if="reach && (reach.externalIp || reach.mapped || reach.tls || reach.error)" class="mt-1.5 text-xs text-muted" data-reach-state>
+                <template v-if="reach.externalIp">Public address <code data-mono="id">{{ reach.externalIp }}</code></template><template v-if="reach.mapped"> · port <code data-mono="id">{{ reach.externalPort }}</code> mapped via {{ reach.method }}</template><template v-if="reach.tls"> · certificate {{ reach.tls.ready ? 'ready' : 'pending' }}</template><template v-if="reach.error"> · {{ reach.error }}</template>
+              </p>
+            </UFormField>
+            <!-- WebRTC from WSL, a section before UX3 R54: its address (?section=webrtc) lands on this row. -->
+            <div v-if="ice" :class="sectionClass" data-settings-section="webrtc" data-ice-status>
+              <UFormField label="Windows firewall" description="Lets viewers connect straight to agents in WSL." :ui="fieldUi">
+                <div v-if="ice.forwarding" class="flex flex-wrap items-center gap-2">
+                  <UBadge :label="ice.firewall === 'present' ? 'rule present' : ice.firewall === 'missing' ? 'rule missing' : 'rule unknown'" :color="ice.firewall === 'missing' ? 'warning' : 'neutral'" variant="subtle" data-ice-firewall />
+                  <UButton v-if="ice.firewall !== 'present'" label="Allow" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="allowing" data-ice-allow @click="allowFirewall" />
+                  <span v-if="ice.firewall !== 'present'" class="text-xs text-muted">Windows asks once for permission.</span>
+                </div>
+                <p v-else class="text-sm text-muted">Nothing is forwarded{{ ice.reason ? `: ${ice.reason}` : '' }}.</p>
+                <p v-if="iceError" class="mt-1.5 text-xs text-error" role="alert" data-ice-error>{{ iceError }}</p>
+              </UFormField>
+            </div>
+          </div>
+        </UCard>
 
         <SettingsGitHub :class="sectionClass" data-settings-section="github" />
 

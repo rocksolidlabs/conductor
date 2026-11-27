@@ -970,9 +970,12 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
   )
 }
 
-/** The sections this machine shows, in page order: what the navigation must list. */
-function expectedSections(platform: Platform) {
-  return [...(platform === 'win32' ? ['webrtc'] : []), 'switchyard', 'folders', 'running', 'agents', 'accounts', 'github', 'brakeman', 'app']
+/**
+ * The sections this machine shows, in page order: what the navigation must list. The page opens on where and how agents work, and
+ * on Windows the firewall is a row of Switchyard, no section of its own (UX3 R54).
+ */
+function expectedSections(_platform: Platform) {
+  return ['folders', 'running', 'agents', 'accounts', 'switchyard', 'github', 'brakeman', 'app']
 }
 
 const body = (page: Page) => page.locator('[data-slot="body"]:has([data-settings-sections])')
@@ -984,7 +987,8 @@ async function layoutOf(page: Page) {
     const cs = getComputedStyle(b)
     return {
       body: { top: r(b).top, bottom: r(b).bottom, left: r(b).left, right: r(b).right, clientWidth: b.clientWidth, clientHeight: b.clientHeight, scrollWidth: b.scrollWidth, padLeft: parseFloat(cs.paddingLeft), padRight: parseFloat(cs.paddingRight), scrollTop: b.scrollTop },
-      sections: Array.from(b.querySelectorAll('[data-settings-section]')).map((e) => ({ id: e.getAttribute('data-settings-section')!, top: r(e).top, bottom: r(e).bottom, left: r(e).left, right: r(e).right, height: r(e).height })),
+      // The sections are the column's own children: a row inside one may carry an address of its own (the Windows firewall's webrtc).
+      sections: Array.from(b.querySelectorAll('[data-settings-sections] > [data-settings-section]')).map((e) => ({ id: e.getAttribute('data-settings-section')!, top: r(e).top, bottom: r(e).bottom, left: r(e).left, right: r(e).right, height: r(e).height })),
       layout: (() => {
         const l = b.querySelector('[data-desktop-settings], [data-settings-sections]')!
         return { left: r(l).left, right: r(l).right, width: r(l).width }
@@ -1070,6 +1074,19 @@ for (const platform of ['linux', 'win32'] as const) {
         return Math.abs(x.top - l.body.top - 24) <= 1 || (atEnd && x.top >= l.body.top && x.bottom <= l.body.bottom)
       }).toBe(true)
       await expect(page.locator(`[data-settings-nav-entry="${id}"]`)).toHaveAttribute('aria-current', 'true')
+    }
+    // WebRTC from WSL, a section once, is the Windows firewall row of Switchyard: its address lands on the row, Switchyard marked.
+    if (platform === 'win32') {
+      await page.goto('/settings?section=webrtc')
+      await settled(page, platform)
+      const row = page.locator('[data-switchyard-settings] [data-settings-section="webrtc"][data-ice-status]')
+      await expect.poll(async () => {
+        const b = await boxOf(body(page))
+        const r = await boxOf(row)
+        return Math.abs(r.top - b.top - 24) <= 1 || (r.top >= b.top && r.bottom <= b.bottom)
+      }).toBe(true)
+      await expect(row).toBeInViewport()
+      await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
     }
     for (const q of ['?section=nope', '?section=', '', platform === 'linux' ? '?section=webrtc' : '?section=Switchyard']) {
       await page.goto(`/settings${q}`)
@@ -1225,8 +1242,9 @@ test('the save that restarts the server keeps the section in view in the address
   await page.mouse.move(sections.left + sections.width / 2, 300)
   await page.mouse.wheel(0, -100000)
   await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBe(0)
-  await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
-  await page.locator('[data-switchyard-enabled]').click()
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+  // Yolo, in view at the top of the page, back as it was: a change that restarts all the same.
+  await page.locator('[data-yolo-switch]').click()
   expect((await layoutOf(page)).body.scrollTop).toBe(0)
   await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
   await page.locator('[data-save-settings]').click()
@@ -1374,7 +1392,7 @@ test('Settings chosen again in the same page goes back to the top, from a sectio
   const settingsLink = { click: () => viaMore(page, 'Settings') }
   const atTop = async () => {
     await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBe(0)
-    await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
+    await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
     await expect(page).toHaveURL(/\/settings$/)
   }
   // From a section the address names: the sidebar's Settings is a new address, plain /settings.
@@ -1388,7 +1406,7 @@ test('Settings chosen again in the same page goes back to the top, from a sectio
   await page.mouse.move(sections.left + sections.width / 2, 450)
   await page.mouse.wheel(0, 1500)
   await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBeGreaterThan(1000)
-  await expect(page.locator('[data-settings-nav-entry="switchyard"]')).not.toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).not.toHaveAttribute('aria-current', 'true')
   await settingsLink.click()
   await atTop()
 })
@@ -1408,3 +1426,57 @@ for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) 
     expect(l.body.scrollWidth).toBeLessThanOrEqual(l.body.clientWidth)
   })
 }
+
+// The page opens on what people come for (UX3 R54): the folders agents may use and the Yolo switch are in view as it opens, in the
+// wide short window people use all day and at 1440, and Switchyard, with Reach and the Windows firewall, sits below Accounts.
+for (const size of [{ width: 2000, height: 810 }, { width: 1440, height: 810 }, { width: 1440, height: 900 }]) {
+  test(`at ${size.width} × ${size.height} Settings opens on the folders and the Yolo switch`, async ({ page, state }) => {
+    await page.setViewportSize(size)
+    await standIn(page, state, 'win32')
+    await page.goto('/settings')
+    await settled(page, 'win32')
+    expect((await layoutOf(page)).body.scrollTop).toBe(0)
+    await expect(page.locator('[data-pick-dir="root"]')).toBeInViewport()
+    await expect(page.locator('[data-yolo-switch]')).toBeInViewport()
+    await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+    // On Windows the Windows folders sit with the folders, and Reach and the firewall are Switchyard's.
+    await expect(page.locator('[data-settings-section="folders"] [data-wsl-windows-home]')).toBeVisible()
+    const yard = page.locator('[data-switchyard-settings]')
+    await expect(yard.getByText('Reach from outside your network', { exact: true })).toBeVisible()
+    await expect(yard.locator('[data-ice-firewall]')).toHaveText('rule missing')
+    await expect(page.locator('[data-settings-section="running"]')).not.toContainText('Reach')
+    // The switchyard's statement keeps every fact it stated.
+    for (const fact of ["each session's name, agent and folder name, this machine's name, and whether it waits on you", 'never its chat, activity or command line', 'It mints and checks the links and decides who joins', 'through its relay, which can read it', 'Publish only to a switchyard whose operator you trust']) await expect(yard).toContainText(fact)
+    await expect(page.getByText('WebRTC from WSL')).toHaveCount(0)
+    // Allow adds the rule: the badge says so, and the button goes.
+    await yard.locator('[data-ice-allow]').click()
+    await expect(yard.locator('[data-ice-firewall]')).toHaveText('rule present')
+    await expect(yard.locator('[data-ice-allow]')).toHaveCount(0)
+  })
+}
+
+// Settings' agents are drawn as the Agents page draws them (UX3 R54): one not installed asks nothing, so it is neither amber nor green.
+test("Settings' agents: not installed and an identified agent's badge are neither amber nor green", async ({ page, state }) => {
+  await standIn(page, state, 'linux')
+  await page.goto('/settings?section=agents')
+  await settled(page, 'linux')
+  const card = page.locator('[data-settings-section="agents"]')
+  const colour = (l: Locator) => l.evaluate((e) => getComputedStyle(e).color)
+  const probe = (v: string) =>
+    page.evaluate((v) => {
+      const e = document.createElement('span')
+      e.style.color = v
+      document.body.append(e)
+      const c = getComputedStyle(e).color
+      e.remove()
+      return c
+    }, v)
+  const amber = [await probe('var(--ui-warning)'), await probe('var(--ui-warning-text)')]
+  const green = [await probe('var(--ui-success)'), await probe('var(--ui-success-text)')]
+  const badges = card.locator('[data-not-installed], [data-identity="ok"]')
+  await expect(badges.first()).toBeVisible()
+  for (const b of await badges.all()) {
+    expect(amber).not.toContain(await colour(b))
+    expect(green).not.toContain(await colour(b))
+  }
+})
