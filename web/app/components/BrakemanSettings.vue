@@ -129,13 +129,24 @@ const dirty = ctl.dirty
 // and leaves one being edited as it is (its save then meets the newer revision and is refused stale). A form set under the token
 // before is never kept (formMove): the new server's revision may be the same number as the one it was read at. While an operation
 // started here is in flight, or a stale refusal waits for its choice, this watcher keeps the form; it looks again as one ends.
+// Its edits left on another page come back (UX3 R81): kept as the card goes, brought back once it is set from what is saved.
+const draft = useSettingsDraft()
 watch(
   () => [bk.generation.value, saved.value?.rev, ctl.busy.value],
   () => {
-    if (ctl.follow() === 'drop') serverError.value = null
+    const move = ctl.follow()
+    if (move === 'drop') serverError.value = null
+    const kept = draft.value.brakeman
+    if (move === 'set' && kept) {
+      ctl.restore(kept)
+      draft.value.brakeman = undefined
+    }
   },
   { immediate: true },
 )
+onBeforeUnmount(() => {
+  draft.value.brakeman = ctl.keep() ?? undefined
+})
 
 /** The agents Brakeman can be: an adapter that registers Conductor's tools and has a read-only mode. */
 const offered = computed(() => agents.value.filter((a) => a.adapter && BRAKEMAN_ADAPTERS[a.adapter]))

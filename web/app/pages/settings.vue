@@ -5,7 +5,7 @@ import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
 import { NOT_INSTALLED_BADGE, identityBadge } from '~/utils/agentBadges'
 import { PUBLIC_SWITCHYARD, folderProblems, foldersHeld, plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
-import { followSaved, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
+import { EDITED_KEYS, draftBack, followSaved, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
 import { SETTINGS_FIELD_UI, SETTINGS_SWITCH_UI, changedSections, changedWords, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsAddress, type SettingsSectionId } from '~/utils/settingsSections'
 
 // The desktop app's settings: what its shell starts the server with. In a
@@ -84,13 +84,24 @@ const restarts = computed(() => {
   return keys.some((k) => JSON.stringify(settings.value![k]) !== JSON.stringify(form[k]))
 })
 
+// The edits left on another page (UX3 R81): kept as the page goes, brought back by its first read of the settings.
+const draft = useSettingsDraft()
+onBeforeUnmount(() => {
+  draft.value.app = appDirty.value && settings.value ? { form: plainCopy(form), saved: plainCopy(settings.value) } : undefined
+})
+
 async function load() {
   const b = desktop.bridge.value
   if (!b) return
   try {
     const s = await b.settings.get()
+    const first = !settings.value
     // A field changed while a save was out keeps its edit (followSaved); the first read sets every field.
     followSaved(form, settings.value, s)
+    // The first read brings back what was left unsaved here, but for a setting saved meanwhile, which wins (draftBack).
+    const kept = first ? draft.value.app : undefined
+    if (kept) draftBack(form, kept.form, kept.saved, s, EDITED_KEYS)
+    draft.value.app = undefined
     settings.value = s
     switchyardChecked.value = switchyardKey()
     versions.value = await b.versions()
