@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Page } from '@playwright/test'
+import type { Page, Request } from '@playwright/test'
 import { atRest, dayPage, expect, member, pagePath, test, type Run } from './fixtures'
 import { noOverlap, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
@@ -287,22 +287,45 @@ test('on a very wide window the strip is in the header row and the terminal as t
   }
 })
 
-test("a member's old address lands inside its crew before any socket to it opens; one Back leaves; the sidebar marks its row", async ({ browser }) => {
+/** A move inside the app, as a link or a press makes it (the app's own router): no page load, the live list as the app holds it. */
+async function inApp(page: Page, to: string): Promise<void> {
+  await page.evaluate((t) => (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { push: (to: string) => Promise<unknown> } } } } }).__vue_app__.config.globalProperties.$router.push(t), to)
+}
+/** The app's live list holds the session: its sidebar row is drawn. */
+async function listed(page: Page, id: string): Promise<void> {
+  await expect(page.locator(`[data-sidebar-row="s:${id}"]`)).toHaveCount(1, { timeout: LONG_MS })
+}
+const sessionRead = (id: string) => (r: Request) => r.method() === 'GET' && new URL(r.url()).pathname === `/api/sessions/${id}`
+
+test("a member's old address lands inside its crew before any socket to it opens: exactly one socket, its own closed at a switch", async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
   try {
-    const lead = idOf('lead')
-    // Every socket to the member, with the address the page had as it opened.
-    const sockets: string[] = []
+    const [lead, core] = [idOf('lead'), idOf('core')]
+    // Every socket to a member, with the address the page had as it opened and whether it has closed. The run's chat keeps a quiet
+    // connection of its own to a live member (its hello says chatOnly): the view's are the others.
+    const sockets: Array<{ id: string; at: string; closed: boolean; chatOnly: boolean }> = []
     page.on('websocket', (ws) => {
-      if (new URL(ws.url()).pathname.endsWith(`/ws/sessions/${lead}`)) sockets.push(new URL(page.url()).pathname)
+      const id = new URL(ws.url()).pathname.split('/ws/sessions/')[1] ?? ''
+      if (id !== lead && id !== core) return
+      const s = { id, at: new URL(page.url()).pathname, closed: false, chatOnly: false }
+      sockets.push(s)
+      ws.on('framesent', (f) => typeof f.payload === 'string' && f.payload.includes('"chatOnly":true') && (s.chatOnly = true))
+      ws.on('close', () => (s.closed = true))
     })
+    const views = (id: string) => sockets.filter((s) => s.id === id && !s.chatOnly)
     await memberPage(page, 'lead')
     await expect(page.locator('[data-transport-state="open"]')).toHaveCount(1, { timeout: LONG_MS })
-    expect(sockets.length, 'the view connected').toBeGreaterThan(0)
-    expect(sockets.filter((p) => p !== runPath()), 'no socket opened on the old address').toEqual([])
+    await expect.poll(() => views(lead).length, { message: "one view's socket to the member" }).toBe(1)
+    expect(sockets.filter((s) => s.id === lead).map((s) => s.at), 'every socket to it opened on its place').toEqual(sockets.filter((s) => s.id === lead).map(() => runPath()))
     // Its row in the sidebar is the page; the run's header row is not.
     await expect(page.locator(`[data-sidebar-row="s:${lead}"] [aria-current="page"]`)).toHaveCount(1)
-    // The old address was replaced: one Back leaves for where the person was, never to it.
+    // Another member's tab: the first member's socket closes, exactly one opens to the other.
+    await page.locator(`[data-member-strip] [data-member-tab="core"]`).click()
+    await expect.poll(() => where(page)).toBe(placeOf('core'))
+    await expect(page.locator('[data-transport-state="open"]')).toHaveCount(1, { timeout: LONG_MS })
+    await expect.poll(() => views(lead).filter((s) => !s.closed).length, { message: "the first member's view's socket closed" }).toBe(0)
+    await expect.poll(() => views(core).length, { message: "one view's socket to the other member" }).toBe(1)
+    // The old address was replaced, and the tab replaced the member: one Back leaves for where the person was.
     await page.goBack()
     await expect.poll(() => pagePath(page)).toBe('/crews')
   } finally {
@@ -310,26 +333,216 @@ test("a member's old address lands inside its crew before any socket to it opens
   }
 })
 
-test("from the run's page a tile opens its member in place; Back to the crew returns to the run; another session is not drawn there", async ({ browser }) => {
-  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: runPath() })
-  const own_ = await own.api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'e2e not a member', cwd })
+test("a press on the member already open does nothing: its sidebar row and a palette row keep its file, its socket and history", async ({ browser }) => {
+  writeFileSync(join(cwd, 'notes.txt'), 'one\ntwo\nthree\n')
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
   try {
+    const lead = idOf('lead')
+    budget(3 * LONG_MS)
+    // The member with a file open in its editor, reached by a press inside the app: tab, open and line carried, and no read of the
+    // session made on its old address (the live list knew it).
+    await listed(page, lead)
+    const reads: string[] = []
+    page.on('request', (r) => sessionRead(lead)(r) && reads.push(new URL(page.url()).pathname))
+    await inApp(page, `/sessions/${lead}?tab=files&open=notes.txt&line=2`)
+    await expect.poll(() => new URL(page.url()).search).toBe(`?session=${lead}&tab=files&open=notes.txt&line=2`)
+    expect(pagePath(page)).toBe(runPath())
+    const tab = page.locator('[data-editor-tab]').filter({ hasText: 'notes.txt' })
+    await expect(tab).toBeVisible({ timeout: LONG_MS })
+    expect(reads.filter((p) => p !== runPath()), 'no read of the session on its old address').toEqual([])
+    // Another member and back by the strip: the member's place alone, its file still open (kept for the app's life).
+    await page.locator(`[data-member-strip] [data-member-tab="core"]`).click()
+    await expect.poll(() => where(page)).toBe(placeOf('core'))
+    await page.locator(`[data-member-strip] [data-member-tab="lead"]`).click()
+    await expect.poll(() => page.url()).toBe(new URL(placeOf('lead'), page.url()).href)
+    await expect(tab).toBeVisible({ timeout: LONG_MS })
+    await expect(page.locator('[data-transport-state="open"]')).toHaveCount(1, { timeout: LONG_MS })
+    // Any new socket to the member from here on would be a view built again.
+    const sockets: string[] = []
+    page.on('websocket', (ws) => ws.url().includes(`/ws/sessions/${lead}`) && sockets.push(ws.url()))
+    const depth = () => page.evaluate(() => history.length)
+    const before = await depth()
+    const url = page.url()
+    // Its own sidebar row: the same place, so no move at all.
+    await page.locator(`[data-sidebar-row="s:${lead}"] a`).first().click()
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))))
+    expect(page.url()).toBe(url)
+    expect(await depth()).toBe(before)
+    await expect(tab).toBeVisible()
+    // A palette row for the member: the same.
+    const name = (await own.api.session(lead)).name
+    await page.locator('body').press('Alt+/')
+    const palette = page.locator('[data-palette]')
+    await expect(palette).toBeVisible()
+    await page.keyboard.type(name)
+    await palette.locator(`[data-palette-row="session:${lead}"]`).click()
+    await expect(palette).toBeHidden()
+    expect(await depth()).toBe(before)
+    await expect(tab).toBeVisible()
+    expect(sockets, 'no new socket to the member').toEqual([])
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("what a person typed in a member's file is there again after another member and back, its tab and its unsaved mark too", async ({ browser }) => {
+  writeFileSync(join(cwd, 'draft.txt'), 'first line\n')
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
+  try {
+    const lead = idOf('lead')
+    budget(3 * LONG_MS)
+    await listed(page, lead)
+    await inApp(page, `/sessions/${lead}?open=draft.txt`)
+    const tab = page.locator('[data-editor-tab]').filter({ hasText: 'draft.txt' })
+    await expect(tab).toBeVisible({ timeout: LONG_MS })
+    const editor = page.locator('[data-editor-area] .monaco-editor').first()
+    await expect(editor).toBeVisible({ timeout: LONG_MS })
+    await editor.click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type('typed and not saved')
+    await expect(tab.locator('[data-editor-dirty]')).toBeVisible()
+    await page.locator(`[data-member-strip] [data-member-tab="core"]`).click()
+    await expect.poll(() => where(page)).toBe(placeOf('core'))
+    await expect(page.locator('[data-editor-tab]').filter({ hasText: 'draft.txt' })).toHaveCount(0)
+    await page.locator(`[data-member-strip] [data-member-tab="lead"]`).click()
+    await expect.poll(() => where(page)).toBe(placeOf('lead'))
+    await expect(tab).toBeVisible({ timeout: LONG_MS })
+    await expect(tab.locator('[data-editor-dirty]')).toBeVisible({ timeout: LONG_MS })
+    await expect(page.locator('[data-editor-area] .monaco-editor .view-lines').first()).toContainText('typed and not saved', { timeout: LONG_MS })
+  } finally {
+    await page.context().close()
+  }
+})
+
+test('a read that answers after the person has gone elsewhere moves nothing', async ({ browser }) => {
+  const lead = idOf('lead')
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
+  try {
+    budget(2 * LONG_MS)
+    let release: () => void = () => {}
+    const held = new Promise<void>((r) => (release = r))
+    await page.route((u) => u.pathname === `/api/sessions/${lead}`, async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      await held
+      await route.fallback()
+    })
+    // The old address, cold: the app's list not read yet, so the view asks for the session, and that read is held.
+    const asked = page.waitForRequest(sessionRead(lead))
+    await page.goto(`/sessions/${lead}`)
+    await asked
+    await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: /Crews/ }).first().click()
+    await expect.poll(() => pagePath(page)).toBe('/crews')
+    const answered = page.waitForResponse((r) => sessionRead(lead)(r.request()))
+    release()
+    await answered
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 0)))
+    expect(pagePath(page), 'the address stays where the person went').toBe('/crews')
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("a list and a read that disagree move the page once, and it stands", async ({ browser }) => {
+  // A session of its own whose read says it is this run's member (the app's list says it is no one's, as a list can for a while).
+  const alone = await own.api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'e2e disagree', cwd })
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
+  try {
+    budget(3 * LONG_MS)
+    let reads = 0
+    await page.route((u) => u.pathname === `/api/sessions/${alone.id}`, async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      reads++
+      const res = await route.fetch()
+      const body = await res.json()
+      body.session.crew = { runId: run.id, crewId, member: 'ghost' }
+      await route.fulfill({ response: res, json: body })
+    })
+    await listed(page, alone.id)
+    await inApp(page, `/sessions/${alone.id}`)
+    await expect.poll(() => where(page)).toBe(`${runPath()}?session=${alone.id}`)
+    await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: LONG_MS })
+    await expect(page.locator(`[data-member-strip][data-run="${run.id}"]`)).toBeVisible()
+    expect(where(page)).toBe(`${runPath()}?session=${alone.id}`)
+    expect(reads, 'one read on the old address, one in its place').toBe(2)
+  } finally {
+    await page.context().close()
+    await own.api.stopSession(alone.id)
+  }
+})
+
+test("from the run's page a tile opens its member in place; Back to the crew, then Back, leave; the run's palette rows come back", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
+  try {
+    budget(2 * LONG_MS)
+    await inApp(page, runPath())
     await page.locator('[data-member="core"] [data-tile-open]').click()
     await expect.poll(() => where(page)).toBe(placeOf('core'))
     await expect(page.locator('[data-run-grid]')).toHaveCount(0)
     await expect(page.locator(`[data-member-strip] [data-member-tab="core"]`)).toHaveAttribute('aria-current', 'page')
-    // Back to the crew is the browser's Back here: the run's page, and one more Back leaves it.
+    // Back to the crew is the browser's Back here: the run's page, and one more Back leaves it for the page before.
     await page.getByRole('button', { name: 'Back to the crew' }).click()
     await expect.poll(() => where(page)).toBe(runPath())
     await expect(page.locator('[data-member="core"] [data-tile-open]')).toBeVisible({ timeout: LONG_MS })
-    // A session that is not the run's member, asked for in the run's place, goes to its own page.
-    budget(STEP_MS + LONG_MS)
-    await page.goto(`${runPath()}?session=${encodeURIComponent(own_.id)}`)
-    await expect.poll(() => pagePath(page)).toBe(`/sessions/${encodeURIComponent(own_.id)}`)
-    await expect(page.locator('[data-session-bar]')).toBeVisible({ timeout: LONG_MS })
-    await expect(page.locator('[data-member-strip]')).toHaveCount(0)
+    // The run's own rows are the palette's page group again.
+    await page.locator('body').press('Alt+/')
+    const palette = page.locator('[data-palette]')
+    await expect(palette.locator('[data-palette-row="page:broadcast"]')).toHaveCount(1)
+    await page.keyboard.press('Escape')
+    await expect(palette).toBeHidden()
+    await page.goBack()
+    await expect.poll(() => pagePath(page)).toBe('/crews')
   } finally {
     await page.context().close()
-    await own.api.stopSession(own_.id)
+  }
+})
+
+test("only the run's own member is drawn on its address: a session of its own, one removed, another run's member", async ({ browser }) => {
+  const api = own.api
+  const alone = await api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'e2e not a member', cwd })
+  const removed = await api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'e2e removed', cwd })
+  const otherCrew = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name: `${CREW} other`, goal: '', cwd, where: 'server', isolation: 'none', openAfterLaunch: false, members: [{ name: 'solo', agentId: 'shell', prompt: '', start: { when: 'immediately' } }] })).crew.id
+  let other = await api.launchCrew(otherCrew)
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
+  try {
+    budget(6 * LONG_MS)
+    await expect.poll(async () => member(await api.run(other.id), 'solo').sessionId ?? '', { timeout: LONG_MS }).not.toBe('')
+    other = await api.run(other.id)
+    const solo = member(other, 'solo').sessionId!
+    await api.stopSession(removed.id)
+    await expect.poll(async () => (await api.session(removed.id)).status, { timeout: STEP_MS }).toMatch(/exited|stopped/)
+    await api.stopSession(removed.id)
+    await expect.poll(async () => (await api.call('GET', `/api/sessions/${removed.id}`)).status, { timeout: STEP_MS }).toBe(404)
+
+    // A session of its own, reached inside the app on the run's address: its bar is never drawn there.
+    await listed(page, alone.id)
+    await inApp(page, runPath())
+    await expect(page.locator('[data-run-view]')).toBeVisible({ timeout: LONG_MS })
+    await page.evaluate(() => {
+      const w = window as unknown as { barOnRun: boolean }
+      w.barOnRun = false
+      new MutationObserver(() => {
+        if (location.pathname.startsWith('/runs/') && document.querySelector('[data-session-bar]')) w.barOnRun = true
+      }).observe(document.body, { childList: true, subtree: true })
+    })
+    await inApp(page, `${runPath()}?session=${alone.id}`)
+    await expect.poll(() => pagePath(page)).toBe(`/sessions/${alone.id}`)
+    await expect(page.locator('[data-session-bar]')).toBeVisible({ timeout: LONG_MS })
+    expect(await page.evaluate(() => (window as unknown as { barOnRun: boolean }).barOnRun), "the session's bar never drawn on the run's address").toBe(false)
+    await expect(page.locator('[data-member-strip]')).toHaveCount(0)
+
+    // One the server no longer holds: drawn on its own page, its gone words there.
+    await page.goto(`${runPath()}?session=${removed.id}`)
+    await expect.poll(() => pagePath(page)).toBe(`/sessions/${removed.id}`)
+    await expect(page.locator('[data-session-gone]')).toBeVisible({ timeout: LONG_MS })
+
+    // Another run's member, asked for on this run's address: it lands in its own run.
+    await page.goto(`${runPath()}?session=${solo}`)
+    await expect.poll(() => where(page)).toBe(`/runs/${encodeURIComponent(other.id)}?session=${solo}`)
+    await expect(page.locator(`[data-member-strip][data-run="${other.id}"]`)).toBeVisible({ timeout: LONG_MS })
+  } finally {
+    await page.context().close()
+    await api.stopSession(alone.id)
+    await api.stopRun(other.id)
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(otherCrew)}`)
   }
 })

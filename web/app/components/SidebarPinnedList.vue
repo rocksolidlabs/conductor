@@ -5,6 +5,9 @@ import { sessionStatus } from '~/utils/status'
 import { unpinSession, type PinRow } from '~/utils/pins'
 import type { RemotePin } from '~/utils/remote'
 
+// A pin opens its session's place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
+
 /**
  * "Pinned": the sessions pinned to the top from a row's menu (utils/pins.ts), first in the list; each is also in its own section.
  * A pinned session no longer listed is drawn greyed, its name and agent as they were when pinned, until it is let go a week after
@@ -29,7 +32,7 @@ const others = computed(() => props.others ?? [])
     <li v-for="r in rows" :key="r.pin.session" class="group relative flex items-center rounded-md" :data-pinned-session="r.pin.session" :data-pinned-gone="r.gone ? '' : undefined">
       <NuxtLink
         v-if="!r.gone"
-        :to="`/sessions/${r.pin.session}`"
+        :to="placeOf(r.pin.session)"
         class="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2.5 py-1.5 transition-colors"
         :class="[sessionOpen(route.path, r.pin.session, route.query) ? 'bg-default border-default shadow-xs' : 'border-transparent hover:bg-canvas-hover', !hovers && 'pr-10']"
         :aria-current="sessionOpen(route.path, r.pin.session, route.query) ? 'page' : undefined"

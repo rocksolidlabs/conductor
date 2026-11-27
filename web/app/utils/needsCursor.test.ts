@@ -90,6 +90,9 @@ describe("the pill's Enter", () => {
     expect(pillTarget('/yard', 's1')).toBe('/yard?focus=s1')
     expect(pillTarget('/yard?filter=needs', 's1')).toBe('/yard?focus=s1')
     expect(pillTarget('/roundhouse', 's1')).toBe('/sessions/s1')
+    // A crew's member opens at its place inside its crew (UX3 R72), the Yard's own focus aside.
+    expect(pillTarget('/runs/r1?session=s1', 's1', '/runs/r1?session=s1')).toBe('/runs/r1?session=s1')
+    expect(pillTarget('/yard', 's1', '/runs/r1?session=s1')).toBe('/yard?focus=s1')
     expect(pillTarget('/agents', 's1')).toBe('/sessions/s1')
     expect(pillTarget('/yardx', 's1')).toBe('/sessions/s1')
     expect(pillTarget('/yard', 'a/b')).toBe('/yard?focus=a%2Fb')

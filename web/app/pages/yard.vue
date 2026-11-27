@@ -13,6 +13,8 @@ import { bestGrid, yardFilterOf, yardChips, yardCounts, yardFilter, type YardFil
 import { replyFailure, replyOutcomeOf, type ReplyTaken } from '~/utils/reply'
 import { pageState } from '~/utils/pageState'
 import { QUICK_START_URL } from '~/utils/about'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 useHead({ title: 'Yard' })
 
@@ -169,7 +171,7 @@ async function stop(s: SessionInfo) {
 const focusMenu = computed(() => {
   const s = focused.value
   if (!s) return []
-  const items: Array<{ label: string; icon: string; to?: string; color?: 'error'; onSelect?: () => void }> = [{ label: 'Open page', icon: 'i-lucide-square-terminal', to: `/sessions/${s.id}` }]
+  const items: Array<{ label: string; icon: string; to?: string; color?: 'error'; onSelect?: () => void }> = [{ label: 'Open page', icon: 'i-lucide-square-terminal', to: placeOf(s.id) }]
   if (isActive(s)) items.push({ label: 'Stop', icon: 'i-lucide-square', color: 'error', onSelect: () => void stop(s) })
   return items
 })
@@ -256,7 +258,7 @@ usePalette().registerPage(() => {
         <template #right>
           <template v-if="focusId && focused">
             <div class="hidden items-center gap-2 sm:flex" data-yard-focus-actions>
-              <UButton label="Open page" icon="i-lucide-square-terminal" color="neutral" variant="soft" :to="`/sessions/${focused.id}`" />
+              <UButton label="Open page" icon="i-lucide-square-terminal" color="neutral" variant="soft" :to="placeOf(focused.id)" />
               <UButton v-if="isActive(focused)" label="Stop" icon="i-lucide-square" color="error" variant="soft" @click="stop(focused)" />
               <ResumeButton v-else-if="focused.kind === 'server'" :session="focused" />
             </div>

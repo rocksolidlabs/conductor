@@ -81,7 +81,8 @@ function backToCrew() {
 }
 
 usePageAltCodes().register(['KeyQ'])
-defineShortcuts(computed(() => (overlaid.value || missing.value ? {} : { alt_q: { usingInput: true, handler: backToCrew } })))
+// KeyQ is the page's while the strip is drawn, so Alt+Q always does what the strip's way back does: Crews while the run is missing.
+defineShortcuts(computed(() => (overlaid.value ? {} : { alt_q: { usingInput: true, handler: () => (missing.value ? void router.push('/crews') : backToCrew()) } })))
 
 const TAB = 'inline-flex flex-none items-center gap-1.5 rounded-md px-2 py-1 text-sm'
 </script>

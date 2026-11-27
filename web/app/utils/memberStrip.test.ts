@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { Attention } from './protocol'
-import { backByHistory, backTitle, BACK_TO_CREW, carriedQuery, memberOfRun, memberPlace, memberTabs, stripRunOf, stripsRun } from './memberStrip'
+import { backByHistory, backTitle, BACK_TO_CREW, carriedQuery, memberOfRun, memberPlace, memberTabs, READ_SAID, readSaidFor, sessionPlace, stripRunOf, stripsRun } from './memberStrip'
 
 const NOW = Date.parse('2026-11-26T12:00:00Z')
 const MIN = 60_000
@@ -78,6 +78,29 @@ describe('memberPlace and memberOfRun: a member opens inside its crew (UX3 R72)'
     expect(backByHistory(`${path}?session=s-core`, path)).toBe(false)
     expect(backByHistory('/crews', path)).toBe(false)
     expect(backByHistory(null, path)).toBe(false)
+  })
+})
+
+describe('sessionPlace: every in-app link to a session goes to its place (UX3 R72)', () => {
+  const TURN = sess('s-turn', undefined, { crew: { runId: 'brakeman-1', crewId: 'brakeman', member: 'brakeman', brakeman: { request: 'r1', quiet: false } } })
+  it("is a member's place inside its crew, so a press on the member open is the address the page is at", () => {
+    expect(sessionPlace(LEAD, LEAD.id)).toBe(`/runs/${RUN}?session=s-lead`)
+    expect(sessionPlace(LEAD, LEAD.id, { tab: 'changes' })).toBe(`/runs/${RUN}?session=s-lead&tab=changes`)
+    expect(sessionPlace(LEAD, LEAD.id, { open: 'a.go', line: 12 })).toBe(`/runs/${RUN}?session=s-lead&open=a.go&line=12`)
+  })
+  it("is a session's own page for one of its own, a Brakeman turn, and one the page does not know yet", () => {
+    expect(sessionPlace(sess('s-own'), 's-own')).toBe('/sessions/s-own')
+    expect(sessionPlace(TURN, 's-turn')).toBe('/sessions/s-turn')
+    expect(sessionPlace(undefined, 's-x', { open: 'b c.go', tab: '' })).toBe('/sessions/s-x?open=b+c.go')
+  })
+})
+
+describe('readSaidFor: a move a read made is the landing page\'s to keep', () => {
+  it('marks the entry for the session the read was of, and nothing else', () => {
+    expect(readSaidFor({ [READ_SAID]: 's-lead', back: '/x' }, 's-lead')).toBe(true)
+    expect(readSaidFor({ [READ_SAID]: 's-lead' }, 's-core')).toBe(false)
+    expect(readSaidFor(null, 's-lead')).toBe(false)
+    expect(readSaidFor({ [READ_SAID]: '' }, '')).toBe(false)
   })
 })
 

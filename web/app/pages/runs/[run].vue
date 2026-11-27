@@ -19,7 +19,7 @@ import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 import { previewPath } from '~/utils/capture'
 import type { BrakemanRequest } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
-import { carriedQuery, memberOfRun } from '~/utils/memberStrip'
+import { carriedQuery, memberOfRun, readSaidFor } from '~/utils/memberStrip'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
@@ -124,21 +124,31 @@ const reviewTicket = computed(() => run.value?.ticket?.key || runTicket.value?.k
 const openId = computed(() => (typeof route.query.session === 'string' ? route.query.session : ''))
 /** Where a session asked for here goes instead: its own page, unless it is a member of this run (a Brakeman turn never is). */
 function notThisRun(s: Pick<SessionInfo, 'id' | 'crew'>): string | undefined {
-  return memberOfRun(s, runId.value) ? undefined : `/sessions/${encodeURIComponent(s.id)}${carriedQuery(route.query)}`
+  return memberOfRun(s, runId.value) ? undefined : ownPage(s.id)
 }
+/** A session's own page, what its address carried with it: where one that is not this run's, or cannot be read, is drawn. */
+function ownPage(id: string): string {
+  return `/sessions/${encodeURIComponent(id)}${carriedQuery(route.query)}`
+}
+// The live list's word on the session asked for, kept: while it sends the session away, nothing of it mounts here, its header and
+// keys included. An address a read moved the page to (readSaidFor) waits for its own read instead.
+const leaving = ref('')
 watch(
   openId,
   (sid) => {
-    const known = sid ? live.sessions.value.find((s) => s.id === sid) : undefined
-    const away = known && notThisRun(known)
-    if (away) void navigateTo(away, { replace: true })
+    const known = sid && !readSaidFor(window.history.state, sid) ? live.sessions.value.find((s) => s.id === sid) : undefined
+    leaving.value = (known && notThisRun(known)) || ''
+    if (leaving.value) void navigateTo(leaving.value, { replace: true })
   },
   { immediate: true },
 )
-/** Every way to a member's session: in this page's place when the live list holds it as this run's, else its own page (which lands here). */
+/**
+ * Every way to a member's session: in this page's place when the live list holds it as this run's, its address naming the member alone
+ * (the run's own `decision`, `task` and the rest come back through history), else its own page, which lands a member in its crew.
+ */
 function openSession(id: string) {
   const s = live.sessions.value.find((x) => x.id === id)
-  if (s && memberOfRun(s, runId.value)) void router.push({ path: route.path, query: { ...route.query, session: id } })
+  if (s && memberOfRun(s, runId.value)) void router.push({ path: route.path, query: { session: id } })
   else void router.push(`/sessions/${encodeURIComponent(id)}`)
 }
 
@@ -600,8 +610,8 @@ palette.registerPage(() => {
 
 <template>
   <!-- A member open in the run's place (UX3 R72): its whole view, keyed by its session, so one view and one connection at a time. -->
-  <SessionView v-if="openId" :key="openId" :session-id="openId" :leave="notThisRun" />
-  <UDashboardPanel v-else id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
+  <SessionView v-if="openId && !leaving" :key="openId" :session-id="openId" :leave="notThisRun" :stray-to="ownPage" />
+  <UDashboardPanel v-else-if="!openId" id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
       <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :ticket="runTicket" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
     </template>

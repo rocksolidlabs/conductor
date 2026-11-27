@@ -1,3 +1,4 @@
+import { sessionPlace } from './memberStrip'
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import type { EventMark, EventType, RouteRow } from './events'
 import { joinedPath, type JoinedEntry } from './joined'
@@ -657,7 +658,7 @@ function railSquare(row: SessionRow, marks: Readonly<Record<string, EventMark>>,
   if (mark && !(mark.type === 'done' && status.key === 'finished')) parts.push(mark.label)
   const chat = unread[`session:${s.id}`] ?? 0
   if (chat) parts.push(unreadWords(chat))
-  return { id: s.id, shape: 'square', to: `/sessions/${s.id}`, label: parts.join(' · '), state: row.state, status, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: (mark ? 1 : 0) + chat, cwd: s.cwd }
+  return { id: s.id, shape: 'square', to: sessionPlace(s, s.id), label: parts.join(' · '), state: row.state, status, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: (mark ? 1 : 0) + chat, cwd: s.cwd }
 }
 
 /** "users api · run started 08:31 · review needs you · core working · lead exited", then "3 unread in chat" when the run's chat has them. */

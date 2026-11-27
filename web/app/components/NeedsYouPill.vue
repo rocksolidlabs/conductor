@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sessionPlace } from '~/utils/memberStrip'
 import { choiceKey } from '~/utils/attention'
 import { pillGoes } from '~/utils/needsCursor'
 import { pillWords } from '~/utils/needsYou'
@@ -69,7 +70,7 @@ function open() {
   if (!s) return
   cursor.hide()
   // On the Yard the tile expands in place, where its bar takes a typed reply; elsewhere the session's page.
-  void router.push(pillTarget(route.path, s.id))
+  void router.push(pillTarget(route.path, s.id, sessionPlace(s, s.id)))
 }
 function answer(i: number) {
   const s = session.value

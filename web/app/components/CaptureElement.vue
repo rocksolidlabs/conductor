@@ -2,6 +2,8 @@
 import type { CaptureSource, StoredElement } from '~/utils/capture'
 import { draftSources, elementSummary, hitWords, sourceLink, elementStateWords } from '~/utils/capture'
 import type { ElementReport } from '~/utils/protocol'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 /**
  * An element of a capture (docs/plans/browser-evidence.md, "The editor"): its summary (tag, accessible name, a selector, its box), what
@@ -34,7 +36,7 @@ const hints = computed(() => (props.sources ? [] : draftSources(props.element.hi
 function sourceTo(s: CaptureSource): string | undefined {
   const link = sourceLink(s)
   if (!link || !props.session) return undefined
-  return `/sessions/${encodeURIComponent(props.session)}?open=${encodeURIComponent(link.path)}${link.line ? `&line=${link.line}` : ''}`
+  return placeOf(props.session, { open: link.path, line: link.line || undefined })
 }
 function sourceWords(s: CaptureSource): string {
   const where = s.outside ? 'outside the tree' : s.found ? `${s.class}, in the tree` : `${s.class}, not in the tree`

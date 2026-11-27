@@ -1,3 +1,4 @@
+import { sessionPlace } from '~/utils/memberStrip'
 import type { CrewSummary, RunInfo, SessionInfo } from '~/composables/useSessions'
 import type { TicketSummary } from '~/composables/useDispatch'
 import { parseTicketKey, pickEdit, priorityWord, statusWord, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
@@ -138,6 +139,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   const palette = usePalette()
   const router = useRouter()
   const api = useSessions()
+  // Every row that opens a session opens its place: a crew's member inside its crew (UX3 R72).
+  const placeOf = useSessionPlace()
   const toast = useToast()
   const copy = useCopy()
   const quick = useQuickReply()
@@ -208,7 +211,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       const r = s.crew ? await api.resumeRunMember(s.crew.runId, s.crew.member) : await api.resumeSession(s.id)
       if (r.notice) toast.add({ title: `${r.session.name} started anew`, description: r.notice, icon: 'i-lucide-rotate-ccw', color: 'neutral' })
       else toast.add({ title: `${r.session.name} resumed`, icon: 'i-lucide-history', color: 'success' })
-      go(`/sessions/${r.session.id}`)
+      go(sessionPlace(r.session, r.session.id))
     } catch (e) {
       toast.add({ title: 'It did not start', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
     }
@@ -350,7 +353,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       page.showView(view)
       return
     }
-    go(`/sessions/${s.id}?tab=${tab}`)
+    go(sessionPlace(s, s.id, { tab }))
   }
 
   /**
@@ -371,7 +374,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const own = rowActions(
       sessionTarget(s, live),
       {
-        open: () => go(`/sessions/${s.id}`),
+        open: () => go(sessionPlace(s, s.id)),
         openRun: () => s.crew && go(`/runs/${encodeURIComponent(s.crew.runId)}`),
         share: () => ctx.share({ sessionId: s.id, sessionName: s.name }),
         yard: () => go(`/yard?focus=${encodeURIComponent(s.id)}`),
@@ -411,10 +414,10 @@ export function usePaletteRows(ctx: PaletteContext) {
       status: sessionStatus(s, now),
       session: s,
       prompt: rowPrompt(row),
-      run: () => go(`/sessions/${s.id}`),
+      run: () => go(sessionPlace(s, s.id)),
       actions: [...own.filter((a) => a.id !== 'open'), ...more],
       field: live ? { placeholder: `A line for ${s.name}…`, button: 'Type', submit: (text: string) => say(s, text), draft: sayDrafts.get(s.id) } : undefined,
-      href: `/sessions/${s.id}`,
+      href: sessionPlace(s, s.id),
       yardId: s.id,
       runId: s.crew?.runId,
       ...extra,
@@ -439,7 +442,7 @@ export function usePaletteRows(ctx: PaletteContext) {
           for (const s of g.sessions) quick.choose(s, o, { question: s.attention?.id }).catch((e) => toast.add({ title: `${s.name}: not answered`, description: (e as Error).message, color: 'error' }))
           toast.add({ title: `Answered ${g.sessions.length}: ${o.label}`, description: names, icon: 'i-lucide-reply-all', color: 'success' })
         },
-        run: () => go(`/sessions/${g.sessions[0]!.id}`),
+        run: () => go(sessionPlace(g.sessions[0], g.sessions[0]!.id)),
       }
     })
   }
@@ -775,8 +778,8 @@ export function usePaletteRows(ctx: PaletteContext) {
       detail: `${h.sessionName} · ${fileOpWords(h.op)}${h.tool ? ` with ${h.tool}` : ''} · ${feedTime(h.at)}${h.count > 1 ? ` · ${h.count} times` : ''}`,
       words: [h.sessionName, h.tool, h.path],
       icon: 'i-lucide-file-clock',
-      run: () => (page?.sessionId === h.sessionId ? openFile(h.path) : go(`/sessions/${encodeURIComponent(h.sessionId)}?open=${encodeURIComponent(h.path)}`)),
-      href: page?.sessionId === h.sessionId ? undefined : `/sessions/${encodeURIComponent(h.sessionId)}?open=${encodeURIComponent(h.path)}`,
+      run: () => (page?.sessionId === h.sessionId ? openFile(h.path) : go(placeOf(h.sessionId, { open: h.path }))),
+      href: page?.sessionId === h.sessionId ? undefined : placeOf(h.sessionId, { open: h.path }),
     }))
   }
 
@@ -804,7 +807,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   function eventModeGroups(): PaletteGroup<PaletteItem>[] {
     const rows: PaletteItem[] = [...events.entries.value].reverse().slice(0, 200).map((e) => {
       const run = e.event === 'handoff' ? attention.sessions.value.find((s) => s.id === e.sessionId)?.crew?.runId : undefined
-      const to = e.event === 'needs_input' ? `/sessions/${e.sessionId}` : run ? `/runs/${encodeURIComponent(run)}` : e.link ? e.link : `/sessions/${e.sessionId}`
+      const to = e.event === 'needs_input' ? placeOf(e.sessionId) : run ? `/runs/${encodeURIComponent(run)}` : e.link ? e.link : placeOf(e.sessionId)
       return {
         key: `event:${e.sessionId}:${e.seq}`,
         label: `${e.sessionName}: ${e.detail || e.event}`,

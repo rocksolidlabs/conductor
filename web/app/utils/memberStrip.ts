@@ -45,6 +45,30 @@ export function memberPlace(s: Pick<SessionInfo, 'id' | 'crew'>, q: LocationQuer
 }
 
 /**
+ * Where an in-app link or press opens session `id` (UX3 R72): a member of a person's run at its place inside its crew, else its own
+ * page, `tab`, `open` and `line` carried either way. `s` is the session as the page knows it (the live list's, a reply's), or undefined
+ * when it does not know it yet: the session's own page then, which lands a member in its crew. A press on the member already open is
+ * the address the page is at, which the router takes as no move at all.
+ */
+export function sessionPlace(s: Pick<SessionInfo, 'crew'> | null | undefined, id: string, q: { tab?: string; open?: string; line?: string | number } = {}): string {
+  const query: LocationQuery = {}
+  for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') query[k] = String(v)
+  return (s && memberPlace({ id, crew: s.crew }, query)) || `/sessions/${encodeURIComponent(id)}${carriedQuery(query)}`
+}
+
+/**
+ * The history state's mark of a move a session's read made (SessionView's goAway): the page it landed on is the read's word, and that
+ * page waits for its own read of the session rather than judging by the live list, which can disagree with the read for a while (a
+ * crew formed while this app's events were away). Without it, the two would send the page back and forth.
+ */
+export const READ_SAID = 'conductorReadSaid'
+
+/** Whether the history entry the page is on was a move session `id`'s read made (READ_SAID). */
+export function readSaidFor(state: unknown, id: string): boolean {
+  return !!id && typeof state === 'object' && state !== null && (state as Record<string, unknown>)[READ_SAID] === id
+}
+
+/**
  * How `Back to the crew` goes back: the browser's Back when the page before is the run's own page with no member open (the person came
  * from it, so one Back later does not bring the member again), else a replace to it (a member opened from the sidebar, a link).
  */

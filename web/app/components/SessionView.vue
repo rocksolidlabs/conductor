@@ -22,7 +22,8 @@ import type { SessionConnection } from '~/composables/useSessionConnection'
 import { ENDS_TERMINAL_WORK, firstReplyOf, refusalStands, switchState, type Refusal, type RefusalBasis, type SwitchFacts } from '~/utils/switchState'
 import { joinTop } from '~/utils/changes'
 import { ApiError } from '~/composables/useApi'
-import { stripRunOf } from '~/utils/memberStrip'
+import { READ_SAID, stripRunOf } from '~/utils/memberStrip'
+import type { TabsState } from '~/utils/editorTabs'
 
 /**
  * A session's whole view (UX3 R72): its header, its terminal or chat, its editor and its inspector, as the session's page draws it and as
@@ -30,7 +31,21 @@ import { stripRunOf } from '~/utils/memberStrip'
  * read, before anything of it is drawn and before its terminal connects, names an address to go to instead (by replace): a crew's
  * member read on its old address lands inside its crew; a session that is not the run's, asked for on a run's page, goes to its own.
  */
-const props = defineProps<{ sessionId: string; leave?: (s: SessionInfo) => string | undefined }>()
+const props = defineProps<{ sessionId: string; leave?: (s: SessionInfo) => string | undefined; strayTo?: (id: string) => string }>()
+// `strayTo`: where a session whose read fails (gone, or refused) is drawn instead of here (a crew's page sends it to its own page).
+/** The view has gone (its page left, another member opened): nothing that answers after it acts any more. */
+let left = false
+onBeforeUnmount(() => (left = true))
+const router = useRouter()
+/**
+ * Goes to `to` in this address's place, marked as the session's read's own word (READ_SAID): the page it lands on waits for its own
+ * read rather than the live list, so a list and a read that disagree move the page once, not back and forth.
+ */
+function goAway(to: string) {
+  if (left) return
+  const r = router.resolve(to)
+  void router.replace({ path: r.path, query: r.query, state: { [READ_SAID]: id.value } })
+}
 const route = useRoute()
 // The question bar's Answer on a durable decision's question opens its card (Program item DR1).
 const decisionModal = useDecisionModal()
@@ -59,6 +74,16 @@ useShortcutsModal().registerPage(SESSION_SHORTCUTS)
 // The inspector's view (design 4h): the rail's item shown; `inspector` says whether the panel is open beside the rail. With no view
 // chosen the panel opens on Explorer (P11): People would show the person to themselves.
 const tab = ref<InspectorView>('explorer')
+// What a person had open on this session stays for the app's life (UX3 R72): a switch to another member and back, or Back to the
+// crew and in again, finds its editor's tabs, the one in front and the inspector's view as they were; an unsaved file's edits live
+// in its editor's model, which outlasts the view, so it comes back unsaved.
+const kept = useState<Record<string, { tabs: TabsState; view: InspectorView }>>('sessionViewKept', () => ({}))
+const keptHere = kept.value[props.sessionId]
+if (keptHere) {
+  tabs.value = keptHere.tabs
+  tab.value = keptHere.view
+}
+watch([tabs, tab], ([t, v]) => (kept.value = { ...kept.value, [props.sessionId]: { tabs: t, view: v } }), { deep: true })
 const attention = ref<Attention>({ state: '' })
 
 // The chat beside the terminal (design 2a, 2b): one thread per session, fed by the terminal's connection.
@@ -484,15 +509,12 @@ async function load() {
     return
   }
   try {
-    const asked = id.value
-    const res = await api.get(asked)
-    if (asked !== id.value) return
+    const res = await api.get(id.value)
+    // A view that has gone does nothing more with what it asked for (its page is somewhere else now).
+    if (left) return
     // Where the session is not drawn here: gone before anything of it is drawn, its terminal never connected.
     const away = props.leave?.(res.session)
-    if (away) {
-      void navigateTo(away, { replace: true })
-      return
-    }
+    if (away) return goAway(away)
     if (!agents.value.length) void api.catalog().then((a) => (agents.value = a), () => undefined)
     session.value = res.session
     attention.value = liveAttention(res.session.attention ?? { state: '' })
@@ -501,11 +523,15 @@ async function load() {
     ready.value = true
     gone.value = null
   } catch (e) {
+    if (left) return
+    // A session that cannot be read here is drawn on its own page (a crew's page sends it there), never under another page's head.
+    if (props.strayTo) return goAway(props.strayTo(id.value))
     if (sessionGone(e)) {
       const read = await history.record(id.value).then(
         (r) => ({ ok: r.record }),
         (failed: unknown) => ({ failed }),
       )
+      if (left) return
       gone.value = gonePage(e, read)
       if (gone.value) {
         error.value = ''
@@ -698,6 +724,19 @@ defineShortcuts({
 const palette = usePalette()
 const inspectorRef = useTemplateRef<{ changes: ChangeRow[]; commits: CommitRow[]; status: FileHeader | null }>('inspectorRef')
 const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
+/**
+ * A Neovim holding changes not written lives with this view's connection, which a move to another session or page ends: the move waits,
+ * and the editor's own close question asks to save or discard first (UX3 R72). Anything else open stays remembered (kept, above).
+ */
+function mayGo(): boolean {
+  const col = columnRef.value
+  if (!col?.holdsUnsaved()) return true
+  const first = tabs.value.active || tabs.value.tabs[0]?.id
+  if (first) col.closeScope(first, 'all')
+  return false
+}
+onBeforeRouteLeave(() => mayGo())
+onBeforeRouteUpdate((to, from) => (to.params.id === from.params.id && to.query.session === from.query.session) || mayGo())
 /** A phone folds the terminal under an open file by itself: the palette offers no collapse there, as the strip offers no button (#432). */
 const phone = useIsPhone()
 /**
