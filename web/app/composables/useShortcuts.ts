@@ -144,6 +144,15 @@ export const SESSION_SHORTCUTS: ShortcutGroup = {
   ],
 }
 
+/** A run's page keys (UX3 R22): on a tile's frame, the tile's own; registered by the run page. */
+export const RUN_SHORTCUTS: ShortcutGroup = {
+  title: 'A run',
+  rows: [
+    { keys: ['1'], label: "1–9 answer the question of the tile whose frame has the focus; not in its terminal" },
+    { keys: ['enter'], label: "On a tile's frame: open the member at full size (or Space)" },
+  ],
+}
+
 export const WALL_SHORTCUTS: ShortcutGroup = {
   title: 'Yard',
   rows: [

@@ -6,6 +6,7 @@ import type { TerminalTransport } from '~/utils/transport/types'
 import { memberLook } from '~/utils/crewWords'
 import { tileAskOf } from '~/utils/tileAsk'
 import { memberOffer } from '~/utils/runs'
+import { choiceKey } from '~/utils/attention'
 import { wallTracks, type RunLayout, type RunWallTile } from '~/utils/wall'
 
 /**
@@ -70,6 +71,24 @@ function looked(t: RunWallTile) {
  */
 function tileAsk(t: RunWallTile) {
   return tileAskOf(t.name, t.session, props.answerable)
+}
+
+/**
+ * A number key on a tile's frame (not its terminal, not a field): the choice of that number answers the tile's question, as on the
+ * sidebar's focused row; a choice that changes the permission mode has no number (choiceKey). One answer at a time a tile.
+ */
+const answering = new Set<string>()
+async function digit(t: RunWallTile, n: number) {
+  const a = tileAsk(t)
+  if (a?.kind !== 'choices' || answering.has(t.name)) return
+  const i = (a.line.options ?? []).findIndex((o, k) => choiceKey(o, k) === n)
+  if (i < 0) return
+  answering.add(t.name)
+  try {
+    await props.answer(a.line, i)
+  } finally {
+    answering.delete(t.name)
+  }
 }
 
 /** Follows an element's content box. */
@@ -139,6 +158,7 @@ function small(i: number) {
           resume-word
           :data-member="t.name"
           @select="emit('open', t.session.id)"
+          @digit="digit(t, $event)"
         >
           <template v-if="tileAsk(t)" #ask>
             <RunTileAsk :ask="tileAsk(t)!" :answer="props.answer" @open="emit('open', t.session!.id)" @decision="emit('decision', $event)" />
