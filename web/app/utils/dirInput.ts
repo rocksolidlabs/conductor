@@ -35,6 +35,15 @@ export function caretToEnd(input: Pick<HTMLInputElement, 'focus' | 'setSelection
   requestAnimationFrame(again)
 }
 
+/**
+ * What is typed with a leading `~/` read as the server's home (whoami's `home`), as a shell reads it: `~/code` is `<home>/code`. The
+ * text as it is when it has no such start or the home is not known; a `~` elsewhere, or `~user`, is left alone.
+ */
+export function homeExpanded(text: string, home: string): string {
+  if (!home || !text.startsWith('~/')) return text
+  return `${home.replace(/\/+$/, '')}${text.slice(1)}`
+}
+
 /** The prefix sent for what is typed: the text trimmed; empty means the server's default directory. */
 export function dirQuery(text: string): string {
   return text.trim()

@@ -433,11 +433,14 @@ export function conductorStep(e: Pick<TranscriptEntry, 'tool' | 'summary'>): { n
   }
 }
 
-/** A file change's one line (design 11): "`main.go` changed." (the path's last part), or its whole path's when it has no folder. */
-export function fileLine(e: Pick<TranscriptEntry, 'path' | 'op' | 'outside'>): { name: string; words: string } {
+/**
+ * A file change's one line (design 11; UX3 R9): "`main.go` changed · +38 −2" (the path's last part, what was done, and the lines
+ * added and removed as the entry counts them: none of them where it gives neither).
+ */
+export function fileLine(e: Pick<TranscriptEntry, 'path' | 'op' | 'outside' | 'added' | 'removed'>): { name: string; words: string; added: string; removed: string } {
   const name = e.outside || !e.path ? 'A file outside the folder' : e.path.split('/').pop() || e.path
-  const words = e.op === 'create' ? 'created.' : e.op === 'delete' ? 'deleted.' : 'changed.'
-  return { name, words }
+  const words = e.op === 'create' ? 'created' : e.op === 'delete' ? 'deleted' : 'changed'
+  return { name, words, added: e.added ? `+${e.added}` : '', removed: e.removed ? `−${e.removed}` : '' }
 }
 
 /** The lines of a change's diff the chat draws at most (design 11); the rest is in the editor's diff tab. */

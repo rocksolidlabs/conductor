@@ -309,6 +309,7 @@ func largestEntries() []TranscriptEntry {
 	text.Text, text.Final = q(MaxEntryText), true
 	prompt := base(EntryPrompt)
 	prompt.By, prompt.ByName, prompt.Text, prompt.State, prompt.Answers = "conductor", ls, q(MaxEntryText), PromptUnconfirmed, q(proto.MaxQuestionID)
+	prompt.Expanded = true
 	tool := base(EntryTool)
 	tool.Tool, tool.Summary, tool.InputBytes, tool.InputSha256 = q(MaxEventTool), q(MaxEntrySummary), math.MaxInt, strings.Repeat("f", 64)
 	tool.Status, tool.Exit, tool.DurationMs, tool.Measured, tool.OutputBytes = ToolInterrupted, &exit, &ms, "conductor", math.MaxInt

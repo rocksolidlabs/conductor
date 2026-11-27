@@ -24,7 +24,7 @@ func TestALaneRefusalIsAnswered409Lane(t *testing.T) {
 	}{
 		{fmt.Errorf("%w: cand-b is in another lane of this comparison: a message stays in its lane", crew.ErrLane), http.StatusConflict, "lane"},
 		{crew.ErrNotListed, http.StatusConflict, "task_state"},
-		{&crew.NotSelectedError{Words: "approach-a was not selected in dr-9: launch a new comparison to try it again"}, http.StatusConflict, "not_selected"},
+		{&crew.NotSelectedError{Words: "approach-a was not selected in dr-9: run a new trial to try it again"}, http.StatusConflict, "not_selected"},
 	} {
 		w := httptest.NewRecorder()
 		(&Server{}).taskError(w, "message", "s-1", tc.err)
@@ -79,7 +79,7 @@ func TestACompareCrewSavesAndIsNotLaunchedFromTheCrewsPage(t *testing.T) {
 		t.Fatalf("the crew read back: %v", read["compare"])
 	}
 	resp, out := e.do("POST", "/api/crews/"+id+"/launch", adminToken, nil)
-	if resp.StatusCode != http.StatusBadRequest || errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "a comparison is launched from a ticket's approved plan revision") {
+	if resp.StatusCode != http.StatusBadRequest || errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "an agent trial starts from a ticket's approved plan revision") {
 		t.Fatalf("the launch: %d %v", resp.StatusCode, out)
 	}
 	// The crews page's launch names the copy it read: a stale one is
@@ -90,7 +90,7 @@ func TestACompareCrewSavesAndIsNotLaunchedFromTheCrewsPage(t *testing.T) {
 	}
 	_, got := e.do("GET", "/api/crews/"+id, adminToken, nil)
 	resp, out = e.do("POST", "/api/crews/"+id+"/launch", adminToken, map[string]any{"revision": got["revision"]})
-	if resp.StatusCode != http.StatusBadRequest || errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "a comparison is launched from a ticket's approved plan revision") {
+	if resp.StatusCode != http.StatusBadRequest || errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "an agent trial starts from a ticket's approved plan revision") {
 		t.Fatalf("the launch of the copy read: %d %v", resp.StatusCode, out)
 	}
 	if resp, out := e.do("GET", "/api/runs", adminToken, nil); resp.StatusCode != http.StatusOK || len(out["runs"].([]any)) != 0 {

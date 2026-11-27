@@ -3088,6 +3088,13 @@ type AttachOptions struct {
 	// transcriptAfter): the highest mark of the transcript it holds, 0 for
 	// none. Ignored by a session that runs in its terminal.
 	TranscriptAfter uint64
+	// ViewerSocket says the client came by the server's own viewer socket
+	// (internal/api/ws_viewer.go, which alone gives it): with the
+	// operator's own connection, on a session that is no crew member's, it
+	// is the operator's own chat connection, whose typed line a chat sends
+	// for the agent to expand (operatorChatLocked, I19). A peer over the
+	// host link or a switchyard never gives it.
+	ViewerSocket bool
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -3215,6 +3222,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	sub.quiet = o.ChatOnly
 	sub.owner = o.Owner && o.LinkID == ""
+	sub.viewerSocket = o.ViewerSocket
 	sub.authorize = o.Authorize
 	sub.fresh = o.Fresh
 	sub.hold = o.Hold
@@ -3258,6 +3266,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		// Only the operator's own connection is drawn a permission
 		// request's buttons (permission_answer.go).
 		welcome.PermissionAnswer = operatorAnswers(sub)
+		// Only the operator's own chat connection's line goes for the
+		// agent to expand (I19), on a driver that has a mark.
+		welcome.Expands = chat.verbatim && s.operatorChatLocked(sub)
 	}
 	// A move noted during a turn (move.go): another window or a reload
 	// shows it too.
@@ -3295,6 +3306,11 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	// reaches it after the replay, never before it.
 	if chat != nil && !sub.quiet {
 		for _, f := range s.transcriptReplayLocked(o.TranscriptAfter) {
+			sub.send(f)
+		}
+		// The agent's own commands after the replay, to the operator's own
+		// chat connection alone (commands.go).
+		if f := s.commandsFrameLocked(chat); f != nil && s.operatorChatLocked(sub) {
 			sub.send(f)
 		}
 	}
