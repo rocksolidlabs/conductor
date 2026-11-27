@@ -21,6 +21,8 @@ const props = defineProps<{
   timeoutDefault?: number
   /** No timeout field (a service runs as long as its tree), but on a row that has one, so that it can be cleared. */
   noTimeout?: boolean
+  /** The add button's words; `Add <what>` when not given. */
+  addLabel?: string
 }>()
 
 const max = computed(() => props.max ?? TASK_LIMITS.checks)
@@ -83,6 +85,6 @@ function setTimeout(i: number, text: string) {
       </div>
       <span v-if="problem(c, i)" class="text-xs leading-snug text-error" data-check-error>{{ problem(c, i) }}</span>
     </div>
-    <UButton :label="`Add ${what}`" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="self-start px-0" :disabled="checks.length >= max" data-add-check @click="add" />
+    <UButton :label="addLabel ?? `Add ${what}`" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="self-start px-0" :disabled="checks.length >= max" data-add-check @click="add" />
   </div>
 </template>
