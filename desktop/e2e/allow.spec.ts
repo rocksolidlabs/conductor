@@ -132,7 +132,22 @@ test('a folder outside is allowed from the app with no restart, kept in its sett
       )
       .toBe(true)
     const nextOrigin = next.origin!
-    expect((await api('GET', nextOrigin, `/api/roots/check?path=${encodeURIComponent(outside)}`)).body?.state).toBe('allowed')
+    // A server's token is its own: the first one is refused by the next server, and the page is handed the new one.
+    let nextToken = ''
+    await expect
+      .poll(
+        async () => {
+          nextToken = (await page.evaluate(`(${desk})().token()`).catch(() => '')) as string
+          return nextToken !== '' && nextToken !== token
+        },
+        { timeout: 60_000 },
+      )
+      .toBe(true)
+    const nextApi = (path: string, tok: string) => fetch(nextOrigin + path, { headers: { Authorization: `Bearer ${tok}` } }).then((r) => r.status)
+    expect(await nextApi('/api/whoami', token)).toBe(401)
+    expect(await nextApi('/api/whoami', nextToken)).toBe(200)
+    const check = await fetch(nextOrigin + `/api/roots/check?path=${encodeURIComponent(outside)}`, { headers: { Authorization: `Bearer ${nextToken}` } })
+    expect(((await check.json()) as { state?: string }).state).toBe('allowed')
     await app.close()
     app = undefined
   } finally {

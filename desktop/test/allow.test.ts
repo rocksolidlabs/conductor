@@ -297,7 +297,7 @@ describe('where the press is offered', () => {
     expect(keyFor('linux', mint)).toBe(KEY)
     expect(keyFor('darwin', mint)).toBe(KEY)
     const main = readFileSync(join(__dirname, '..', 'src', 'main.ts'), 'utf8')
-    expect(main).toContain("const desktopKey = keyFor(process.platform, () => randomBytes(32).toString('hex'))")
+    expect(main).toContain('desktopKey = keyFor(process.platform, mint)')
   })
 })
 
@@ -309,7 +309,7 @@ describe('the key', () => {
     // main.ts mints it beside the token and hands it over in the first line alone; no line of the app's own sets it on
     // process.env or logs it.
     const main = readFileSync(join(__dirname, '..', 'src', 'main.ts'), 'utf8')
-    expect(main).toContain('firstLine: () => secretsLine(token, desktopKey)')
+    expect(main).toMatch(/firstLine: \(\) => \{\s+token = mint\(\)\s+desktopKey = keyFor\(process\.platform, mint\)\s+return secretsLine\(token, desktopKey\)/)
     expect(main).not.toMatch(/process\.env\.CONDUCTOR_DESKTOP_KEY|process\.env\[['"]CONDUCTOR_DESKTOP_KEY/)
     for (const line of main.split('\n')) if (/\blog\(/.test(line)) expect(line, line).not.toContain('desktopKey')
   })

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, shell, type Tray } from 'electron'
+import { app, BrowserWindow, dialog, Menu, session, shell, type Tray } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -14,7 +14,7 @@ import { ServerSupervisor, StartStopped, trustedOrigin } from './server'
 import { defaultSettings, keepIn, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
-import { createWindow, fenceLocalPage, followOrigin, type FenceContents, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
+import { createWindow, fenceLocalPage, mainFrameAllowed, ServerWindows, type FenceContents, type ShownWindow, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
 import { moveZoom, zoomKey, ZoomStart, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
@@ -108,10 +108,12 @@ async function run() {
   if (failedUpdate) log('main', `updates: ${failedUpdate} was downloaded, and this start is ${app.getVersion()}: it did not install`)
   let updater: StartedUpdater | null = null
   let trayUpdate: ((version: string) => void) | null = null
-  const token = randomBytes(32).toString('hex')
-  // The second secret of the run: with it the app alone may allow a folder while the server runs (allow.ts). It is handed to the
-  // server on its stdin alone, with the token (secretsLine), never to an environment, a page, a log line or a file.
-  const desktopKey = keyFor(process.platform, () => randomBytes(32).toString('hex'))
+  // The running server's token and key: made afresh for every start of the server, as the line that hands them over is written
+  // (firstLine), so that each server's are its own. The key is what lets the app alone allow a folder while the server runs
+  // (allow.ts). Both go to the server on its stdin alone, never to an environment, a page, a log line or a file.
+  const mint = () => randomBytes(32).toString('hex')
+  let token = ''
+  let desktopKey = ''
   process.env.CONDUCTOR_DESKTOP_VERSION = app.getVersion()
 
   const source = sourceBinary()
@@ -182,7 +184,11 @@ async function run() {
       return wsl ? wsl.linuxEnv(env, settings.wslWindowsHome, process.env.USERPROFILE ?? '', ice.publicIp ? { port: ice.port, publicIp: ice.publicIp } : undefined) : env
     },
     // The token and the key, on the server's stdin: in no environment the system shows of it, and in no argument.
-    firstLine: () => secretsLine(token, desktopKey),
+    firstLine: () => {
+      token = mint()
+      desktopKey = keyFor(process.platform, mint)
+      return secretsLine(token, desktopKey)
+    },
     log,
   })
   /** After each start of the server inside WSL: the distribution's address of the moment, and the forwarder on it. */
@@ -414,6 +420,12 @@ async function run() {
     })
     wc.on('did-finish-load', () => applyZoom(wc))
   })
+  // Every window that shows a page of the server, kept on the server the app trusts (ServerWindows); and no window's page loads
+  // from an address the app does not trust now, a reload or a history step included.
+  const shown = new ServerWindows(() => BrowserWindow.getAllWindows() as unknown as ShownWindow[])
+  session.defaultSession.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, cb) => {
+    cb({ cancel: !mainFrameAllowed(details.resourceType, details.url, origin()) })
+  })
   // Built again after each zoom move, for the level it shows.
   function setMenu(zoomLevel: number) {
     Menu.setApplicationMenu(
@@ -428,6 +440,12 @@ async function run() {
         },
         restart: () => void supervisor.restart().catch(() => {}),
         showLog,
+        reload: () => {
+          const w = BrowserWindow.getFocusedWindow()
+          if (!w || w.isDestroyed()) return
+          const target = shown.reloadTarget(w as unknown as ShownWindow)
+          if (target) void w.webContents.loadURL(target).catch(() => {})
+        },
         zoom,
         zoomLevel,
         dev,
@@ -436,14 +454,10 @@ async function run() {
   }
   setMenu(settings.zoomLevel)
   supervisor.on('state', (st) => {
-    if (!main || main.isDestroyed()) return
-    main.webContents.send('conductor:serverState', st)
-    // A restarted server listens on a fresh port: the window follows it, on the same page.
-    const next = st.state === 'running' ? followOrigin(main.webContents.getURL(), origin()) : null
-    if (next) {
-      log('main', `server origin changed; the window follows to ${new URL(next).origin}`)
-      void main.loadURL(next)
-    }
+    if (main && !main.isDestroyed()) main.webContents.send('conductor:serverState', st)
+    // Every window on a page of the server follows the server the app trusts: it shows nothing while none runs, and goes back to
+    // its page on the new origin once one does (a restarted server listens on a fresh port).
+    shown.moved(origin())
   })
   supervisor.on('gaveUp', (st) => {
     void dialog.showMessageBox({ type: 'error', title: 'Conductor', message: 'The server keeps failing', detail: `${st.lastError ?? ''}\nSee the server log (Server › Server log), then Restart server.` })

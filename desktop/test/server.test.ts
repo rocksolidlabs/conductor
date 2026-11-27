@@ -126,6 +126,91 @@ process.stdin.on('data', onData)
     // A server that runs no more is trusted no more.
     expect(trustedOrigin(s.status)).toBe('')
   })
+  it('trusts the server no more from the moment its stop begins, before the server has exited', async () => {
+    // A server that, told to stop, exits only once the test lets it.
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const gate = join(dir, 'gate')
+    const file = join(dir, 'server.js')
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+const fs = require('fs')
+const srv = http.createServer((req, res) => res.end('{}'))
+srv.listen(0, '127.0.0.1', () => {
+  process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + srv.address().port, publicUrl: 'http://localhost:' + srv.address().port, pid: process.pid, version: 'fake' }) + '\\n')
+})
+process.stdin.on('end', () => {
+  srv.close()
+  const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(gate)})) { clearInterval(t); process.exit(0) } }, 10)
+})
+process.stdin.resume()
+`,
+    )
+    const s = new ServerSupervisor({ launcher: new ScriptLauncher(file), args: [], env: () => ({ PATH: process.env.PATH ?? '' }), stopGraceMs: 60_000, log: quiet })
+    const h = await s.start()
+    expect(trustedOrigin(s.status)).toBe('http://' + h.listen)
+    const states: string[] = []
+    s.on('state', (st) => states.push(st.state))
+    const stopping = s.stop()
+    // The stop is under way and the server has not exited: trusted no more all the same.
+    expect(trustedOrigin(s.status)).toBe('')
+    expect(states[0]).toBe('stopped')
+    writeFileSync(gate, '')
+    await stopping
+    expect(trustedOrigin(s.status)).toBe('')
+  })
+  it('writes a fresh first line at every start, and a server answers only its own token', async () => {
+    // A server that takes its token from its first line and answers 401 to any other.
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const file = join(dir, 'server.js')
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+let buf = ''
+const onData = (c) => {
+  buf += c
+  const i = buf.indexOf('\\n')
+  if (i < 0) return
+  process.stdin.off('data', onData)
+  const token = JSON.parse(buf.slice(0, i)).workbenchToken
+  const srv = http.createServer((req, res) => {
+    res.statusCode = req.headers.authorization === 'Bearer ' + token ? 200 : 401
+    res.end('{}')
+  })
+  srv.listen(0, '127.0.0.1', () => {
+    process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + srv.address().port, publicUrl: 'http://localhost:' + srv.address().port, pid: process.pid, version: 'fake' }) + '\\n')
+  })
+  process.stdin.on('end', () => process.exit(0))
+}
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', onData)
+`,
+    )
+    let n = 0
+    const tokens: string[] = []
+    const s = new ServerSupervisor({
+      launcher: new ScriptLauncher(file),
+      args: [],
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+      firstLine: () => {
+        const t = `token-${++n}`
+        tokens.push(t)
+        return JSON.stringify({ workbenchToken: t }) + '\n'
+      },
+      log: quiet,
+    })
+    await s.start()
+    const first = await s.restart()
+    void first
+    expect(tokens).toEqual(['token-1', 'token-2'])
+    const origin = trustedOrigin(s.status)
+    const ask = (t: string) => fetch(origin + '/api/health', { headers: { authorization: 'Bearer ' + t } }).then((r) => r.status)
+    expect(await ask('token-2')).toBe(200)
+    expect(await ask('token-1')).toBe(401)
+    await s.stop()
+  })
   it('takes for its origin a loopback address written as one, and nothing else', () => {
     expect(loopbackOrigin('127.0.0.1:4312')).toBe('http://127.0.0.1:4312')
     expect(loopbackOrigin('127.1.2.3:1')).toBe('http://127.1.2.3:1')

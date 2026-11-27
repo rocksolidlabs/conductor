@@ -256,6 +256,78 @@ export function fenceLocalPage(wc: FenceContents, openExternal: (url: string) =>
   })
 }
 
+/** A window as the app's following of its server sees it. */
+export interface ShownWindow {
+  isDestroyed(): boolean
+  webContents: { id: number; getURL(): string; loadURL(url: string): Promise<void> }
+}
+
+/**
+ * ServerWindows keeps every window that shows a page of the app's server on the server the app trusts: when the trusted origin goes
+ * (the server stops, crashes or gives up), every window on a page of it shows nothing (about:blank) and keeps where it was; when a
+ * server runs again, each goes back to its page on the new origin, the main window and every other alike. A window on another
+ * page (the splash, the log, an outside site) is left as it is.
+ */
+export class ServerWindows {
+  private on = ''
+  private held = new Map<number, string>()
+
+  constructor(private all: () => ShownWindow[]) {}
+
+  /** moved is told the origin the app trusts now ('' while none). */
+  moved(next: string): void {
+    if (next === this.on) return
+    const prev = this.on
+    this.on = next
+    for (const w of this.all()) {
+      if (w.isDestroyed()) continue
+      const wc = w.webContents
+      const url = wc.getURL()
+      if (!next) {
+        if (prev && sameOrigin(url, prev)) {
+          const u = new URL(url)
+          this.held.set(wc.id, u.pathname + u.search + u.hash)
+          void wc.loadURL('about:blank').catch(() => {})
+        }
+        continue
+      }
+      const path = this.held.get(wc.id)
+      if (path !== undefined) {
+        this.held.delete(wc.id)
+        void wc.loadURL(next + path).catch(() => {})
+        continue
+      }
+      const follow = followOrigin(url, next)
+      if (follow) void wc.loadURL(follow).catch(() => {})
+    }
+  }
+
+  /**
+   * reloadTarget is what a reload of the window shows: its page again while it is on the trusted origin (or one of the app's own
+   * file: pages), the page it was on once a server runs again, and nothing at all otherwise.
+   */
+  reloadTarget(w: ShownWindow): string | null {
+    const url = w.webContents.getURL()
+    if (url.startsWith('file:')) return url
+    if (this.on && sameOrigin(url, this.on)) return url
+    const path = this.held.get(w.webContents.id)
+    if (path !== undefined) return this.on ? this.on + path : null
+    const follow = this.on ? followOrigin(url, this.on) : null
+    return follow
+  }
+}
+
+/**
+ * mainFrameAllowed says whether a window's page may be loaded from url: a page of the server the app trusts, or anything that is
+ * not http(s) (the app's own file: pages, about:blank). A reload, a history step or a load at an address the app does not trust
+ * now is cancelled, in every window.
+ */
+export function mainFrameAllowed(resourceType: string, url: string, origin: string): boolean {
+  if (resourceType !== 'mainFrame') return true
+  if (!/^https?:/i.test(url)) return true
+  return !!origin && sameOrigin(url, origin)
+}
+
 /** restrictPermissions denies every permission request but the clipboard's. */
 export function restrictPermissions(): void {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {

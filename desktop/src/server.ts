@@ -273,10 +273,9 @@ export class ServerSupervisor extends EventEmitter {
     this.restartTimer = null
     this.stopHealth()
     const child = this.child
-    if (!child) {
-      this.setState('stopped', { pid: undefined })
-      return Promise.resolve()
-    }
+    // Trusted no more from this moment, before the server is told to stop: its port is freed before it has exited.
+    this.setState('stopped', child ? {} : { pid: undefined })
+    if (!child) return Promise.resolve()
     this.stopping = new Promise<void>((resolve) => {
       const grace = this.o.stopGraceMs ?? 12_000
       const timer = setTimeout(() => {

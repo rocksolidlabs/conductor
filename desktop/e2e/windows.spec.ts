@@ -80,6 +80,12 @@ test('a window the workbench opens, and one that window opens, keep the same fen
     const grandchild = await opens(child, origin + '/')
     await expect.poll(() => grandchild.url(), { timeout: 30_000 }).toMatch(workbench)
     await staysOn(grandchild, 'https://example.com/grandchild-link')
+    // Restart server: every window follows the next server to its new address, the children as the main one.
+    void page.evaluate(() => (window as unknown as { conductorDesktop: { restartServer(): Promise<void> } }).conductorDesktop.restartServer()).catch(() => {})
+    for (const w of [page, child, grandchild]) {
+      await expect.poll(() => { try { return new URL(w.url()).origin } catch { return '' } }, { timeout: 60_000 }).not.toBe(origin)
+      await expect.poll(() => w.url(), { timeout: 60_000 }).toMatch(workbench)
+    }
     await app.close()
     app = undefined
   } finally {
