@@ -25,7 +25,7 @@ import { runInfo, serveRun, type StubRun } from './run-fixtures'
 const DESK = { width: 1440, height: 900 }
 const PHONE = { width: 390, height: 844, touch: true }
 const TICKET = 'CND-12'
-const FINAL = 'Final: the candidates not selected cannot be continued; a new comparison tries them again.'
+const FINAL = 'Final: the candidates not selected cannot be continued; a new trial tries them again.'
 
 /** A run launched from TICKET, as the live store lists it: its options link to the ticket's comparison by its key. */
 function ticketRun(): StubRun {
@@ -76,7 +76,7 @@ test.describe("a selection on DR1's card", () => {
     await expect(card.locator('[data-decision-authorizes-line]')).toHaveText(`A selection authorizes: ${SELECTION_AUTHORIZES}`)
     await expect(card).toContainText('Asked by the comparison in')
     await expect(card.locator('[data-decision-from-compare]')).toBeVisible()
-    await expect(card.locator('[data-decision-subject]')).toHaveText('the comparison at base ccccccc, digest dddddddddddd')
+    await expect(card.locator('[data-decision-subject]')).toHaveText('the trial at base ccccccc, digest dddddddddddd')
 
     // Nothing is preselected or marked: three choices, none recommended, no confirm step until one is picked.
     await expect(respond.locator('[data-decision-choice]')).toHaveCount(3)
@@ -110,7 +110,7 @@ test.describe("a selection on DR1's card", () => {
     // None of these picked instead says so in its own words.
     await respond.locator('[data-decision-choice="2"]').click()
     await expect(confirm).toHaveText('Answer None of these (final)')
-    await expect(step.locator('[data-decision-final]')).toContainText('the comparison ends with no candidate selected')
+    await expect(step.locator('[data-decision-final]')).toContainText('the trial ends with no candidate selected')
 
     // With a rationale it goes, carrying the choice and the rationale; the receipt says it was recorded.
     await respond.locator('[data-decision-choice="1"]').click()
@@ -259,7 +259,7 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     await panel.locator('[data-compare-ask-brakeman]').click()
     await expect(panel.locator('[data-compare-ask-words]')).toHaveText('Asked: br-7 is queued.')
     // The page reads the comparison again by itself: the request asked is the panel's, and no second one can be asked meanwhile.
-    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText("Brakeman's draft is queued (br-7)")
+    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText("Brakeman's summary is queued (br-7)")
     await expect(panel.locator('[data-compare-ask-brakeman]')).toBeDisabled()
     expect(asked).toHaveLength(1)
     expect(asked[0]).toMatchObject({ kind: 'compare', subjects: [`run:${run.id}`] })
@@ -443,7 +443,7 @@ test('Brakeman’s stub draft arrives in the supporting panel while the run is i
     const page = await dayPage(browser, { server: s.started, path: '/agents' })
     await page.goto(`${c.path}?view=compare&run=${c.run}`)
     const panel = page.locator('[data-compare-supporting]')
-    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText(new RegExp(`^(Brakeman's draft is queued|Brakeman is drafting) \\(${request}\\)$`))
+    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText(new RegExp(`^(Brakeman's summary is queued|Brakeman is writing its summary) \\(${request}\\)$`))
     await expect(panel.locator('[data-compare-ask-brakeman]')).toBeDisabled()
     const revision = (await s.api.run(c.run)).managed?.revision
 
@@ -462,7 +462,7 @@ test('Brakeman’s stub draft arrives in the supporting panel while the run is i
     const table = panel.locator('[data-compare-brief] [data-brief-comparison]')
     await expect(table).toBeVisible({ timeout: SETTLE_MS })
     await expect(table.locator('tbody th')).toHaveText(['Behaviour', 'Complexity', 'Dependency changes', 'Checks', 'Unresolved tradeoffs'])
-    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText(`Brakeman's draft (${request})`)
+    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText(`Brakeman's summary (${request})`)
     expect((await s.api.run(c.run)).managed?.revision).toBe(revision)
     // Nothing of it reached the measured part.
     await expect(page.locator('[data-compare-measured] [data-brief-comparison]')).toHaveCount(0)
@@ -551,7 +551,7 @@ test.describe('the selection on the real server', () => {
       const rev = (await s.api.run(c.run)).managed?.revision ?? 0
       const r = await s.api.call<{ error: { code: string; message: string } }>('POST', `/api/runs/${c.run}/tasks/approach-a/retry`, { commandId: 'csel-retry-a', expectedRevision: rev })
       expect(r.status).toBe(409)
-      expect(r.body.error).toEqual({ code: 'not_selected', message: `approach-a was not selected in ${sel.decision}: launch a new comparison to try it again` })
+      expect(r.body.error).toEqual({ code: 'not_selected', message: `approach-a was not selected in ${sel.decision}: run a new trial to try it again` })
       expect((await comparison(s.api, c.run)).selection?.state).toBe('applied')
       await page.context().close()
     } finally {

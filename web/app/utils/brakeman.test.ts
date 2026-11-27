@@ -56,7 +56,7 @@ describe('the kinds and the states, in words', () => {
     expect(kindWords('handoff')).toBe('Prepare a handoff')
     expect(kindWords('locate')).toBe('Find…')
     expect(kindWords('overlaps')).toBe('Overlapping changes')
-    expect(kindWords('compare')).toBe('Compare approaches')
+    expect(kindWords('compare')).toBe('Sum up a trial')
   })
 
   it("says each state as the page shows it", () => {

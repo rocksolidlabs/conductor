@@ -173,7 +173,7 @@ test("the run card and the run header link to the comparison, and the run page g
   await page.goto(TICKET_PATH)
   const card = page.locator(`[data-run-card="${run.id}"]`)
   const link = card.locator('[data-run-card-comparison]')
-  await expect(link).toHaveText('Comparison')
+  await expect(link).toHaveText('Trial results')
   await expect(link).toHaveAttribute('href', target)
   await link.click()
   await expect(page.locator('[data-compare-view][data-compare-state="content"]')).toBeVisible()
@@ -193,7 +193,7 @@ test("the run card and the run header link to the comparison, and the run page g
   // The tasks by lane: each lane's row, then its candidate, then its review, whatever the crew's order.
   const rows = page.locator('[data-task-rows] > li')
   await expect(page.locator('[data-task-lane]')).toHaveCount(2)
-  await expect(page.locator('[data-task-lane="approach-a"] [data-task-lane-approach]')).toHaveText('a candidate of the comparison, reviewed by review-a')
+  await expect(page.locator('[data-task-lane="approach-a"] [data-task-lane-approach]')).toHaveText('a candidate of the trial, reviewed by review-a')
   expect(await rows.evaluateAll((els) => els.map((e) => (e.hasAttribute('data-task-lane') ? `lane ${e.getAttribute('data-task-lane')}` : e.getAttribute('data-task-row'))))).toEqual([
     'lane approach-a',
     'approach-a',
@@ -222,7 +222,7 @@ test('a run of no comparison has no link and no lanes, and its compare view says
   await expect(page.locator('[data-run-card-comparison]')).toHaveCount(0)
   budget(LOAD_MS)
   await page.goto(`${TICKET_PATH}?view=compare&run=${plain.id}`)
-  await expect(page.locator('[data-compare-missing] [data-page-why]')).toHaveText(`this run is not a comparison: ${plain.id}`)
+  await expect(page.locator('[data-compare-missing] [data-page-why]')).toHaveText(`this run is not a trial: ${plain.id}`)
 })
 
 test('a first read that fails says the server’s words, and Read again shows the comparison', async ({ day, browser }) => {

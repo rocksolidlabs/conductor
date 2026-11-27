@@ -201,7 +201,7 @@ function selectionOf(
   const picks = candidates.filter((c) => c.selectable)
   const options = [
     ...picks.map((c) => ({ label: `${c.task} at ${c.commit.slice(0, 7)}`, tradeoffs: optionWords(c.task, c.attempt, checks), subject: { kind: 'candidate', run: c.run, task: c.task, n: c.attempt, commit: c.commit } })),
-    { label: 'None of these', tradeoffs: 'Ends the comparison with no candidate selected.' },
+    { label: 'None of these', tradeoffs: 'Ends the trial with no candidate selected.' },
   ]
   const out: Record<string, unknown> = { decision: 'dr-9001', state: o.selection, options }
   if (o.selection === 'applied' && picks[0]) {
@@ -226,7 +226,7 @@ const fulfil = (route: Route, status: number, body: unknown) => route.fulfill({ 
 
 /**
  * Answers GET /api/runs/<runId>/comparison with `reply` (or what `reply()` gives at each read; null for a run of no comparison, which
- * the server answers 404 not_found "this run is not a comparison"), and counts the reads. Set before the page loads, after serveRun
+ * the server answers 404 not_found "this run is not a trial"), and counts the reads. Set before the page loads, after serveRun
  * (a route set later is asked first). Any other request goes on.
  */
 export async function serveComparison(page: Page, runId: string, reply: Record<string, unknown> | null | (() => Record<string, unknown> | null)): Promise<ServedComparison> {
@@ -237,7 +237,7 @@ export async function serveComparison(page: Page, runId: string, reply: Record<s
       if (route.request().method() !== 'GET') return route.fallback()
       served.reads++
       const r = typeof reply === 'function' ? reply() : reply
-      if (!r) return fulfil(route, 404, { error: { code: 'not_found', message: 'this run is not a comparison' } })
+      if (!r) return fulfil(route, 404, { error: { code: 'not_found', message: 'this run is not a trial' } })
       return fulfil(route, 200, r)
     },
   )

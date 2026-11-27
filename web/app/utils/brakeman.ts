@@ -413,7 +413,7 @@ export const KINDS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'locate', label: 'Find…' },
   { value: 'overlaps', label: 'Overlapping changes' },
   { value: 'ask', label: 'A question' },
-  { value: 'compare', label: 'Compare approaches' },
+  { value: 'compare', label: 'Sum up a trial' },
 ]
 
 /** What the page calls a request's kind: a wake request is the background role's own, never one the composer offers. */
