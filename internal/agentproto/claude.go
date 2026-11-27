@@ -208,6 +208,9 @@ type claudeRead struct {
 	lastCost  float64
 	costKnown bool
 	restarted bool
+	// commandsListed says the initialize answer or a change gave the
+	// agent's commands as a list (system/init's names are then not used).
+	commandsListed bool
 }
 
 // NewClaude is the driver of a Claude Code child whose input is in and
@@ -518,6 +521,10 @@ type claudeEvent struct {
 	RequestID       string          `json:"request_id"`
 	// system/init
 	Capabilities []string `json:"capabilities"`
+	// system/init's names of the commands, and system/commands_changed's
+	// list (undocumented; row 12 of docs/plans/chat-or-terminal.md).
+	SlashCommands []string        `json:"slash_commands"`
+	Commands      json.RawMessage `json:"commands"`
 	// system task events and permission_denied
 	TaskID    string          `json:"task_id"`
 	ToolUseID string          `json:"tool_use_id"`
@@ -551,7 +558,7 @@ func (c *Claude) handle(b []byte, e session.ProtocolEvents) error {
 	}
 	switch ev.Type {
 	case "control_response":
-		c.controlResponse(ev.Response)
+		c.controlResponse(ev.Response, e)
 	case "control_request":
 		// Conductor registers no callback with the child (no hooks, no
 		// SDK servers, no permission route in its stream): any request
@@ -575,9 +582,10 @@ func (c *Claude) handle(b []byte, e session.ProtocolEvents) error {
 	return nil
 }
 
-// controlResponse takes the answer to the initialize request; answers to
-// the driver's other requests (an interrupt's receipt) change nothing.
-func (c *Claude) controlResponse(raw json.RawMessage) {
+// controlResponse takes the answer to the initialize request, and, once it
+// passed the shape check, the agent's commands it lists; answers to the
+// driver's other requests (an interrupt's receipt) change nothing.
+func (c *Claude) controlResponse(raw json.RawMessage, e session.ProtocolEvents) {
 	var r struct {
 		Subtype   string          `json:"subtype"`
 		RequestID string          `json:"request_id"`
@@ -596,8 +604,57 @@ func (c *Claude) controlResponse(raw json.RawMessage) {
 	}
 	c.mu.Unlock()
 	if mine {
-		answer <- checkInitialize(r.Subtype, r.Response, r.Pending)
+		err := checkInitialize(r.Subtype, r.Response, r.Pending)
+		answer <- err
+		if err == nil {
+			// Its commands, the payload's "commands" alone: nothing else of
+			// it (an account sits beside them) is read.
+			var p struct {
+				Commands json.RawMessage `json:"commands"`
+			}
+			if json.Unmarshal(r.Response, &p) == nil {
+				c.commands(p.Commands, e)
+			}
+		}
 	}
+}
+
+// maxCommandsScan bounds the entries of a commands list the driver reads.
+const maxCommandsScan = 1000
+
+// commands hands the session the agent's commands from a list of objects
+// (the initialize answer's, system/commands_changed's; undocumented): each
+// entry's name, description, argumentHint and aliases, each field taken
+// only when of its type, at most maxCommandsScan entries. Anything that is
+// not such a list, an entry that is not an object with a string name among
+// them, changes nothing; a list is the whole list, and the names
+// system/init gives are not used once one came.
+func (c *Claude) commands(raw json.RawMessage, e session.ProtocolEvents) {
+	var entries []json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil || entries == nil {
+		return
+	}
+	list := make([]session.Command, 0, min(len(entries), maxCommandsScan))
+	for i, en := range entries {
+		if i == maxCommandsScan {
+			break
+		}
+		var m map[string]json.RawMessage
+		if json.Unmarshal(en, &m) != nil {
+			return
+		}
+		var cmd session.Command
+		field(m, "name", &cmd.Name)
+		field(m, "description", &cmd.Words)
+		field(m, "argumentHint", &cmd.Hint)
+		field(m, "aliases", &cmd.Aliases)
+		if cmd.Name == "" {
+			return
+		}
+		list = append(list, cmd)
+	}
+	c.r.commandsListed = true
+	e.Commands(list)
 }
 
 // checkInitialize is the shape check of an initialize answer: a success,
@@ -651,6 +708,20 @@ func (c *Claude) system(ev claudeEvent, e session.ProtocolEvents) error {
 		c.mu.Lock()
 		c.receipt = receipt
 		c.mu.Unlock()
+		// Where neither the initialize answer nor a change gave the list,
+		// the names the init lists, with no words.
+		if !c.r.commandsListed && ev.SlashCommands != nil {
+			list := make([]session.Command, 0, min(len(ev.SlashCommands), maxCommandsScan))
+			for i, name := range ev.SlashCommands {
+				if i == maxCommandsScan {
+					break
+				}
+				list = append(list, session.Command{Name: name})
+			}
+			e.Commands(list)
+		}
+	case "commands_changed":
+		c.commands(ev.Commands, e)
 	case "permission_denied":
 		if ev.ToolUseID != "" && !r.denied[ev.ToolUseID] {
 			r.denied[ev.ToolUseID] = true

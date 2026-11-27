@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,7 @@ type event struct {
 	use  session.Usage
 	code string
 	perm session.PermissionRequest
+	cmds []session.Command
 }
 
 func (r *recorder) add(e event) {
@@ -92,6 +94,9 @@ func (r *recorder) TurnEnded(outcome string, u session.Usage) {
 	r.add(event{kind: "turn_ended", out: outcome, use: u})
 }
 func (r *recorder) Notice(code, words string) { r.add(event{kind: "notice", code: code, text: words}) }
+func (r *recorder) Commands(list []session.Command) {
+	r.add(event{kind: "commands", cmds: slices.Clone(list)})
+}
 
 // render is the events as lines, a text's deltas joined into one line per
 // run of the same ref.
@@ -130,6 +135,12 @@ func (r *recorder) render() string {
 			b.WriteString("turn_started\n")
 		case "permission":
 			fmt.Fprintf(&b, "permission %s call=%s %s cwd=%q input=%s\n", e.ref, e.perm.Call, e.perm.Tool, e.perm.Cwd, compact(e.perm.Input))
+		case "commands":
+			fmt.Fprintf(&b, "commands %d", len(e.cmds))
+			for _, c := range e.cmds {
+				fmt.Fprintf(&b, " /%s", c.Name)
+			}
+			b.WriteByte('\n')
 		default:
 			fmt.Fprintf(&b, "%s %s\n", e.kind, e.ref)
 		}

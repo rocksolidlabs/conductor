@@ -72,6 +72,12 @@ https://code.claude.com/docs/en/headless.md), not recorded:
   own sentence in a synthetic assistant line, with no replay of the
   message and a result naming it (`user_message_uuid`). Row 12's by-hand
   check records the real lines through this driver; they replace these.
+- `hand-built-commands.jsonl` (row 12): the agent's own commands as the
+  recorded run's shapes give them, with a made-up list in this project's
+  own words, never a person's list or the program's own descriptions: the
+  initialize answer's `commands` (name, description, argument hint,
+  aliases, builtin), `system/init`'s `slash_commands` names, and a
+  `system/commands_changed` carrying the whole new list.
 - `hand-built-not-signed-in.jsonl`: a start whose first answer says the
   agent is not signed in (`error: "authentication_failed"`, a result with
   `is_error` and `api_error_status` 401). A real run of it would need the

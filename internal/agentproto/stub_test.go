@@ -280,6 +280,27 @@ func TestStubProtocolExpands(t *testing.T) {
 	if err != nil || string(marks) != "marked\nunmarked\nunmarked\nunmarked\nunmarked\nmarked\n" {
 		t.Fatalf("the marks: %q %v", marks, err)
 	}
+	// Its own commands: listed in the initialize answer, and a change once
+	// the file beside its conversation says one more.
+	if got := rec.kinds("commands"); len(got) == 0 || len(got[0].cmds) != 4 || got[0].cmds[3].Name != "fix-issue" || got[0].cmds[3].Hint != "<number>" {
+		t.Fatalf("the initialize answer's commands: %+v", got)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".stub-sessions", conv+".commands"), []byte("release|Write the notes|<version>\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if got := rec.kinds("commands"); len(got[len(got)-1].cmds) == 5 {
+			if c := got[len(got)-1].cmds[4]; c.Name != "release" || c.Hint != "<version>" {
+				t.Fatalf("the change: %+v", c)
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("no change of the commands: %+v", rec.kinds("commands"))
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 	_ = c.CloseInput()
 	if err := <-read; !errors.Is(err, io.EOF) {
 		t.Fatalf("Read: %v", err)

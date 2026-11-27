@@ -58,6 +58,10 @@
 //   "/<another name>"   no replay: "/<name> isn't available in this environment." and a result naming the message
 //   "@<path>"           at a word's start, a file inside its folder: the words are "stub attached: <path>, ..."
 // A marked message is answered as above, whatever it holds.
+//
+// Its initialize answer lists its own commands (STUB_COMMAND_LIST, a made-up set in this project's words), and each time
+// <conversation>.commands in $HOME/.stub-sessions changes it sends system/commands_changed with the list and one command more for
+// each of the file's lines (`name|words|hint`).
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
@@ -223,6 +227,29 @@ async function steps(text) {
 // The commands the stub's program runs itself when a message is not marked (row 12), beside /compact.
 const STUB_COMMANDS = ['fix-issue']
 
+// The commands its initialize answer lists (row 12): a made-up set in this project's own words.
+const STUB_COMMAND_LIST = [
+  { name: 'compact', description: 'Shorten the conversation so far', argumentHint: '', builtin: true },
+  { name: 'clear', description: 'Start a new conversation', argumentHint: '', aliases: ['reset'] },
+  { name: 'model', description: 'Choose the model', argumentHint: '<name>' },
+  { name: 'fix-issue', description: "Fix an issue of this folder's tracker", argumentHint: '<number>' },
+]
+
+// <conversation>.commands, when it changes: system/commands_changed with the list and the file's commands after it.
+let listed = ''
+setInterval(() => {
+  const file = keptFile('commands')
+  if (!existsSync(file)) return
+  const text = readFileSync(file, 'utf8')
+  if (text === listed) return
+  listed = text
+  const more = text.split('\n').filter(Boolean).map((l) => {
+    const [name, description = '', argumentHint = ''] = l.split('|')
+    return { name, description, argumentHint }
+  })
+  send({ type: 'system', subtype: 'commands_changed', commands: [...STUB_COMMAND_LIST, ...more], session_id: session, uuid: uuid() })
+}, 50).unref()
+
 /** An unmarked message the stub's program answers itself (row 12): true when it was, and the turn is over. */
 function unmarkedCommand(m, text) {
   const cmd = /^\/([A-Za-z0-9_][A-Za-z0-9_.:-]*)(?:\s+([\s\S]*))?$/.exec(text)
@@ -348,7 +375,7 @@ lines.on('line', (line) => {
     if (sub === 'initialize') {
       if (process.env.STUB_PROTOCOL_INIT === 'none') return
       const response = { subtype: 'success', request_id: m.request_id,
-        response: { output_style: 'default', pid: process.pid, claude_code_version: version, current_permission_mode: permissionMode, capabilities: ['ui_surface_v1'] },
+        response: { output_style: 'default', pid: process.pid, claude_code_version: version, current_permission_mode: permissionMode, capabilities: ['ui_surface_v1'], commands: STUB_COMMAND_LIST },
         pending_user_dialog_requests: [] }
       if (process.env.STUB_PROTOCOL_INIT !== 'bad') response.pending_permission_requests = []
       send({ type: 'control_response', response })

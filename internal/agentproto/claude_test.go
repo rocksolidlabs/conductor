@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -289,7 +290,7 @@ func TestClaudeReplayNamesTheRef(t *testing.T) {
 // edit with its counts, background work, a result with usage.
 func TestClaudeFixturesReplay(t *testing.T) {
 	names, _ := filepath.Glob(fixture("*.jsonl"))
-	if len(names) != 7 {
+	if len(names) != 8 {
 		t.Fatalf("%d fixtures", len(names))
 	}
 	got := map[string]*recorder{}
@@ -1123,4 +1124,116 @@ func TestClaudeExpandFixtureReplays(t *testing.T) {
 			t.Fatalf("%s still waits for its acknowledgement", s.ref)
 		}
 	}
+}
+
+// Row 12: the driver hands the session the agent's commands from the
+// initialize answer once it passed the shape check (the payload's commands
+// alone, nothing of what sits beside them), then each system/commands_changed
+// list whole; system/init's names only where no list came. A list that is
+// not one, or holds an entry that is no command, changes nothing; past
+// 1,000 entries the rest is not read.
+func TestClaudeReadsCommands(t *testing.T) {
+	start := func(t *testing.T, initCommands string) (*recorder, *io.PipeWriter, chan error) {
+		t.Helper()
+		pr, pw := io.Pipe()
+		in := &discard{}
+		c := NewClaude(in, pr, ClaudeOptions{})
+		rec := &recorder{}
+		done := make(chan error, 1)
+		go func() { done <- c.Read(context.Background(), rec) }()
+		begun := make(chan error, 1)
+		go func() { begun <- c.Begin(context.Background()) }()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for !strings.Contains(in.String(), "initialize") {
+			select {
+			case <-ctx.Done():
+				t.Fatal("no initialize written")
+			case <-time.After(time.Millisecond):
+			}
+		}
+		answer := `{"type":"control_response","response":{"subtype":"success","request_id":"conductor-init-1","response":{"claude_code_version":"2.1.332","capabilities":[],"account":{"commands":[{"name":"leaked"}]}` + initCommands + `},"pending_permission_requests":[]}}`
+		if _, err := pw.Write([]byte(answer + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-begun; err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		return rec, pw, done
+	}
+	feed := func(t *testing.T, pw *io.PipeWriter, done chan error, lines ...string) {
+		t.Helper()
+		for _, l := range lines {
+			if _, err := pw.Write([]byte(l + "\n")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		pw.Close()
+		if err := <-done; !errors.Is(err, io.EOF) {
+			t.Fatalf("Read ended %v", err)
+		}
+	}
+	lists := func(rec *recorder) [][]session.Command {
+		var out [][]session.Command
+		for _, e := range rec.kinds("commands") {
+			out = append(out, e.cmds)
+		}
+		return out
+	}
+
+	t.Run("the initialize answer, then a change", func(t *testing.T) {
+		rec, pw, done := start(t, `,"commands":[{"name":"compact","description":"Shorten it","argumentHint":"","builtin":true},{"name":"fix-issue","description":"Fix one","argumentHint":"<number>","aliases":["fi",7]},{"name":"model","description":42,"argumentHint":["x"]}]`)
+		feed(t, pw, done,
+			`{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000001","slash_commands":["other"],"capabilities":[]}`,
+			`{"type":"system","subtype":"commands_changed","commands":"a string"}`,
+			`{"type":"system","subtype":"commands_changed","commands":[{"name":"compact"},1,2]}`,
+			`{"type":"system","subtype":"commands_changed","commands":[{"name":"compact"},{"name":3}]}`,
+			`{"type":"system","subtype":"commands_changed","commands":[{"name":"compact"},{"name":"release","description":"Write the notes"}]}`,
+		)
+		got := lists(rec)
+		if len(got) != 2 {
+			t.Fatalf("%d lists: %+v", len(got), got)
+		}
+		first := got[0]
+		if len(first) != 3 || first[0].Name != "compact" || first[0].Words != "Shorten it" ||
+			first[1].Name != "fix-issue" || first[1].Hint != "<number>" || len(first[1].Aliases) != 0 ||
+			first[2].Name != "model" || first[2].Words != "" || first[2].Hint != "" {
+			t.Fatalf("the initialize answer's list %+v", first)
+		}
+		if len(got[1]) != 2 || got[1][1].Name != "release" || got[1][1].Words != "Write the notes" {
+			t.Fatalf("the change %+v", got[1])
+		}
+		for _, l := range got {
+			for _, c := range l {
+				if c.Name == "leaked" || c.Name == "other" {
+					t.Fatalf("read %q from beside the list", c.Name)
+				}
+			}
+		}
+	})
+	t.Run("the init's names where no list came", func(t *testing.T) {
+		rec, pw, done := start(t, "")
+		feed(t, pw, done, `{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000001","slash_commands":["compact","clear"],"capabilities":[]}`)
+		got := lists(rec)
+		if len(got) != 1 || len(got[0]) != 2 || got[0][1].Name != "clear" || got[0][1].Words != "" {
+			t.Fatalf("lists %+v", got)
+		}
+	})
+	t.Run("a list past 1,000", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString(`,"commands":[`)
+		for i := range 1500 {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, `{"name":"c%d"}`, i)
+		}
+		b.WriteString("]")
+		rec, pw, done := start(t, b.String())
+		feed(t, pw, done)
+		got := lists(rec)
+		if len(got) != 1 || len(got[0]) != 1000 {
+			t.Fatalf("%d lists, the first of %d", len(got), len(got[0]))
+		}
+	})
 }

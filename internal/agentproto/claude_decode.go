@@ -25,6 +25,8 @@ func decodeEvent(b []byte, ev *claudeEvent) error {
 	field(m, "response", &ev.Response)
 	field(m, "request_id", &ev.RequestID)
 	field(m, "capabilities", &ev.Capabilities)
+	field(m, "slash_commands", &ev.SlashCommands)
+	field(m, "commands", &ev.Commands)
 	field(m, "task_id", &ev.TaskID)
 	field(m, "tool_use_id", &ev.ToolUseID)
 	field(m, "ambient", &ev.Ambient)
