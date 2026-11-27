@@ -328,6 +328,10 @@ type Server struct {
 	// file read may reach, even inside a session's working directory (see
 	// fileDeny). It is safe to call from many goroutines.
 	fileDeny func() []string
+	// roots are the folders agents may use, from the configuration's
+	// allowedRoots when the server is made (roots.go); every check of a
+	// working directory reads them here.
+	roots *rootList
 	// treeRoots keeps the root commits a context provider's reads found
 	// (exttree.go).
 	treeRoots rootsCache
@@ -639,6 +643,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		trackers:    newTrackers(cfg, st, log),
 		crews:       crews,
 		fileDeny:    fileDeny(cfg, st, log),
+		roots:       newRootList(cfg),
 		lookups:     newLookupCache(),
 		probes:      newProbeCache(),
 		home:        home,
@@ -653,6 +658,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
+	// The folders the app's press allowed before, judged again now (roots.go).
+	s.takePressed(cfg.PressedRoots)
 	s.settleTick = o.settleTick
 	s.settlePass, s.settleWaits, s.settleBetween = o.settlePass, o.settleWaits, o.settleBetween
 	if len(o.previewBridge) > 0 {
@@ -1324,6 +1331,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/people", s.launching(s.handlePeople))
 	mux.HandleFunc("GET /api/people/{name}", s.launching(s.handlePerson))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
+	mux.HandleFunc("GET /api/roots/check", s.launching(s.handleCheckRoot))
+	mux.HandleFunc("POST /api/roots", s.launching(s.handleAddRoot))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
 	mux.HandleFunc("GET /api/runs/{run}", s.readable("GET /api/runs/{run}", s.launchingAny(s.handleGetRun)))
@@ -1605,6 +1614,9 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
 	out := map[string]any{"user": serverUser(), "host": host, "switchyard": s.cfg.Switchyard.Enabled, "version": version.String()}
+	// Where the folders agents may use come from: the desktop app may allow
+	// one more while the server runs, or the configuration alone sets them.
+	out["folders"] = s.foldersFrom()
 	// The server user's home: where the settings picker's Home goes.
 	if home, err := os.UserHomeDir(); err == nil {
 		out["home"] = home

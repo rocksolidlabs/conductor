@@ -727,9 +727,6 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 	if json.Unmarshal(input, &fields) != nil {
 		return false
 	}
-	if s.nestedDenied(fields, deny) {
-		return true
-	}
 	switch plainOf(tool) {
 	case "command":
 		// A command that names its own folder (Codex's) is run there: a
@@ -794,7 +791,11 @@ func (s *Local) runsInDenied(text, cwd string, deny []string) bool {
 	if commandNamesDenied(text, deny, from) {
 		return true
 	}
-	if real, err := evalExisting(linksFirst(from)); err == nil && real != from && commandNamesDenied(text, deny, real) {
+	linked, ok := linksFirst(from)
+	if !ok {
+		return true
+	}
+	if real, err := evalExisting(linked); err == nil && real != from && commandNamesDenied(text, deny, real) {
 		return true
 	}
 	return false
@@ -804,29 +805,76 @@ func (s *Local) runsInDenied(text, cwd string, deny []string) bool {
 // it runs in.
 var callFolderKeys = []string{"cwd", "workdir", "directory", "dir", "working_directory", "workingDirectory", "working_dir"}
 
-// nestedDenied says a call whose input holds its raw input, its locations
-// and its content beside each other (an ACP agent's tool call: rawInput,
-// locations, content's diffs) names a place of the deny list anywhere in
-// them, whatever the call's kind: every string they hold is judged as a
-// command line's words (from the session's folder, and from each folder the
-// raw input says the call runs in, as runsInDenied judges it) and, where it
-// looks like a path, as a path; a file URI as its path. The caller holds
-// s.mu.
-func (s *Local) nestedDenied(fields map[string]any, deny []string) bool {
+// Bounds of the walk of an in-stream call's strings (streamFloored): a call
+// past one is floored.
+const (
+	// maxWalkStrings is the most strings a call's walk judges.
+	maxWalkStrings = 4096
+	// maxWalkPath is the longest string judged as a path: a longer one is no
+	// path the system opens (PATH_MAX), and is judged as words alone.
+	maxWalkPath = 4096
+	// maxLinkSteps is the most parts linksFirst walks, its links' own parts
+	// counted.
+	maxLinkSteps = 8192
+)
+
+// streamFloored is the floor's walk of a call that came in an agent's
+// stream: a call whose input holds its raw input, its locations or its
+// content (an ACP agent's tool call: rawInput, locations, content's diffs)
+// names a place of the deny list anywhere in them or in its title, whatever
+// the call's kind. Every string they hold is judged as a command line's
+// words, from the session's folder and from each folder the raw input says
+// the call runs in (each folder judged once, before the walk: under the
+// list, as it is spelled, and as its links lead), and, where it looks like a
+// path, as a path; a file URI as its path. Past a bound (maxWalkStrings, a
+// path's maxLinkSteps) the call is floored. It reads only what does not
+// change over the session (its folder, the deny list), so the caller holds
+// no lock: the walk is the driver's, before the session's lock is taken.
+func (s *Local) streamFloored(input []byte) bool {
+	deny := s.fileDeny()
+	if len(deny) == 0 {
+		return false
+	}
+	var fields map[string]any
+	if json.Unmarshal(input, &fields) != nil {
+		return false
+	}
 	_, hasRaw := fields["rawInput"]
 	_, hasLoc := fields["locations"]
 	_, hasContent := fields["content"]
 	if !hasRaw && !hasLoc && !hasContent {
 		return false
 	}
-	var folders []string
+	// The folders the words are read from: the session's, and each the raw
+	// input names, as spelled and as its links lead.
+	bases := []string{s.info.Cwd}
 	if raw, ok := fields["rawInput"].(map[string]any); ok {
 		for _, k := range callFolderKeys {
-			if v, ok := raw[k].(string); ok && v != "" {
-				folders = append(folders, v)
+			f, ok := raw[k].(string)
+			if !ok || f == "" {
+				continue
+			}
+			if s.pathDenied(f, deny) {
+				return true
+			}
+			from := filepath.Clean(f)
+			if !filepath.IsAbs(from) {
+				if s.info.Cwd == "" {
+					continue
+				}
+				from = filepath.Join(s.info.Cwd, from)
+			}
+			bases = append(bases, from)
+			linked, ok := linksFirst(from)
+			if !ok {
+				return true
+			}
+			if real, err := evalExisting(linked); err == nil && real != from {
+				bases = append(bases, real)
 			}
 		}
 	}
+	strs := 0
 	denied := false
 	var walk func(v any)
 	walk = func(v any) {
@@ -838,12 +886,12 @@ func (s *Local) nestedDenied(fields map[string]any, deny []string) bool {
 			if t == "" {
 				return
 			}
-			if commandNamesDenied(t, deny, s.info.Cwd) {
+			if strs++; strs > maxWalkStrings {
 				denied = true
 				return
 			}
-			for _, f := range folders {
-				if s.runsInDenied(t, f, deny) {
+			for _, b := range bases {
+				if commandNamesDenied(t, deny, b) {
 					denied = true
 					return
 				}
@@ -851,7 +899,7 @@ func (s *Local) nestedDenied(fields map[string]any, deny []string) bool {
 			if p, ok := strings.CutPrefix(t, "file://"); ok {
 				t = p
 			}
-			if looksLikePath(t) && s.pathDenied(t, deny) {
+			if len(t) <= maxWalkPath && looksLikePath(t) && s.pathDenied(t, deny) {
 				denied = true
 			}
 		case []any:
@@ -879,15 +927,19 @@ func looksLikePath(v string) bool {
 // linksFirst is an absolute path with its links followed one part at a time
 // before any ".." after them is applied, so that "link/../x" is the place
 // the link's ".." reaches; parts that do not exist are kept as written. At
-// most 40 links are followed.
-func linksFirst(p string) string {
+// most 40 links are followed; false past maxLinkSteps parts, its links'
+// own counted (the caller floors the path).
+func linksFirst(p string) (string, bool) {
 	if !filepath.IsAbs(p) {
-		return p
+		return p, true
 	}
 	parts := strings.Split(p, string(filepath.Separator))
 	cur := string(filepath.Separator)
-	hops := 0
+	hops, steps := 0, 0
 	for i := 0; i < len(parts); i++ {
+		if steps++; steps > maxLinkSteps {
+			return "", false
+		}
 		part := parts[i]
 		switch part {
 		case "", ".":
@@ -896,7 +948,11 @@ func linksFirst(p string) string {
 			cur = filepath.Dir(cur)
 			continue
 		}
-		next := filepath.Join(cur, part)
+		// cur is clean and part a plain name: joined without a Clean.
+		next := cur + string(filepath.Separator) + part
+		if cur == string(filepath.Separator) {
+			next = cur + part
+		}
 		fi, err := os.Lstat(next)
 		if err != nil || fi.Mode()&os.ModeSymlink == 0 || hops >= 40 {
 			cur = next
@@ -916,7 +972,7 @@ func linksFirst(p string) string {
 		rest := append(strings.Split(target, string(filepath.Separator)), parts[i+1:]...)
 		parts, i, cur = rest, -1, string(filepath.Separator)
 	}
-	return cur
+	return cur, true
 }
 
 // changesDenied says a file change's input names a path denied says is
@@ -984,7 +1040,11 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 	}
 	// Its links followed before its "..", as the system follows them, and
 	// as its letters read.
-	if linked := linksFirst(path); linked != filepath.Clean(path) {
+	linked, ok := linksFirst(path)
+	if !ok {
+		return true
+	}
+	if linked != filepath.Clean(path) {
 		if insideAny(linked, deny) {
 			return true
 		}

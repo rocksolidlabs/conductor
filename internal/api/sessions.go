@@ -697,28 +697,32 @@ func launchHook(stage string) {
 // process starts in that folder and its Files tab serves it, whatever its
 // path names later.
 func (s *Server) openCwd(cwd string) (*session.Folder, error) {
-	real, err := s.resolveCwd(cwd)
+	return openCwdIn(cwd, s.roots.list())
+}
+
+// openCwdIn is openCwd under roots, the allowed roots as the holder had
+// them once (rootList.list), so that the check by path and the open go by
+// the same list. Each root's links are resolved at each use, the open's
+// after the path's check.
+func openCwdIn(cwd string, roots []allowedRoot) (*session.Folder, error) {
+	real, err := resolveCwdIn(cwd, roots)
 	if err != nil {
 		return nil, err
 	}
 	var opened error // an open through a root that holds it, failed
 	launchHook("resolved")
-	for _, root := range s.cfg.AllowedRoots {
-		rootReal, err := filepath.EvalSymlinks(root)
-		if err != nil {
+	for _, root := range roots {
+		// The root as allowed: the folder is opened only through that one.
+		rootReal, same, ok := root.resolve()
+		if !ok {
 			continue
 		}
 		rel, err := filepath.Rel(rootReal, real)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
-		// The root as checked: the folder is opened only through that one.
-		want, err := os.Stat(rootReal)
-		if err != nil {
-			continue
-		}
 		launchHook("root")
-		f, err := session.OpenFolderIn(rootReal, rel, want)
+		f, err := session.OpenFolderInWith(rootReal, rel, same)
 		if err == nil {
 			return f, nil
 		}
@@ -754,6 +758,12 @@ func (e *cwdError) Unwrap() error { return e.err }
 // through its root (openCwd); a check alone (a resume's, the pickers')
 // takes the path.
 func (s *Server) resolveCwd(cwd string) (string, error) {
+	return resolveCwdIn(cwd, s.roots.list())
+}
+
+// resolveCwdIn is resolveCwd under roots, the allowed roots as the holder
+// had them once (rootList.list).
+func resolveCwdIn(cwd string, roots []allowedRoot) (string, error) {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
 		return "", errors.New("invalid working directory")
@@ -769,9 +779,9 @@ func (s *Server) resolveCwd(cwd string) (string, error) {
 	if err != nil {
 		return "", &cwdError{"working directory is not a directory", err}
 	}
-	for _, root := range s.cfg.AllowedRoots {
-		rootReal, err := filepath.EvalSymlinks(root)
-		if err != nil {
+	for _, root := range roots {
+		rootReal, _, ok := root.resolve()
+		if !ok {
 			continue
 		}
 		if real == rootReal || strings.HasPrefix(real, rootReal+string(filepath.Separator)) {
