@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { scopeItems } from '~/utils/chat'
-import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
+import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, type RecipientPick, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopRunPageQuestion, type Action } from '~/utils/actions'
 import { taskActions, taskWords } from '~/utils/tasks'
 import { attemptSession, markSection, sessionStatus, taskStatus } from '~/utils/status'
@@ -147,30 +147,14 @@ const tiles = computed<RunWallTile[]>(() => {
 })
 
 
-// Broadcast selection: every member whose session runs, unless the person
-// unticked it; a member that starts later is selected as it appears. Only the
-// person's own ticks are kept (choices), so no read of the run and no run
-// event clears one; another run starts afresh.
-const choices = ref<Record<string, boolean>>({})
-const selection = computed(() =>
-  broadcastSelection(
-    tiles.value.map((t) => ({
-      name: t.name,
-      live: !!t.session && (t.session.status === 'running' || t.session.status === 'starting'),
-      waiting: t.session?.attention?.state === 'needs_input',
-    })),
-    choices.value,
-  ),
-)
-function isSelected(name: string) {
-  return selection.value.selected.includes(name)
-}
-function toggle(name: string, on: boolean | 'indeterminate') {
-  choices.value = { ...choices.value, [name]: on === true }
-}
+// Who gets a line from the message bar (broadcastSelection): everyone who can get one while `All` is on (`pick` null), else the
+// members the person ticked in the bar. The pick outlasts every read of the run and every run event; another run starts afresh.
+const pick = ref<RecipientPick>(null)
+const recipients = computed(() => tiles.value.map((t) => ({ name: t.name, state: recipientState(t.member, t.session) })))
+const selection = computed(() => broadcastSelection(recipients.value, pick.value))
 
 watch(runId, (_, before) => {
-  choices.value = {}
+  pick.value = null
   gone.value = false
   load()
   dispatch.gate.drop(`run-ticket:${before}`)
@@ -409,13 +393,15 @@ const header = useTemplateRef<{ openAdd: () => void; share: () => void; stopNow:
 const identity = useIdentity()
 async function paletteBroadcast(text: string) {
   const line = text.trim()
-  if (!line) return
+  // Taken before the wait: a request that names nobody goes to every member.
+  const to = [...selection.value.to]
+  if (!line || !to.length) return
   try {
     const byName = await broadcastByName(identity.name.value, api.whoami)
-    const r = await api.broadcastRun(runId.value, { text: line, members: [...selection.value.selected], byName })
-    toast.add({ ...broadcastSummary(r), icon: 'i-lucide-megaphone' })
+    const r = await api.broadcastRun(runId.value, { text: line, members: to, byName })
+    toast.add({ ...messageToast(r), icon: 'i-lucide-megaphone' })
   } catch (e) {
-    toast.add({ title: 'Broadcast failed', description: (e as Error).message, color: 'error' })
+    toast.add({ title: 'Not sent', description: (e as Error).message, color: 'error' })
   }
 }
 palette.registerPage(() => {
@@ -507,14 +493,14 @@ palette.registerPage(() => {
   const rows: PaletteItem[] = [
       {
         key: 'page:broadcast',
-        label: 'Broadcast…',
-        detail: sel.sending.length ? `Send to ${sel.sending.length}${sel.waiting.length ? ` · skipped, waiting on a prompt: ${sel.waiting.join(', ')}` : ''}` : 'No member is running',
+        label: 'Message the crew…',
+        detail: sel.to.length ? sel.button : sel.placeholder,
         icon: 'i-lucide-megaphone',
-        disabled: stopped || !sel.sending.length,
+        disabled: stopped || !sel.to.length,
         // Enter opens the field; the line is sent from it. Nothing runs without a line.
         run: () => {},
         fieldOnEnter: true,
-        field: { placeholder: 'A line for every selected member…', button: `Send to ${sel.sending.length}`, submit: paletteBroadcast },
+        field: { placeholder: sel.placeholder, button: sel.button, submit: paletteBroadcast },
       },
       { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: !runOffer(r).add, run: () => header.value?.openAdd() },
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
@@ -671,13 +657,9 @@ palette.registerPage(() => {
           @show-large="chooseTiles({ large: $event })"
           @open="router.push(`/sessions/${$event}`)"
           @start="startMember"
-        >
-          <template #leading="{ tile: t }">
-            <UCheckbox :model-value="isSelected(t.name)" :aria-label="`Select ${t.name} for the broadcast`" data-broadcast-pick @update:model-value="toggle(t.name, $event)" />
-          </template>
-        </RunWall>
+        />
         <div class="flex-none px-3 pb-3">
-          <BroadcastBar :run-id="runId" :members="selection.selected" :will-type="selection.sending.length" :waiting="selection.waiting.length" :disabled="!run || !!run.stoppedAt" />
+          <BroadcastBar v-model:pick="pick" :run-id="runId" :members="recipients" :ended="!!run?.stoppedAt" :disabled="!run" />
         </div>
       </template>
     </template>
