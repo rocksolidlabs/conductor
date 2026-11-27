@@ -1,5 +1,5 @@
 import type { Locator, Page, Route } from '@playwright/test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DAILY, atRest, dayPage, expect, openMore, test } from './fixtures'
 import { noSideways, probeColour, tapTarget } from './layout'
@@ -527,21 +527,22 @@ test('after a launch the dialog remembers the agent, the folder, its model and t
   await dialog.getByRole('button', { name: 'Cancel' }).click()
   await expect(dialog).toHaveCount(0)
 
-  // A remembered folder the server refuses is said under Folder, never changed quietly.
-  await page.evaluate(() => {
-    const v = JSON.parse(localStorage.getItem('conductor.launch.last') ?? '{}')
-    localStorage.setItem('conductor.launch.last', JSON.stringify({ ...v, folder: '/' }))
-  })
+  // A remembered folder the server refuses is said under Folder, never changed quietly: here one gone since its launch, its session
+  // ended first.
+  for (const id of made.splice(0)) {
+    await own.api.stopSession(id)
+    await expect.poll(async () => (await own.api.call<{ session?: { status?: string } }>('GET', `/api/sessions/${id}`)).body?.session?.status ?? 'gone', { timeout: 15_000 }).toMatch(/exited|stopped|gone/)
+  }
+  rmSync(work, { recursive: true, force: true })
   await page.reload()
   await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
   dialog = await openLaunch(page)
   const folder = dialog.getByLabel('Folder', { exact: true })
-  await expect(folder).toHaveValue('/')
+  await expect(folder).toHaveValue(work)
   await dialog.locator('[data-launch-submit]').click()
-  await expect(dialog.locator('[data-launch-folder-refused]')).toHaveText("Agents can't use this folder yet.")
-  await expect(folder).toHaveValue('/')
+  await expect(dialog.locator('[data-launch-folder-refused]')).toHaveText('There is no folder at this path.')
+  await expect(folder).toHaveValue(work)
 })
-
 
 test('after a restart of the server the dialog still starts from the last launch, which the server kept', async ({ browser }) => {
   // The last test's launch, as the server recorded it.
