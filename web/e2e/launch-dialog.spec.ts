@@ -1,5 +1,5 @@
 import type { Locator, Page, Route } from '@playwright/test'
-import { writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DAILY, atRest, dayPage, expect, openMore, test } from './fixtures'
 import { noSideways, probeColour, tapTarget } from './layout'
@@ -427,3 +427,59 @@ for (const size of [DAILY, { width: 1440, height: 810 }]) {
     expect(overflow, "the open dialog's body does not scroll").toBeLessThanOrEqual(0.5)
   })
 }
+
+/** An account of Claude Code's adapter on the spec's server, its folder holding the stub's usage state `line`. */
+async function account(label: string, line: string): Promise<string> {
+  const dir = mkdtempSync(join(own.home, 'e2e-account-'))
+  writeFileSync(join(dir, 'stub-usage'), `${line}\n`)
+  const { rev } = await own.api.ok<{ rev: number }>('GET', '/api/accounts')
+  return (await own.api.ok<{ account: { id: string } }>('POST', '/api/accounts', { adapter: 'claude', label, folder: dir, expectedRev: rev })).account.id
+}
+
+/** Picks an account in the dialog's Account menu, then waits for its menu to be gone. */
+async function pickAccount(page: Page, dialog: Locator, name: string) {
+  await dialog.locator('[data-account-select]').click()
+  await page.getByRole('option', { name, exact: true }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(dialog.locator('[data-account-select]')).toContainText(name)
+}
+
+test('the usage sits beside the account as its figures, opens the full panel in place, and a login near its limit says so in one line', async ({ browser }) => {
+  await account('Plenty', 'ok')
+  await account('Busy', 'warning')
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openOnPrompted(page)
+  const usage = dialog.locator('[data-launch-usage]')
+  const note = dialog.locator('[data-launch-note]')
+  const panel = dialog.locator('[data-launch-usage-panel]')
+
+  await pickAccount(page, dialog, 'Plenty')
+  await expect(usage).toHaveText('5-hour 33% · Weekly, all models 40%', { timeout: 30_000 })
+  await expect(note).toHaveCount(0)
+  // Pressed, the full panel shows in place under the row, every window with its reset.
+  await expect(usage).toHaveAttribute('aria-expanded', 'false')
+  await expect(panel).toBeHidden()
+  await usage.click()
+  await expect(usage).toHaveAttribute('aria-expanded', 'true')
+  await expect(panel).toBeVisible()
+  await expect(panel.locator('[data-capacity-window]')).toHaveCount(2)
+  await expect(panel.locator('[data-capacity-window="weekly_all"]')).toContainText('Weekly, all models: 40% used, resets')
+  await usage.click()
+  await expect(panel).toBeHidden()
+
+  // Near a limit: the figure in the warning colour, one line under the row, announced, and Launch still enabled.
+  await pickAccount(page, dialog, 'Busy')
+  await expect(usage).toContainText('Weekly, all models 92%', { timeout: 30_000 })
+  await expect(note).toHaveText(/^Busy is near a limit: Weekly, all models 92% used, resets \w{3} \d{1,2} \w{3} \d\d:\d\d\. The agent may stop before then\.$/)
+  await expect(note).toHaveAttribute('role', 'status')
+  await expect(note).toHaveAttribute('data-launch-note-tone', 'warning')
+  const hot = usage.locator('span.text-warning')
+  await expect(hot).toHaveText('Weekly, all models 92%')
+  await expect(dialog.locator('[data-launch-submit]')).toBeEnabled()
+
+  // An agent no reader knows shows no usage.
+  await pick(dialog, PLAIN)
+  await expect(usage).toHaveCount(0)
+  await expect(note).toHaveCount(0)
+})
+

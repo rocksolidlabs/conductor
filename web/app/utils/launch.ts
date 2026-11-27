@@ -1,5 +1,6 @@
 import { MAX_SESSION_NAME, MAX_SUBMIT } from './protocol'
 import { moreLine } from './moreOptions'
+import { accountWords, clockWords, limited, WARN_PERCENT, type CapacityView } from './capacity'
 
 /**
  * Whether the launch dialog asks where the agent runs. There are two answers
@@ -232,3 +233,30 @@ export function namePlaceholderFor(agent: { name: string } | undefined, takesTas
   if (!takesTask) return `${agent.name} and a number`
   return namePreview(task) || 'Made from the task'
 }
+
+/** The one line under Launch agent's Account when the usage should slow a launch: its words and colour. It never holds Launch. */
+export interface LaunchNote {
+  words: string
+  tone: 'warning' | 'error'
+}
+
+/**
+ * Whether the account's usage should slow a launch, by the judgement the crew's sheet uses (warningOf): a limit the provider says is
+ * reached; a window at warning or critical, or past WARN_PERCENT, named with its share and its reset (the error colour when the
+ * provider says critical); the agent signed out on the account. null when all is fine, or nothing is known yet.
+ */
+export function launchNote(view: Pick<CapacityView, 'state' | 'windows' | 'limits' | 'account'> | null | undefined, agent: { name: string } | undefined, timeZone?: string): LaunchNote | null {
+  if (!view || !agent) return null
+  const account = accountWords(view.account)
+  if (view.state === 'signed_out') return { words: `${agent.name} is signed out on ${account}. It will ask you to sign in when it starts.`, tone: 'warning' }
+  if (view.state !== 'ok') return null
+  if (limited(view.limits)) return { words: `${account} has reached a limit, its provider says. The agent may stop at once.`, tone: 'error' }
+  const near = view.windows.filter((w) => w.severity === 'warning' || w.severity === 'critical' || w.percent >= WARN_PERCENT)
+  if (!near.length) return null
+  const rank = (w: (typeof near)[number]) => (w.severity === 'critical' ? 2 : 1) * 1000 + w.percent
+  const worst = near.reduce((a, b) => (rank(b) > rank(a) ? b : a))
+  const at = worst.resetsAt ? Date.parse(worst.resetsAt) : NaN
+  const resets = Number.isNaN(at) ? '' : `, resets ${clockWords(at, timeZone)}`
+  return { words: `${account} is near a limit: ${worst.name} ${worst.percent}% used${resets}. The agent may stop before then.`, tone: worst.severity === 'critical' ? 'error' : 'warning' }
+}
+

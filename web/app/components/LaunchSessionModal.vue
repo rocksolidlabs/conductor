@@ -6,8 +6,8 @@ import { launchListNote, serverAgents } from '~/utils/agents'
 import { splitArgs } from '~/utils/argv'
 import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
-import { accountChoices, accountOfLaunch, capacityKey, modelProblem, type CapacityQuery } from '~/utils/capacity'
-import { argsHoldYolo, argsNameModel, chipStep, launchKey, launchRefusal, messageProblem, namePlaceholderFor, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
+import { accountChoices, accountOfLaunch, capacityKey, faceWords, modelProblem, type CapacityQuery } from '~/utils/capacity'
+import { argsHoldYolo, argsNameModel, chipStep, launchKey, launchNote, launchRefusal, messageProblem, namePlaceholderFor, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
 import { effectiveYolo, hasYoloRecipe, yoloSummary, yoloUnavailable } from '~/utils/yolo'
 import { offersRunAs, readRunAs, writeRunAs } from '~/utils/launchWay'
 import type { SessionWay } from '~/utils/protocol'
@@ -108,6 +108,7 @@ watch([open, launchModal.asked], async ([v]) => {
   error.value = ''
   errorCode.value = ''
   cwdRefused.value = null
+  usageOpen.value = false
   submitting.value = false
   focusPending = true
   readDefaultFolder()
@@ -212,6 +213,13 @@ const capacityQuery = computed<CapacityQuery | null>(() => {
   if (state.runsOn === 'local') return { agent: selected.value.id, launch: 'remote' }
   return { agent: selected.value.id, account: decided.value.sent, yolo: yolo.value }
 })
+// Beside the Account menu, the usage in one line (faceWords): a quiet button that shows the full panel in place under the row, the
+// panel mounted all along (its read as the dialog opens, its marks); under the row, one line when the usage should slow a launch.
+const usageOpen = ref(false)
+const usageId = useId()
+const usageView = computed(() => (capacityQuery.value ? capacity.entry(capacityQuery.value).view : null))
+const usageFace = computed(() => (capacityQuery.value && state.runsOn === 'server' ? faceWords(usageView.value) : []))
+const note = computed(() => (state.runsOn === 'server' ? launchNote(usageView.value, selected.value) : null))
 const account = computed({
   get: () => decided.value.shown,
   set: (v: string) => {
@@ -520,12 +528,36 @@ async function submit() {
             </template>
           </UFormField>
           <p v-if="accountsUnread" class="text-xs text-muted" data-launch-accounts-unread>No Account or Model to choose: the accounts could not be read ({{ accountsUnread }}). The server picks the account as for a launch that names none.</p>
-          <!-- The account, and its usage under it: on the face, never folded. -->
-          <div v-if="(takesAccount && decided.offered) || capacityQuery" class="flex flex-col gap-2">
-            <UFormField v-if="takesAccount && decided.offered" label="Account" name="account" orientation="horizontal" :ui="{ root: 'items-center justify-start gap-3', container: 'w-64 max-w-full' }" data-launch-account>
-              <AccountSelect v-model="account" :doc="accounts.doc.value" :adapter="adapter" />
-            </UFormField>
-            <CapacityPanel :query="capacityQuery" :model="takesAccount ? model : undefined" folded read-on-open />
+          <!-- The account and its usage beside it: on the face, never folded. -->
+          <div v-if="capacityQuery" class="flex flex-col gap-2">
+            <div v-if="(takesAccount && decided.offered) || usageFace.length" class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <UFormField v-if="takesAccount && decided.offered" label="Account" name="account" orientation="horizontal" :ui="{ root: 'items-center justify-start gap-3', container: 'w-64 max-w-full' }" data-launch-account>
+                <AccountSelect v-model="account" :doc="accounts.doc.value" :adapter="adapter" />
+              </UFormField>
+              <span v-else class="text-sm font-medium">Account</span>
+              <UButton
+                v-if="usageFace.length"
+                color="neutral"
+                variant="ghost"
+                size="xs"
+                :trailing-icon="usageOpen ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
+                class="min-w-0 max-sm:min-h-11"
+                :aria-expanded="usageOpen"
+                :aria-controls="usageId"
+                data-launch-usage
+                @click="usageOpen = !usageOpen"
+              >
+                <span class="min-w-0 text-left [overflow-wrap:anywhere]">
+                  <template v-for="(part, i) in usageFace" :key="i"><template v-if="i"> · </template><span :class="part.tone === 'error' ? 'text-error' : part.tone === 'warning' ? 'text-warning' : 'text-muted'">{{ part.text }}</span></template>
+                </span>
+              </UButton>
+            </div>
+            <p v-if="note" role="status" class="flex items-start gap-1.5 text-sm [overflow-wrap:anywhere]" :class="note.tone === 'error' ? 'text-error' : 'text-warning'" data-launch-note :data-launch-note-tone="note.tone">
+              <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-4 flex-none" />{{ note.words }}
+            </p>
+            <div v-show="usageOpen" :id="usageId" data-launch-usage-panel>
+              <CapacityPanel :query="capacityQuery" :model="takesAccount ? model : undefined" read-on-open />
+            </div>
           </div>
           <UFormField v-if="takesMessage" label="What should it do?" name="message" hint="optional" :error="messageError || undefined" data-launch-message>
             <UTextarea v-model="message" autoresize :rows="2" :maxrows="6" placeholder="Typed to the agent once it starts." class="w-full" enterkeyhint="go" data-launch-message-input />
@@ -549,7 +581,6 @@ async function submit() {
             </span>
           </p>
           <p class="text-xs leading-relaxed text-muted">The session appears here as <b class="text-default">hosted</b> as soon as it connects, and this dialog closes; your terminal stays attached to it.</p>
-          <CapacityPanel :query="capacityQuery" />
         </template>
 
         <MoreOptions v-if="hasMore" v-model:open="moreOpen" data-launch-more>

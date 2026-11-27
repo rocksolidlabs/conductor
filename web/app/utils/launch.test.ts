@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { argsHoldYolo, argsNameModel, chipStep, cutAtWord, firstMessageLine, isLoopbackHost, launchKey, launchRefusal, messageProblem, namePlaceholderFor, namePreview, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
+import { argsHoldYolo, argsNameModel, chipStep, cutAtWord, firstMessageLine, isLoopbackHost, launchKey, launchNote, launchRefusal, messageProblem, namePlaceholderFor, namePreview, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
 
 describe('showsRunsOn', () => {
   it('never asks in the desktop app', () => {
@@ -203,6 +203,28 @@ describe("Launch agent's More options, before the press", () => {
     expect(namePlaceholderFor({ name: 'Plain' }, false, 'ignored')).toBe('Plain and a number')
     expect(namePlaceholderFor(undefined, true, 'x')).toBe('')
     expect(namePlaceholderFor({ name: 'Claude Code' }, true, '')).not.toBe('optional')
+  })
+})
+
+describe("the line under Launch agent's Account", () => {
+  const base = { state: 'ok', windows: [], limits: { source: 'provider' as const }, account: { id: 'work', label: 'Work' } }
+  const agent = { name: 'Claude Code' }
+  const win = (name: string, percent: number, severity: '' | 'normal' | 'warning' | 'critical' = 'normal', resetsAt?: string) => ({ source: 'provider' as const, kind: name, name, percent, severity, resetsAt })
+  it('names the window near its limit, its share and its reset, in the warning colour, the error colour when critical', () => {
+    const near = launchNote({ ...base, windows: [win('5-hour', 30), win('Weekly, all models', 92, 'warning', '2026-11-17T13:30:00Z')] }, agent, 'UTC')
+    expect(near).toEqual({ words: 'Work is near a limit: Weekly, all models 92% used, resets Tue 17 Nov 13:30. The agent may stop before then.', tone: 'warning' })
+    expect(launchNote({ ...base, windows: [win('5-hour', 95)] }, agent)?.words).toBe('Work is near a limit: 5-hour 95% used. The agent may stop before then.')
+    expect(launchNote({ ...base, windows: [win('5-hour', 95, 'warning'), win('Weekly', 60, 'critical')] }, agent)).toMatchObject({ tone: 'error', words: expect.stringContaining('Weekly 60% used') })
+  })
+  it("says a limit reached, in the provider's word, and a login signed out", () => {
+    expect(launchNote({ ...base, limits: { source: 'provider', reached: 'rate_limit_reached' } }, agent)).toEqual({ words: 'Work has reached a limit, its provider says. The agent may stop at once.', tone: 'error' })
+    expect(launchNote({ ...base, state: 'signed_out', account: { id: 'default' } }, agent)).toEqual({ words: 'Claude Code is signed out on Default login. It will ask you to sign in when it starts.', tone: 'warning' })
+  })
+  it('says nothing when all is fine, while nothing is known, or for another state', () => {
+    expect(launchNote({ ...base, windows: [win('5-hour', 12)] }, agent)).toBeNull()
+    expect(launchNote(null, agent)).toBeNull()
+    expect(launchNote({ ...base, state: 'error' }, agent)).toBeNull()
+    expect(launchNote(base, undefined)).toBeNull()
   })
 })
 
