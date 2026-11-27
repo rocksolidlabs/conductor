@@ -1,4 +1,5 @@
 import { MAX_SESSION_NAME, MAX_SUBMIT } from './protocol'
+import { moreLine } from './moreOptions'
 
 /**
  * Whether the launch dialog asks where the agent runs. There are two answers
@@ -143,7 +144,7 @@ export function noFirstMessageLine(offered: Array<{ name: string; firstMessage?:
  */
 export function optionsSummary(o: { name?: string; model?: string; args?: string }): string {
   const name = o.name?.trim() ?? ''
-  return [name ? `"${name}"` : '', o.model?.trim() ?? '', o.args?.trim() ?? ''].filter(Boolean).join(' · ')
+  return moreLine([name && `"${name}"`, o.model, o.args])
 }
 
 /** The parts of a key press the Launch dialog reads to launch (a KeyboardEvent's). */
