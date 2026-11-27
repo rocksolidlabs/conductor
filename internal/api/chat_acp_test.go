@@ -133,6 +133,40 @@ func TestACPChatDeclinesACallWhoseInputItWasNotTaught(t *testing.T) {
 	}
 }
 
+// A chat's child takes none of a yolo launch's variables, and the chat says
+// it asks; the terminal had them.
+func TestACPChatTakesNoneOfAYoloLaunchsVariables(t *testing.T) {
+	c, _ := newACPChatEnvWith(t, nil, func(a *catalog.Agent) { a.Yolo = &catalog.Yolo{Env: map[string]string{"STUB_ALLOW_ALL": "true"}} })
+	resp, out := c.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "claude", "yolo": true})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %v", resp.StatusCode, out)
+	}
+	id, _ := out["id"].(string)
+	l, ok := c.srv.lookupLocal(id)
+	if !ok {
+		t.Fatal("no session")
+	}
+	t.Cleanup(func() { _ = l.Stop(context.Background()) })
+	terms := c.rt.Asked("StartTerminal")
+	if len(terms) != 1 {
+		t.Fatalf("%d terminals", len(terms))
+	}
+	if v, ok := envValue(terms[0].Spec.(ext.TerminalSpec).Env, "STUB_ALLOW_ALL"); !ok || v != "true" {
+		t.Fatal("the yolo launch's terminal lacks its variable")
+	}
+	if err := c.enter(t, l); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := envValue(c.pipeSpecs()[0].Env, "STUB_ALLOW_ALL"); ok {
+		t.Fatal("a chat's child took a yolo launch's variable")
+	}
+	entriesWhen(t, l, "the notice", func(es []session.TranscriptEntry) bool {
+		return hasEntry(es, func(e session.TranscriptEntry) bool {
+			return e.Kind == session.EntryNotice && e.Words == agentproto.ACPYoloLeftWords
+		})
+	})
+}
+
 // The move to Chat of an ACP agent's session, and a launch as a chat, are
 // refused in the switch's words while no agent's move is observed by hand
 // (acpMoves), the terminal left running. A declaration changes this test.

@@ -87,6 +87,15 @@ func (s *Server) keepChatLaunch(id string, l chatLaunch) {
 	if l.agent.Protocol.Off() || agentproto.Check(l.agent.Protocol) != nil {
 		return
 	}
+	if l.yolo && l.agent.Yolo != nil && len(l.agent.Yolo.Env) > 0 {
+		// A chat's child takes none of a yolo launch's variables: they
+		// stay with the terminal.
+		l.env = slices.DeleteFunc(l.env, func(kv string) bool {
+			k, _, _ := strings.Cut(kv, "=")
+			_, yolo := l.agent.Yolo.Env[k]
+			return yolo
+		})
+	}
 	l.gate = &chatGate{}
 	s.chatLaunches.Store(id, &l)
 }
@@ -167,7 +176,7 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 			// session's folder.
 			return session.PipesChild(pipes), agentproto.NewACP(pipes.Stdin(), pipes.Stdout(), agentproto.ACPOptions{
 				Session: conversation, Cwd: l.folder.Path(), InitWait: initWait,
-				RawInputKeys: agentproto.ACPRawInputKeys(l.agent.Adapter),
+				RawInputKeys: agentproto.ACPRawInputKeys(l.agent.Adapter), YoloLeft: l.yolo,
 			}), nil
 		}
 		driver := agentproto.NewClaude(pipes.Stdin(), pipes.Stdout(), agentproto.ClaudeOptions{

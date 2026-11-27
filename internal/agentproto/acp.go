@@ -95,6 +95,10 @@ type ACPOptions struct {
 	// call whose raw input holds any other key, or is not an object, is one
 	// the client does not read.
 	RawInputKeys []string
+	// YoloLeft says the session's terminal was a yolo launch, whose
+	// variables the chat's child does not take: the chat tells so as it
+	// begins.
+	YoloLeft bool
 }
 
 // acpRawInputKeys are the raw input's keys each agent's own look recorded,
@@ -104,6 +108,9 @@ var acpRawInputKeys = map[string][]string{}
 
 // ACPRawInputKeys are the raw input's keys taught for an agent's adapter.
 func ACPRawInputKeys(adapter string) []string { return acpRawInputKeys[adapter] }
+
+// ACPYoloLeftWords is the notice a chat of a yolo launch begins with.
+const ACPYoloLeftWords = "Yolo stays with the terminal: this chat asks before each step."
 
 // ACP is the client of an agent's Agent Client Protocol on stdio
 // (session.Protocol): protocol 1, the baseline alone. It advertises no file
@@ -124,6 +131,7 @@ type ACP struct {
 	cwd      string
 	initWait time.Duration
 	keys     []string
+	yoloLeft bool
 
 	wmu    sync.Mutex
 	cmu    sync.Mutex
@@ -195,7 +203,7 @@ func NewACP(in io.WriteCloser, out io.Reader, opts ACPOptions) *ACP {
 		wait = ACPInitWait
 	}
 	return &ACP{
-		in: in, out: out, session: opts.Session, cwd: opts.Cwd, initWait: wait, keys: opts.RawInputKeys,
+		in: in, out: out, session: opts.Session, cwd: opts.Cwd, initWait: wait, keys: opts.RawInputKeys, yoloLeft: opts.YoloLeft,
 		calls: map[string]*acpCall{}, requests: map[string]*acpRequest{}, byID: map[string]string{},
 		readDone: make(chan struct{}),
 		r:        acpRead{streamed: map[string]bool{}, tools: map[string]acpTool{}},
@@ -547,6 +555,9 @@ func (c *ACP) answer(id json.RawMessage, m map[string]json.RawMessage, e session
 	case "session/resume", "session/load":
 		if a.err == nil {
 			e.Conversation(c.session)
+			if c.yoloLeft {
+				e.Notice("yolo_left", ACPYoloLeftWords)
+			}
 		}
 	case "session/prompt":
 		c.promptEnded(a, e)

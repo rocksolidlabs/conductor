@@ -732,3 +732,15 @@ func TestACPTheCallIsShownAsTheAgentWroteIt(t *testing.T) {
 		t.Fatalf("%d requests reached the session", n)
 	}
 }
+
+// A chat of a yolo launch begins by saying the chat asks.
+func TestACPAYoloLaunchsChatSaysItAsks(t *testing.T) {
+	rec := &recorder{}
+	c, _ := newACPServer(t, rec, ACPOptions{YoloLeft: true})
+	if err := c.Begin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := waitEvent(t, rec, "notice", 1)[0]; n.code != "yolo_left" || n.text != ACPYoloLeftWords {
+		t.Fatalf("the notice %+v", n)
+	}
+}
