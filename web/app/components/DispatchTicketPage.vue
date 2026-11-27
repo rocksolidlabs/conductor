@@ -1080,8 +1080,8 @@ const brakemanChips = computed(() => askChips({ ticket: props.ticketKey }))
               @keydown.enter.prevent="(e: KeyboardEvent) => saveTitle(e)"
               @keydown.escape.prevent.stop="leaveTitle"
             />
+            <UButton label="Cancel" color="neutral" variant="ghost" data-title-cancel @click="leaveTitle" />
             <UButton label="Save" icon="i-lucide-check" :loading="titleSaving" :disabled="!titleDraft.trim()" data-title-save @click="saveTitle()" />
-            <UButton label="Cancel" color="neutral" variant="ghost" @click="leaveTitle" />
           </div>
           <h1 v-else class="group flex items-start gap-2 text-xl font-semibold text-highlighted">
             <span class="min-w-0 break-words" data-ticket-title>{{ ticket.title }}</span>

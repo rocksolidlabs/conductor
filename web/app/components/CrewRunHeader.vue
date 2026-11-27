@@ -281,7 +281,7 @@ const menu = computed(() => [
   [
     { label: 'Add agent', icon: 'i-lucide-user-plus', disabled: !runOffer(props.run).add, onSelect: () => void openAdd(), 'data-run-add': '' },
     { label: 'Share', icon: 'i-lucide-share-2', disabled: !props.run, onSelect: () => (shareOpen.value = true), 'data-run-share': '' },
-    ...(comparison.value ? [{ label: 'Comparison', icon: 'i-lucide-columns-3', to: comparison.value, 'data-run-comparison-menu': '' }] : []),
+    ...(comparison.value ? [{ label: 'Trial results', icon: 'i-lucide-columns-3', to: comparison.value, 'data-run-comparison-menu': '' }] : []),
   ],
 ])
 
@@ -372,7 +372,7 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
         <StatusMark :status="look.view" word class="[&_[data-status-word]]:font-medium [&_[data-status-word]]:text-highlighted" data-run-phase />
         <span v-if="look.detail" class="min-w-0" data-run-detail>{{ look.detail }}</span>
       </span>
-      <UButton v-if="comparison" :to="comparison" label="Comparison" icon="i-lucide-columns-3" size="xs" color="neutral" variant="ghost" class="flex-none" :title="`The comparison of this run's candidates, on ${run.ticket?.key ?? ticket?.key}`" data-run-comparison />
+      <UButton v-if="comparison" :to="comparison" label="Trial results" icon="i-lucide-columns-3" size="xs" color="neutral" variant="ghost" class="flex-none" :title="`This trial's results side by side, on ${run.ticket?.key ?? ticket?.key}`" data-run-comparison />
       <span v-if="run.paused" class="inline-flex min-w-0 max-w-full items-center gap-1 text-warning" :title="run.pausedWhy ? `Paused: ${run.pausedWhy}` : 'Paused by a person'" data-run-paused-note>
         <UIcon name="i-lucide-pause" class="size-3.5 flex-none" />
         <span class="flex-none">scheduling paused</span>

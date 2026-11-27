@@ -7,7 +7,6 @@ import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 import { StaleRefusal, configForm, type BrakemanPart } from '~/utils/settingsSave'
 import { OWN_LOGIN, brakemanAccount } from '~/utils/crewLaunch'
-import { BRIEF_SETTINGS_SENTENCE } from '~/utils/brakemanAlert'
 
 /**
  * Brakeman's card in Settings (docs/plans/brakeman.md, PR-6): its configuration, saved on the server (PUT /api/brakeman/config, at
@@ -28,8 +27,8 @@ import { BRIEF_SETTINGS_SENTENCE } from '~/utils/brakemanAlert'
  * It starts from a preset (#993): Observe, Draft and propose, or Act within grants. A preset only fills the switches of what it may do
  * and may run (utils/brakemanSettings.ts), which stay drawn under it; it never turns on terminal screens and never changes the agent,
  * its account, its folder or its tools. A form that matches none is Custom. Its scope is picked from what the app lists, the
- * briefing times are a list of times, and the limits (the budget, the window, the cooldown and a question's wait) sit under Advanced,
- * a fold that keeps its fields mounted and says how many of them hold a value refused.
+ * briefing times are a list of times, and the limits (the budget, the window, the cooldown and a question's wait) sit in view under
+ * Limits, each refused value said at its field: a settings page folds nothing (UX3 R59).
  *
  * What it may run (PR-13): the four operations a person may grant Brakeman (BK2's closed list), each with what it authorizes in words,
  * a switch each. A grant this server serves no route of is shown as not in this build and cannot be turned on (the admin's guide lists
@@ -86,9 +85,6 @@ const presetItems = computed(() => [
   ...PRESETS.map((p) => ({ label: p.label, value: p.value, description: p.description })),
   ...(preset.value?.value === 'custom' ? [{ label: 'Custom', value: 'custom', description: 'The switches below, as set: no preset sets them so.', disabled: true }] : []),
 ])
-/** Advanced, the limits: folded at first, its fields kept mounted. */
-const advancedOpen = ref(false)
-const ADVANCED = ['budget.turnMinutes', 'budget.readsPerTurn', 'budget.turnsPerDay', 'budget.minutesPerDay', 'wake.windowSeconds', 'wake.cooldownMinutes', 'wake.questionMinutes']
 
 /** The background switch: the wake mode, background or invoked. */
 function setBackground(on: boolean) {
@@ -133,13 +129,24 @@ const dirty = ctl.dirty
 // and leaves one being edited as it is (its save then meets the newer revision and is refused stale). A form set under the token
 // before is never kept (formMove): the new server's revision may be the same number as the one it was read at. While an operation
 // started here is in flight, or a stale refusal waits for its choice, this watcher keeps the form; it looks again as one ends.
+// Its edits left on another page come back (UX3 R81): kept as the card goes, brought back once it is set from what is saved.
+const draft = useSettingsDraft()
 watch(
   () => [bk.generation.value, saved.value?.rev, ctl.busy.value],
   () => {
-    if (ctl.follow() === 'drop') serverError.value = null
+    const move = ctl.follow()
+    if (move === 'drop') serverError.value = null
+    const kept = draft.value.brakeman
+    if (move === 'set' && kept) {
+      ctl.restore(kept)
+      draft.value.brakeman = undefined
+    }
   },
   { immediate: true },
 )
+onBeforeUnmount(() => {
+  draft.value.brakeman = ctl.keep() ?? undefined
+})
 
 /** The agents Brakeman can be: an adapter that registers Conductor's tools and has a read-only mode. */
 const offered = computed(() => agents.value.filter((a) => a.adapter && BRAKEMAN_ADAPTERS[a.adapter]))
@@ -189,8 +196,6 @@ const controls = computed(() => {
   if (caps.value?.allowTools) out.add('allowConductorTools')
   return out
 })
-/** How many of Advanced's fields hold a value refused: said on its toggle, so a folded field's refusal is not missed. */
-const advancedRefused = computed(() => ADVANCED.filter((f) => fieldError(f)).length)
 const fieldError = (field: string) => problems.value[field] || (serverError.value?.field && formField(serverError.value.field) === field ? serverError.value.message : undefined)
 /** What is refused of no field the form shows, said above Save: the server's refusal with no field or none drawn, and the form's own. */
 const unshown = computed(() => {
@@ -296,32 +301,32 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
 
 <template>
   <UCard v-if="available !== false" :ui="{ header: 'px-4 py-3 sm:px-5', body: 'p-4 sm:p-5' }" data-brakeman-settings>
-    <template #header><SettingsCardTitle title="Brakeman" description="An agent of your choosing that reads what happened and answers with briefs. It reads and drafts; it never runs with yolo." /></template>
+    <template #header><SettingsCardTitle title="Brakeman" description="A sidekick that reads what happened and briefs you. It uses one of your accounts and never runs with Yolo." /></template>
     <p v-if="!form" class="text-sm text-muted">Reading Brakeman's configuration…</p>
     <form v-else class="flex flex-col gap-4" @submit.prevent>
-      <USwitch v-model="form.enabled" label="Brakeman on" description="Off, nothing is asked of its agent." data-brakeman-enabled />
-      <UFormField label="Agent" description="Its turns run in the agent's own read-only mode, on your login." :error="fieldError('agentId')" :ui="fieldUi">
-        <USelect v-model="agentModel" :items="agentItems" class="w-full" data-brakeman-agent />
+      <USwitch v-model="form.enabled" label="Brakeman on" description="When off, nothing is asked of its agent." data-brakeman-enabled />
+      <UFormField label="Runs on" description="Its turns run in that agent's read-only mode." :error="fieldError('agentId')" :ui="fieldUi">
+        <USelect v-model="agentModel" :items="agentItems" class="w-full" aria-label="Runs on" data-brakeman-agent />
       </UFormField>
       <UAlert v-for="w in warnings" :key="w" color="warning" variant="subtle" icon="i-lucide-shield-alert" :title="w" data-brakeman-warning />
       <p v-if="form.agentId && form.agentId !== saved?.agentId" class="text-xs text-muted" data-brakeman-warning-later>Once saved, Conductor says what this agent's read-only mode does not hold, if anything.</p>
-      <UFormField v-if="accountItems.length" label="Account" description="Its default login on this machine, or an account added in Accounts." :error="fieldError('account')" :ui="fieldUi">
+      <UFormField v-if="accountItems.length" label="Its account" description="Its agent's default login, or one from Accounts." :error="fieldError('account')" :ui="fieldUi">
         <USelect v-model="accountChoice" :items="accountItems" class="w-full" aria-label="Account" data-brakeman-account-select />
         <p v-if="login.unlisted" class="mt-1 text-xs text-muted [overflow-wrap:anywhere]" data-brakeman-account-unlisted>Not in Accounts by this path: add it there to read its usage.</p>
         <p v-if="login.retired" class="mt-1 text-xs text-warning [overflow-wrap:anywhere]" data-brakeman-account-retired>{{ login.retired }} is retired: Brakeman's turns are refused until another account is chosen.</p>
       </UFormField>
-      <UFormField v-else label="Account" description="The folder the agent's login lives in (its configuration folder); empty for its default login on this machine." :error="fieldError('account')" :ui="fieldUi">
+      <UFormField v-else label="Its account" description="The folder its agent's login lives in; empty for its default login." :error="fieldError('account')" :ui="fieldUi">
         <DirInput v-model="form.account" placeholder="/home/me/.claude-work" picker-title="The agent's login folder" data-brakeman-account />
       </UFormField>
-      <UFormField v-if="caps?.model" label="Model" description="Empty for the agent's default." :error="fieldError('model')" :ui="fieldUi">
+      <UFormField v-if="caps?.model" label="Its model" description="Empty for the agent's default." :error="fieldError('model')" :ui="fieldUi">
         <ModelField v-model="form.model" :agent="brakemanAgent" placeholder="the agent's default" data-brakeman-model />
       </UFormField>
-      <UFormField label="Folder" description="The folder it reads, and changes nothing in. With your home folder its turns run in a folder of their own, which you trust once, and read this one." :error="fieldError('cwd')" :ui="fieldUi">
+      <UFormField label="Folder it reads" description="It changes nothing there." :error="fieldError('cwd')" :ui="fieldUi">
         <DirInput v-model="form.cwd" picker-title="The folder Brakeman reads" data-brakeman-cwd />
       </UFormField>
       <p v-if="folders" class="text-xs break-all text-muted" data-brakeman-folders>{{ foldersLine(folders, saved?.cwd ?? '') }}</p>
       <UFormField v-if="caps?.allowTools" label="Conductor's tools" :error="fieldError('allowConductorTools')" :ui="fieldUi">
-        <USwitch v-model="form.allowConductorTools" label="Run Conductor's tools without asking" description="Without it the agent asks before each of Conductor's tools, and the turn waits on you in Needs you." data-brakeman-allow-tools />
+        <USwitch v-model="form.allowConductorTools" label="Use Conductor's tools without asking" description="Off, each one waits for you in Needs you." data-brakeman-allow-tools />
       </UFormField>
 
       <!-- What it may do, from a preset (#993): the preset only fills the switches below it, which stay drawn. -->
@@ -347,11 +352,7 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
 
       <fieldset class="flex flex-col gap-2" data-brakeman-grants>
         <legend class="mb-1 text-sm font-medium">What it may run</legend>
-        <p class="text-xs text-muted">
-          Off, Brakeman proposes and you act. Granted, it runs that operation itself through the operation's own route, which checks the grant,
-          its scope and what it acts on, and leaves a receipt on the brief. No grant approves, answers, accepts or closes anything, and none
-          changes these settings.
-        </p>
+        <p class="text-xs text-muted">Off, it proposes and you act. None approves or answers anything.</p>
         <div class="grid gap-2 @3xl:grid-cols-2 @3xl:gap-x-8">
           <USwitch
             v-for="g in GRANTS"
@@ -375,8 +376,8 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
       </fieldset>
 
       <fieldset class="flex flex-col gap-2">
-        <legend class="mb-1 text-sm font-medium">Its scope</legend>
-        <p class="text-xs text-muted">None picked is all of it; each one picked narrows it, at most {{ BOUNDS.selector }} of a kind.</p>
+        <legend class="mb-1 text-sm font-medium">What it covers</legend>
+        <p class="text-xs text-muted">All of it, unless you pick some: at most {{ BOUNDS.selector }} of a kind.</p>
         <div class="grid gap-3 sm:grid-cols-2">
           <UFormField v-for="f in pickers" :key="f.key" :label="f.label" :error="fieldError(`scope.${f.key}`)">
             <BrakemanScopePicker v-model="scopePicked[f.key]" :listed="f.listed" :label="f.label" :placeholder="f.placeholder" :scope-key="f.key" />
@@ -404,11 +405,11 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
         <USwitch
           :model-value="form.wake.mode === 'background'"
           label="Wake on events"
-          :description="`A task that failed, a question left waiting, a run that ended or paused, a ticket made ready, and the briefing times below. Its turns ask no one anything that pages: their questions wait in Needs you. ${BRIEF_SETTINGS_SENTENCE}`"
+          description="A failed task, a waiting question, a run that ended or paused, a ticket made ready. A brief with a new decision notifies you once."
           data-brakeman-background
           @update:model-value="setBackground"
         />
-        <UFormField label="Briefing times" :description="`In this server's time, at most ${BOUNDS.briefings}; they fire while the server runs.`" :error="fieldError('wake.briefings')" :ui="fieldUi">
+        <UFormField label="Briefing times" description="Times it briefs you, in this machine's time." :error="fieldError('wake.briefings')" :ui="fieldUi">
           <div class="flex flex-col gap-2" data-brakeman-briefings>
             <div v-for="(_, i) in times" :key="i" class="flex items-center gap-2" data-briefing-time>
               <UInput v-model="times[i]" type="time" class="w-36" :aria-label="`Briefing time ${i + 1}`" />
@@ -419,50 +420,37 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
         </UFormField>
       </fieldset>
 
-      <!-- The limits, folded: the fold keeps its fields mounted, and its toggle says how many hold a value refused. -->
-      <UCollapsible v-model:open="advancedOpen" :unmount-on-hide="false" data-brakeman-advanced>
-        <UButton
-          :label="advancedRefused ? `Advanced: ${advancedRefused} to fix` : 'Advanced'"
-          :color="advancedRefused ? 'error' : 'neutral'"
-          variant="ghost"
-          :trailing-icon="advancedOpen ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
-          class="-ms-2.5"
-          :aria-expanded="advancedOpen"
-          data-brakeman-advanced-toggle
-        />
-        <template #content>
-          <div class="flex flex-col gap-4 pt-2">
-            <p class="text-xs text-muted">Its budget and how it wakes in the background: each turn, each day, and between turns.</p>
-            <fieldset class="grid gap-3 sm:grid-cols-3">
-              <legend class="mb-1 text-sm font-medium">Its budget</legend>
-              <UFormField label="Minutes a turn" :error="fieldError('budget.turnMinutes')">
-                <UInput v-model.number="form.budget.turnMinutes" type="number" :min="BOUNDS.turnMinutes[0]" :max="BOUNDS.turnMinutes[1]" class="w-full" data-brakeman-turn-minutes />
-              </UFormField>
-              <UFormField label="Reads a turn" :error="fieldError('budget.readsPerTurn')">
-                <UInput v-model.number="form.budget.readsPerTurn" type="number" :min="BOUNDS.readsPerTurn[0]" :max="BOUNDS.readsPerTurn[1]" class="w-full" data-brakeman-reads />
-              </UFormField>
-              <UFormField label="Turns a day" :error="fieldError('budget.turnsPerDay')">
-                <UInput v-model.number="form.budget.turnsPerDay" type="number" :min="BOUNDS.turnsPerDay[0]" :max="BOUNDS.turnsPerDay[1]" class="w-full" data-brakeman-turns />
-              </UFormField>
-              <UFormField label="Minutes a day" description="Every turn's, whoever started it." :error="fieldError('budget.minutesPerDay')">
-                <UInput v-model.number="form.budget.minutesPerDay" type="number" :min="BOUNDS.minutesPerDay[0]" :max="BOUNDS.minutesPerDay[1]" class="w-full" data-brakeman-minutes />
-              </UFormField>
-            </fieldset>
-            <fieldset class="grid gap-3 sm:grid-cols-3">
-              <legend class="mb-1 text-sm font-medium">Waking in the background</legend>
-              <UFormField label="Window, seconds" description="How long it gathers wakes into one turn." :error="fieldError('wake.windowSeconds')">
-                <UInput v-model.number="form.wake.windowSeconds" type="number" :min="BOUNDS.windowSeconds[0]" :max="BOUNDS.windowSeconds[1]" class="w-full" data-brakeman-window />
-              </UFormField>
-              <UFormField label="Cooldown, minutes" description="How long it waits after a turn." :error="fieldError('wake.cooldownMinutes')">
-                <UInput v-model.number="form.wake.cooldownMinutes" type="number" :min="BOUNDS.cooldownMinutes[0]" :max="BOUNDS.cooldownMinutes[1]" class="w-full" data-brakeman-cooldown />
-              </UFormField>
-              <UFormField label="A question waits, minutes" description="Before an open question wakes it." :error="fieldError('wake.questionMinutes')">
-                <UInput v-model.number="form.wake.questionMinutes" type="number" :min="BOUNDS.questionMinutes[0]" :max="BOUNDS.questionMinutes[1]" class="w-full" data-brakeman-question />
-              </UFormField>
-            </fieldset>
-          </div>
-        </template>
-      </UCollapsible>
+      <!-- The limits, in view: a settings page folds nothing (UX3 R59). A refused value is said at its field. -->
+      <div class="flex flex-col gap-4" data-brakeman-advanced>
+        <h3 class="text-sm font-semibold text-highlighted">Limits</h3>
+        <fieldset class="grid gap-3 sm:grid-cols-3">
+          <legend class="mb-1 text-sm font-medium">Its budget</legend>
+          <UFormField label="Minutes a turn" :error="fieldError('budget.turnMinutes')">
+            <UInput v-model.number="form.budget.turnMinutes" type="number" :min="BOUNDS.turnMinutes[0]" :max="BOUNDS.turnMinutes[1]" class="w-full" data-brakeman-turn-minutes />
+          </UFormField>
+          <UFormField label="Reads a turn" :error="fieldError('budget.readsPerTurn')">
+            <UInput v-model.number="form.budget.readsPerTurn" type="number" :min="BOUNDS.readsPerTurn[0]" :max="BOUNDS.readsPerTurn[1]" class="w-full" data-brakeman-reads />
+          </UFormField>
+          <UFormField label="Turns a day" :error="fieldError('budget.turnsPerDay')">
+            <UInput v-model.number="form.budget.turnsPerDay" type="number" :min="BOUNDS.turnsPerDay[0]" :max="BOUNDS.turnsPerDay[1]" class="w-full" data-brakeman-turns />
+          </UFormField>
+          <UFormField label="Minutes a day" description="Every turn's, whoever started it." :error="fieldError('budget.minutesPerDay')">
+            <UInput v-model.number="form.budget.minutesPerDay" type="number" :min="BOUNDS.minutesPerDay[0]" :max="BOUNDS.minutesPerDay[1]" class="w-full" data-brakeman-minutes />
+          </UFormField>
+        </fieldset>
+        <fieldset class="grid gap-3 sm:grid-cols-3">
+          <legend class="mb-1 text-sm font-medium">Waking in the background</legend>
+          <UFormField label="Window, seconds" description="How long it gathers wakes into one turn." :error="fieldError('wake.windowSeconds')">
+            <UInput v-model.number="form.wake.windowSeconds" type="number" :min="BOUNDS.windowSeconds[0]" :max="BOUNDS.windowSeconds[1]" class="w-full" data-brakeman-window />
+          </UFormField>
+          <UFormField label="Cooldown, minutes" description="How long it waits after a turn." :error="fieldError('wake.cooldownMinutes')">
+            <UInput v-model.number="form.wake.cooldownMinutes" type="number" :min="BOUNDS.cooldownMinutes[0]" :max="BOUNDS.cooldownMinutes[1]" class="w-full" data-brakeman-cooldown />
+          </UFormField>
+          <UFormField label="A question waits, minutes" description="Before an open question wakes it." :error="fieldError('wake.questionMinutes')">
+            <UInput v-model.number="form.wake.questionMinutes" type="number" :min="BOUNDS.questionMinutes[0]" :max="BOUNDS.questionMinutes[1]" class="w-full" data-brakeman-question />
+          </UFormField>
+        </fieldset>
+      </div>
 
       <UAlert v-for="w in unshown" :key="w" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="w" data-brakeman-save-error />
       <UAlert
@@ -479,7 +467,10 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
         data-brakeman-stale
       />
       <p v-if="stale && staleError" class="text-xs text-error" data-brakeman-stale-error>{{ staleError }}</p>
-      <NuxtLink v-if="saved?.enabled" to="/brakeman" class="text-sm underline">Open Brakeman</NuxtLink>
+      <div v-if="saved?.enabled" class="flex flex-wrap items-center gap-x-3 gap-y-2" data-brakeman-open-row>
+        <span class="min-w-0 flex-1 text-sm text-muted">Its briefs and what it asks you.</span>
+        <UButton label="Open Brakeman" to="/brakeman" icon="i-lucide-notebook-pen" size="sm" color="neutral" variant="outline" data-brakeman-open />
+      </div>
     </form>
     <UModal v-model:open="readAgainOpen" title="Read Brakeman's settings again?" description="What is saved now replaces this form: the edits made here will be lost.">
       <template #footer>

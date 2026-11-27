@@ -166,9 +166,9 @@ function agentsStop(n: number): string {
   return n ? `${n} running ${n === 1 ? 'agent stops' : 'agents stop'}.` : 'No agent is running.'
 }
 
-/** Restart server (the desktop app's): Settings' own button says Restart server. */
+/** Restart server (the desktop app's), asked while agents run: Settings' row in The app asks the same, with its own Restart server (UX3 R57). */
 export function restartQuestion(n: number): Ask {
-  return { title: 'Restart the server?', detail: agentsStop(n), confirm: 'Restart server', keep: 'Cancel' }
+  return { title: 'Restart the server?', detail: agentsStop(n), confirm: 'Restart server', keep: 'Keep it running' }
 }
 
 /** Settings' Save when what changed takes a restart and agents run: the save bar asks the same, with its own Save and restart (UX3 R56). */

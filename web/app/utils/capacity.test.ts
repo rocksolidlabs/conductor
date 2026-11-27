@@ -17,6 +17,7 @@ import {
   clockWords,
   countsWords,
   creditWords,
+  faceWords,
   figureWords,
   freshnessWords,
   inWords,
@@ -410,3 +411,31 @@ describe("the compact panel's words (the crew's sheet, a ticket's launch, Settin
     expect(compactWords(ok([]), NOW).line).toBe('Claude Max · no windows reported')
   })
 })
+
+describe("the usage beside Launch agent's Account", () => {
+  const win = (name: string, percent: number, severity: CapacityWindow['severity'] = 'normal'): CapacityWindow => ({ source: 'provider', kind: name, name, percent, severity })
+  it('says each window of a reading by its name and share, in its colour', () => {
+    expect(faceWords(view({ windows: [win('5-hour', 12), win('Weekly, all models', 40)] }))).toEqual([
+      { text: '5-hour 12%', tone: 'default' },
+      { text: 'Weekly, all models 40%', tone: 'default' },
+    ])
+    expect(faceWords(view({ windows: [win('5-hour', 12, 'warning')] }))[0]!.tone).toBe('warning')
+    expect(faceWords(view({ windows: [win('5-hour', WARN_PERCENT)] }))[0]!.tone).toBe('warning')
+    expect(faceWords(view({ windows: [win('5-hour', WARN_PERCENT - 1)] }))[0]!.tone).toBe('default')
+    expect(faceWords(view({ windows: [win('5-hour', 99, 'critical')] }))[0]!.tone).toBe('error')
+    expect(faceWords(view({ windows: [] }))).toEqual([{ text: 'No windows reported', tone: 'default' }])
+  })
+  it("says any other state by its title, and nothing where there is nothing to read", () => {
+    const title = (state: string) => faceWords(view({ state }))
+    expect(title('reading')).toEqual([{ text: 'Reading…', tone: 'default' }])
+    expect(title('never_read')[0]!.text).toBe('Not read yet')
+    expect(title('signed_out')[0]!.text).toBe('Signed out')
+    expect(title('unqualified')[0]!.text).toBe('Version not checked')
+    expect(title('error')[0]!.text).toBe('Could not read')
+    expect(title('env_set')[0]!.text).toBe('Login set by the launch')
+    expect(title('unsupported')).toEqual([])
+    expect(title('remote')).toEqual([])
+    expect(faceWords(null)).toEqual([{ text: 'Reading…', tone: 'default' }])
+  })
+})
+

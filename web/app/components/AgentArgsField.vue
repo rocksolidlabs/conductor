@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { argRows, holdsYolo, listShows, typedAt, type ArgRow } from '~/utils/argComplete'
+import { splitArgs } from '~/utils/argv'
+import { argsHoldYolo } from '~/utils/launch'
 
 /**
  * An agent's arguments as one line, which offers the agent's own flags as the person types (GET /api/catalog/{id}/flags, read
@@ -17,6 +19,8 @@ const props = defineProps<{
   /** The form has a Model field for this agent: the model flag is left to it. */
   modelField?: boolean
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
+  /** The agent's own yolo recipe arguments: typed by hand, they too say to use the Yolo switch (Launch agent's R27). */
+  yoloArgs?: readonly string[]
 }>()
 
 const { flags, reading } = useAgentFlags(() => (props.agent ? { id: props.agent.id, version: props.agent.version } : null))
@@ -39,7 +43,7 @@ const typed = computed(() => typedAt(model.value, cursor.value, flags.value, bro
 const waiting = computed(() => reading.value && typed.value.startsWith('-'))
 const open = computed(() => focused.value && engaged.value && !dismissed.value && (listShows(rows.value, typed.value) || waiting.value))
 const items = computed(() => rows.value.map((r) => ({ ...r, value: r.text })))
-const yoloTyped = computed(() => holdsYolo(model.value, flags.value))
+const yoloTyped = computed(() => holdsYolo(model.value, flags.value) || argsHoldYolo(splitArgs(model.value), props.yoloArgs))
 const placeholder = computed(() => (flags.value.length ? 'Type -- to see its flags' : 'Flags, as you would type them in a terminal'))
 
 function input(): HTMLInputElement | undefined {

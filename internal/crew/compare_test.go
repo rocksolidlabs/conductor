@@ -313,7 +313,7 @@ func TestACompareCrewNeedsATicket(t *testing.T) {
 	ctx := t.Context()
 	refused := func(what string, err error) {
 		t.Helper()
-		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "a comparison is launched from a ticket's approved plan revision") {
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "an agent trial starts from a ticket's approved plan revision") {
 			t.Fatalf("%s: %v", what, err)
 		}
 	}

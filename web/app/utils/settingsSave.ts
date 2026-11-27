@@ -126,6 +126,29 @@ export function followSaved<T extends object>(form: T, sent: T | null, now: T, c
   return followed
 }
 
+/**
+ * A draft brought back (UX3 R81): each field the draft holds an edit in (it differs from what the draft was read against) is set to
+ * that edit, unless what is saved changed meanwhile, which then wins. `keys` limits the fields. Returns the fields brought back.
+ */
+export function draftBack<T extends object>(form: T, draft: T, draftSaved: T, now: T, keys?: ReadonlyArray<keyof T>): Array<keyof T> {
+  const back: Array<keyof T> = []
+  for (const k of keys ?? (Object.keys(draft) as Array<keyof T>)) {
+    if (stable(draft[k]) === stable(draftSaved[k])) continue
+    if (stable(draftSaved[k]) !== stable(now[k])) continue
+    form[k] = (draft[k] === undefined ? undefined : JSON.parse(JSON.stringify(draft[k]))) as T[keyof T]
+    back.push(k)
+  }
+  return back
+}
+
+/** A configuration form kept as the page was left (`configForm`'s `keep`): the form as the server takes it, what it was set from, its token's generation and whether a stale refusal waited. */
+export interface ConfigDraft<T> {
+  form: T
+  base: T
+  gen: number
+  stale: boolean
+}
+
 /** The one comparison: whether `a` carries a revision newer than `b`'s (no `b`: none is held). */
 export function newer(a: { rev: number } | null | undefined, b: { rev: number } | null | undefined): boolean {
   return !!a && (!b || a.rev > b.rev)
@@ -340,7 +363,30 @@ export function configForm<T extends { rev: number }>(deps: ConfigFormDeps<T>) {
     deps.shown(form.value, 'all')
     return true
   }
-  return { form, base, gen, busy, stale, staleError, choosing, edited, dirty, reset, drop, follow, op, save, readAgain, keepMine, discard }
+  /** The form as the page is left (UX3 R81), when it holds a change: what `restore` brings back on the page's return. */
+  function keep(): ConfigDraft<T> | null {
+    const c = current()
+    if (!c || !base.value || !dirty.value) return null
+    return { form: copy(c), base: copy(base.value), gen: gen.value, stale: stale.value }
+  }
+  /**
+   * A kept form brought back over the one just set from what is saved (UX3 R81): every field edited in it, unless what is saved
+   * changed meanwhile, which wins (`draftBack`); at the revision saved now. A stale refusal that waited still waits when nothing was
+   * saved since. A form kept under another token is dropped. Whether it was brought back.
+   */
+  function restore(d: ConfigDraft<T>): boolean {
+    const s = deps.saved()
+    if (!s || !form.value || d.gen !== deps.generation()) return false
+    const next = copy(s)
+    draftBack(next, d.form, d.base, s)
+    next.rev = s.rev
+    base.value = copy(s)
+    form.value = next
+    stale.value = d.stale && d.base.rev === s.rev
+    deps.shown(form.value, 'all')
+    return true
+  }
+  return { form, base, gen, busy, stale, staleError, choosing, edited, dirty, reset, drop, follow, op, save, readAgain, keepMine, discard, keep, restore }
 }
 
 /** A save refused since the configuration was saved elsewhere since the form's revision (its cause the server's refusal). */

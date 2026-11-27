@@ -32,7 +32,7 @@ func switchyardEnv(t *testing.T, relay bool) *testEnv {
 func TestSwitchyardLaunchesNothing(t *testing.T) {
 	e := switchyardEnv(t, true)
 	for _, tc := range []struct{ method, path string }{
-		{"POST", "/api/sessions"}, {"GET", "/api/catalog"}, {"GET", "/api/catalog/claude/flags"}, {"POST", "/api/catalog/check"}, {"GET", "/api/crews"}, {"POST", "/api/crews"},
+		{"POST", "/api/sessions"}, {"GET", "/api/catalog"}, {"GET", "/api/catalog/claude/flags"}, {"GET", "/api/launch/last"}, {"POST", "/api/catalog/check"}, {"GET", "/api/crews"}, {"POST", "/api/crews"},
 		{"GET", "/api/runs"}, {"POST", "/api/runs/x-1a2b3c4d/stop"}, {"GET", "/api/integrations"}, {"GET", "/api/paths"}, {"GET", "/api/git/check"},
 		{"POST", "/api/sessions/abc/resume"}, {"POST", "/api/sessions/abc/clone"}, {"POST", "/api/sessions/abc/crew"}, {"GET", "/api/sessions/abc/run"},
 	} {
