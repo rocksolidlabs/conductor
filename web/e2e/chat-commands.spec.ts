@@ -209,3 +209,41 @@ test('long names that differ at their end are told apart, the rows whole and ins
     await page.context().close()
   }
 })
+
+test("a line the page put in the box opens no list: its Enter sends it, as written; the highlighted row is always in view", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const { conv } = await aChat(page, 'e2e commands page line')
+    budget(12 * STEP_MS + 3 * LONG_MS)
+    // The person's own / opens the list: the reference that it would.
+    await box(page).click()
+    await page.keyboard.type('/')
+    await expect(row(page, 'compact')).toBeVisible({ timeout: LONG_MS })
+    await page.keyboard.press('Escape')
+    await box(page).fill('')
+    // A / line the page put there, the cursor in its first word: no list, and the person's Enter sends it as written.
+    await box(page).evaluate((el: HTMLTextAreaElement) => {
+      el.value = '/compact'
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await box(page).click()
+    await box(page).press('End')
+    await expect(page.locator('[data-chat-view] [data-chat-help="plain"]')).toBeVisible()
+    await expect(menu(page)).toHaveCount(0)
+    const n = marks(conv).length
+    await box(page).press('Enter')
+    expect(await markOf(conv, n + 1)).toBe('marked')
+    // More commands than the list's height: the arrows keep the highlighted row in view.
+    writeFileSync(stubFile(own, conv, 'commands'), Array.from({ length: 14 }, (_, i) => `many-${String(i).padStart(2, '0')}|One of many|`).join('\n') + '\n')
+    await box(page).click()
+    await page.keyboard.type('/many')
+    await expect(row(page, 'many-00')).toBeVisible({ timeout: LONG_MS })
+    for (let i = 0; i < 13; i++) await page.keyboard.press('ArrowDown')
+    await expect(activeRow(page)).toHaveAttribute('data-chat-menu-row', 'many-13')
+    await expect(activeRow(page)).toBeInViewport({ ratio: 1 })
+    await page.keyboard.press('Enter')
+    await expect(box(page)).toHaveValue('/many-13 ')
+  } finally {
+    await page.context().close()
+  }
+})

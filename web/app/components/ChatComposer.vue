@@ -282,11 +282,11 @@ onBeforeUnmount(() => {
 })
 /**
  * The list for `/` (UX3 R11): while the line begins with `/` and the cursor is in its first word, the agent's own commands that
- * match. Enter on a whole listed name sends at once, Enter with none matching sends as typed; Tab or Enter on a row completes it.
+ * match, on the person's own line alone. Enter and Tab complete the highlighted row; a line goes only by an Enter with the list closed.
  */
 /** The commands offered now: the server's, where this box may expand a line and is not answering a question (offeredCommands). */
 const commandList = computed(() => offeredCommands({ canExpand: !!props.agent?.expand && !!props.commands, answering: answering.value || !!props.agent?.asked?.reply, list: props.commands?.list }))
-const command = computed<CommandWord | null>(() => (props.agent && commandList.value ? commandAt(draft.value, caret.value) : null))
+const command = computed<CommandWord | null>(() => (props.agent && commandList.value && listsOn.value ? commandAt(draft.value, caret.value) : null))
 const commandKey = computed(() => (command.value ? `/:${command.value.typed}` : ''))
 watch(commandKey, (k) => {
   if (!k) dismissed.value = ''

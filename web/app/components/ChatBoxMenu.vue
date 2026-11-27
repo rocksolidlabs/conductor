@@ -17,12 +17,18 @@ function parts(path: string): { dir: string; name: string } {
   return i < 0 ? { dir: '', name: path } : { dir: path.slice(0, i + 1), name: path.slice(i + 1) }
 }
 const optionId = (i: number) => `${props.id}-${i}`
+// The highlighted row in view: the list scrolls, and the row the arrows reach is never one the person cannot see.
+const list = useTemplateRef<HTMLUListElement>('list')
+watch(
+  () => [props.active, props.rows.length] as const,
+  () => void nextTick(() => list.value?.querySelector<HTMLElement>('[data-chat-menu-active]')?.scrollIntoView({ block: 'nearest' })),
+)
 defineExpose({ optionId })
 </script>
 
 <template>
   <div class="absolute inset-x-3 bottom-full z-20 mb-1 overflow-hidden rounded-lg border border-default bg-default shadow-lg" data-chat-menu :data-chat-menu-kind="kind">
-    <ul v-if="rows.length" :id="id" role="listbox" :aria-label="kind === 'file' ? 'Files' : 'Commands'" class="flex max-h-[22rem] flex-col overflow-y-auto py-1">
+    <ul v-if="rows.length" :id="id" ref="list" role="listbox" :aria-label="kind === 'file' ? 'Files' : 'Commands'" class="flex max-h-[22rem] flex-col overflow-y-auto py-1">
       <li
         v-for="(r, i) in rows"
         :id="optionId(i)"
