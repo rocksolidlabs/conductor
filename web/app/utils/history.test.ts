@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { CommandRefused } from './tasks'
 import {
+  allEndedWords,
+  endedWords,
+  endNotSeen,
+  welcomeResumeRows,
+  type SessionSummary,
   activeFilters,
   clearedQuery,
   withoutFilter,
@@ -490,5 +495,56 @@ describe('what narrows a search, and what clearing takes off (#1023)', () => {
   it('clears every filter and the words: Clear all leaves nothing narrowing the search', () => {
     expect(clearedQuery()).toBe('')
     expect(activeFilters(clearedQuery())).toEqual([])
+  })
+})
+
+describe("the welcome's sessions to pick up (UX3)", () => {
+  const row = (over: Partial<SessionSummary> & { id: string }): SessionSummary => ({
+    name: over.id,
+    kind: 'session',
+    agent: { id: 'claude', session: { id: `c-${over.id}`, resumable: true } },
+    host: { name: 'build-1' },
+    cwd: '/home/someone/code/shop-api',
+    startedAt: '2026-11-26T08:00:00Z',
+    endedAt: '2026-11-26T09:00:00Z',
+    ...over,
+  })
+
+  it('offers the records of this server ended or lost, resumable, of no crew, the newest of each conversation, newest end first', () => {
+    const records = [
+      row({ id: 'old', endedAt: '2026-11-26T09:00:00Z' }),
+      row({ id: 'new', endedAt: '2026-11-26T12:00:00Z' }),
+      row({ id: 'lost', endedAt: undefined, lostAt: '2026-11-26T11:00:00Z' }),
+      row({ id: 'open', endedAt: undefined }),
+      row({ id: 'hosted', host: { name: 'other', hosted: true } }),
+      row({ id: 'member', crew: { runId: 'r1' } }),
+      row({ id: 'none', agent: { id: 'claude', session: { id: 'c-none', resumable: false } } }),
+      row({ id: 'shell', agent: { id: 'shell' } }),
+      row({ id: 'again', agent: { id: 'claude', session: { id: 'c-new', resumable: true } }, endedAt: '2026-11-26T10:00:00Z' }),
+      row({ id: 'odd', unreadable: true }),
+    ]
+    const { rows, total } = welcomeResumeRows(records)
+    expect(rows.map((r) => r.id)).toEqual(['new', 'lost', 'old'])
+    expect(total).toBe(3)
+  })
+
+  it('shows three at most, and counts them all', () => {
+    const four = ['a', 'b', 'c', 'd'].map((id, i) => row({ id, endedAt: `2026-11-26T1${i}:00:00Z` }))
+    const { rows, total } = welcomeResumeRows(four)
+    expect(rows.map((r) => r.id)).toEqual(['d', 'c', 'b'])
+    expect(total).toBe(4)
+    expect(allEndedWords(total)).toBe('All 4 ended sessions')
+    expect(allEndedWords(1)).toBe('All 1 ended session')
+  })
+
+  it("says a row's age in the Status rule's words, and whether its end was seen", () => {
+    const now = Date.parse('2026-11-27T12:00:00Z')
+    expect(endedWords({ endedAt: '2026-11-27T11:59:30Z' }, now)).toBe('ended just now')
+    expect(endedWords({ endedAt: '2026-11-27T11:48:00Z' }, now)).toBe('ended 12m ago')
+    expect(endedWords({ endedAt: '2026-11-27T09:00:00Z' }, now)).toBe('ended 3h ago')
+    expect(endedWords({ lostAt: '2026-11-25T12:00:00Z' }, now)).toBe('ended 2d ago')
+    expect(endedWords({}, now)).toBe('ended')
+    expect(endNotSeen({ lostAt: '2026-11-25T12:00:00Z' })).toBe(true)
+    expect(endNotSeen({ endedAt: '2026-11-25T12:00:00Z', lostAt: '2026-11-25T12:00:00Z' })).toBe(false)
   })
 })

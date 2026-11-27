@@ -3,9 +3,10 @@ import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import { restartQuestion, saveRestartQuestion } from '~/utils/actions'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
-import { plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
+import { NOT_INSTALLED_BADGE, identityBadge } from '~/utils/agentBadges'
+import { PUBLIC_SWITCHYARD, folderProblems, foldersHeld, plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
 import { followSaved, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
-import { SETTINGS_FIELD_UI, sectionFromQuery, sectionInView, shownSections, type SectionBox, type SettingsSectionId } from '~/utils/settingsSections'
+import { SETTINGS_FIELD_UI, SETTINGS_SWITCH_UI, changedSections, changedWords, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsAddress, type SettingsSectionId } from '~/utils/settingsSections'
 
 // The desktop app's settings: what its shell starts the server with. In a
 // browser against a server configured by its file, the page says so.
@@ -17,6 +18,7 @@ const serverHost = useServerHost()
 /** The cards' spacing: a title close to its content (#366). */
 const cardUi = { header: 'px-4 py-3 sm:px-5', body: 'p-4 sm:p-5' }
 const fieldUi = SETTINGS_FIELD_UI
+const switchUi = SETTINGS_SWITCH_UI
 /** A section's card: scrolled to, it clears the phone's sticky row of links, and on a wide window keeps the body's padding above it. */
 const sectionClass = 'scroll-mt-16 sm:scroll-mt-18 lg:scroll-mt-6'
 /** The navbar's buttons: their words from sm, their icons alone below it (each has an aria-label and a tooltip). */
@@ -31,37 +33,45 @@ const saving = ref(false)
 const holding = ref(false)
 const error = ref('')
 const reach = ref<ReachInfo | null>(null)
-/** Windows: what the app forwards for WebRTC from WSL (null elsewhere). */
+/** Windows: what the app forwards for WebRTC from WSL (null elsewhere), shown as Switchyard's Windows firewall row. */
 const ice = ref<DesktopIceStatus | null>(null)
 const allowing = ref(false)
+/** An Allow that failed: said in the firewall's row, where it was pressed. */
+const iceError = ref('')
 async function allowFirewall() {
   const b = desktop.bridge.value
   if (!b || !ice.value) return
   allowing.value = true
+  iceError.value = ''
   try {
     ice.value = { ...ice.value, firewall: await b.allowIceFirewall() }
   } catch (e) {
-    error.value = (e as Error).message
+    iceError.value = (e as Error).message
   } finally {
     allowing.value = false
   }
 }
 const agents = ref<AgentInfo[]>([])
 const versions = ref<{ app: string; electron: string; node: string; chrome: string; server: string } | null>(null)
-const rootsText = computed({
-  get: () => form.allowedRoots.join('\n'),
-  set: (v: string) => (form.allowedRoots = v.split('\n').map((s) => s.trim()).filter(Boolean)),
-})
+/** The folder fields checked as they are picked (UX3 R55): the words at each field, and whether they hold Save. */
+const folders = computed(() => folderProblems(form))
+function removeRoot(root: string) {
+  if (form.allowedRoots.length > 1) form.allowedRoots = form.allowedRoots.filter((r) => r !== root)
+}
 const reachItems = [
-  { label: 'Auto: map the TLS port on the router when there is one', value: 'auto' },
+  { label: 'Automatic: map the port on your router', value: 'auto' },
   { label: 'Manual: find the public address only', value: 'manual' },
   { label: 'Off', value: 'off' },
 ]
+/** The Windows-only rows (the WSL distribution, the Windows folders, the firewall). */
+const onWindows = computed(() => desktop.bridge.value?.platform === 'win32')
 const appDirty = computed(() => !!settings.value && JSON.stringify({ ...settings.value }) !== JSON.stringify({ ...form }))
 /** Brakeman's section, saved by the page's one Save with the rest (#707); in a browser, alone. */
-const brakemanCard = useTemplateRef<{ dirty: boolean; blocked: boolean; take: () => BrakemanPart | null }>('brakemanCard')
+const brakemanCard = useTemplateRef<{ dirty: boolean; blocked: boolean; take: () => BrakemanPart | null; discard: () => void }>('brakemanCard')
 /** Brakeman's form holds a change the form's own checks refuse: nothing is saved until it is fixed, where it says. */
-const blocked = computed(() => !!brakemanCard.value?.dirty && !!brakemanCard.value?.blocked)
+const brakemanBlocked = computed(() => !!brakemanCard.value?.dirty && !!brakemanCard.value?.blocked)
+/** A change that cannot be saved as it is: Brakeman's form refuses a value, or a folder field holds what the app refuses. Said at the field. */
+const blocked = computed(() => brakemanBlocked.value || (appDirty.value && foldersHeld(folders.value)))
 const dirty = computed(() => appDirty.value || !!brakemanCard.value?.dirty)
 // The switchyard as last loaded or saved: a plain one on another machine is
 // refused with the words why (switchyardProblem, which the app's validate
@@ -96,11 +106,50 @@ async function load() {
   ])
 }
 
-/** A Save refused before anything was sent: the words at the top, and where the button is too (#348) when Brakeman's is held with it. */
+/** A Save refused before anything was sent: the words in the save bar, beside Save (UX3 R56). */
 function refuse(out: SaveOutcome) {
   const words = saveWords(out)
   error.value = words.description ?? words.title
-  if (out.brakeman === 'held') toast.add({ title: words.title, description: words.description, icon: 'i-lucide-triangle-alert', color: 'error' })
+}
+
+// The save bar (UX3 R56): what changed, by section, Discard, and Save; a save that restarts while agents run asks first, in the bar.
+const live = useAttention()
+/** The sessions of this machine running or starting, a shell's too: what a restart of the server stops. */
+const running = computed(() => live.sessions.value.filter((s) => s.kind === 'server' && (s.status === 'running' || s.status === 'starting')).length)
+const changedIds = computed(() => changedSections(settings.value, form, !!brakemanCard.value?.dirty))
+const changed = computed(() => changedWords(changedIds.value))
+/** The question a press of Save and restart asks while agents run: in the bar, never a dialog. */
+const asking = ref(false)
+const question = computed(() => saveRestartQuestion(running.value))
+const keepEditingButton = useTemplateRef<{ $el: HTMLElement }>('keepEditingEl')
+watch([dirty, restarts], ([d, r]) => {
+  if (!d || !r) asking.value = false
+})
+/** Save pressed in the bar: a save that restarts the server while agents run asks once; otherwise it saves at once. */
+function pressSave() {
+  if (saving.value || blocked.value || !dirty.value) return
+  if (restarts.value && running.value > 0) {
+    asking.value = true
+    void nextTick(() => keepEditingButton.value?.$el?.focus())
+    return
+  }
+  void save()
+}
+/** The question's Save and restart: never the second click of a double click whose first asked. */
+function confirmSave(e: MouseEvent) {
+  if (e.detail > 1) return
+  asking.value = false
+  void save()
+}
+function keepEditing() {
+  asking.value = false
+}
+/** Discard: the app's fields back to what is saved, and Brakeman's form to its saved configuration (a stale choice that waits is kept). */
+function discard() {
+  if (settings.value) followSaved(form, null, settings.value)
+  brakemanCard.value?.discard()
+  error.value = ''
+  asking.value = false
 }
 
 async function save() {
@@ -157,11 +206,8 @@ async function save() {
     })
     const words = saveWords(out)
     if (words.ok) toast.add({ title: words.title, icon: 'i-lucide-check', color: 'success' })
-    else {
-      error.value = words.description ?? words.title
-      // The alert sits at the top of a long page: say it where the button is too (#348).
-      toast.add({ title: words.title, description: words.description, icon: 'i-lucide-triangle-alert', color: 'error' })
-    }
+    // A refusal is said in the bar, beside Save, and the edits stay (UX3 R56).
+    else error.value = words.description ?? words.title
     if (out.app === 'saved' || out.app === 'restarted') await load()
   } finally {
     saving.value = false
@@ -172,7 +218,7 @@ async function save() {
 // The folder picker browses the server's own folders (on Windows, the WSL distribution's), never the native dialog.
 const picker = ref<{ field: PickerField; start: string; title: string; expect?: 'under-roots' | 'outside-roots' } | null>(null)
 const pickerOpen = ref(false)
-const pickerTitles: Record<PickerField, string> = { root: 'Add an allowed root', defaultCwd: 'Default working directory', dataDir: 'Data directory' }
+const pickerTitles: Record<PickerField, string> = { root: 'Add a folder agents can use', defaultCwd: 'Default folder', dataDir: 'Where Conductor keeps its data' }
 function openPicker(field: PickerField) {
   picker.value = { field, start: pickerStart(field, form), title: pickerTitles[field], expect: field === 'defaultCwd' ? 'under-roots' : field === 'dataDir' ? 'outside-roots' : undefined }
   pickerOpen.value = true
@@ -196,7 +242,7 @@ const brakeman = useBrakeman()
 const accounts = useAccounts()
 const github = useTracker()
 const sections = computed(() =>
-  shownSections({ desktop: desktop.isDesktop.value, platform: desktop.bridge.value?.platform, ice: !!ice.value, agents: agents.value.length, brakeman: brakeman.available.value !== false, accounts: accounts.available.value !== false, github: github.available.value !== false }),
+  shownSections({ desktop: desktop.isDesktop.value, platform: desktop.bridge.value?.platform, agents: agents.value.length, brakeman: brakeman.available.value !== false, accounts: accounts.available.value !== false, github: github.available.value !== false }),
 )
 const layout = ref<HTMLElement | null>(null)
 const nav = ref<HTMLElement | null>(null)
@@ -209,9 +255,9 @@ let chosen: SettingsSectionId | null = null
 /** Set once the page's sections have rendered (the bridge and the catalog answered): an address read before waits for it. */
 const loaded = ref(false)
 /** The address this page wrote without a choice (keepSectionInQuery): a section, or none at the top. No scroll follows it. */
-let kept: { id: SettingsSectionId | null } | null = null
+let kept: { id: SettingsAddress | null } | null = null
 const body = () => layout.value?.closest<HTMLElement>('[data-slot="body"]') ?? null
-const sectionEl = (id: SettingsSectionId) => layout.value?.querySelector<HTMLElement>(`[data-settings-section="${id}"]`) ?? null
+const sectionEl = (id: SettingsAddress) => layout.value?.querySelector<HTMLElement>(`[data-settings-section="${id}"]`) ?? null
 /** What the phone's sticky row of links covers at the top of the body; nothing beside the sections on a wide window. */
 const cover = () => (nav.value && getComputedStyle(nav.value).flexDirection === 'row' ? nav.value.offsetHeight : 0)
 function spy() {
@@ -239,13 +285,13 @@ const onScroll = () => {
  * The section brought into view and held there until the person scrolls, types or clicks: what renders after it was chosen (an
  * agent's badge, Brakeman's form, a card above it that the bridge or the catalog answered for) would move it out of place.
  */
-let pinned: SettingsSectionId | null = null
+let pinned: SettingsAddress | null = null
 const unpin = () => {
   pinned = null
   chosen = null
 }
-/** Puts a section's top at the top of the body, less its scroll margin (which clears the phone's row of links). The body alone scrolls. */
-function align(id: SettingsSectionId): boolean {
+/** Puts a section's top (or a row's that has an address) at the top of the body, less its scroll margin (which clears the phone's row of links). The body alone scrolls. */
+function align(id: SettingsAddress): boolean {
   const b = body()
   const el = sectionEl(id)
   if (!b || !el) return false
@@ -253,10 +299,10 @@ function align(id: SettingsSectionId): boolean {
   b.scrollTop += el.getBoundingClientRect().top - b.getBoundingClientRect().top - margin
   return true
 }
-/** Brings a section into view; none, or one not shown, opens at the top. */
-function scrollToSection(id: SettingsSectionId | null) {
+/** Brings a section, or a row with an address, into view, its section marked; none, or one not shown, opens at the top. */
+function scrollToSection(id: SettingsAddress | null) {
   const shown = id ? align(id) : false
-  chosen = shown ? id : null
+  chosen = shown && id ? sectionOf(id) : null
   pinned = shown ? id : null
   if (!shown) body()?.scrollTo({ top: 0 })
   spy()
@@ -342,14 +388,14 @@ onMounted(async () => {
 
 // This page's group in the command palette (#302): Save, and the desktop app's buttons. Only in the desktop app (#332): the
 // browser's page is the server's file, a notice and Brakeman's section, which its save bar saves, so it offers no row.
-const live = useAttention()
 usePalette().registerPage(() => {
   if (!desktop.isDesktop.value) return null
-  const n = live.sessions.value.filter((s) => s.kind === 'server' && (s.status === 'running' || s.status === 'starting')).length
+  const n = running.value
   return {
     label: 'Settings',
     rows: [
-      { key: 'page:save', label: restarts.value ? 'Save and restart the server' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value || blocked.value, ask: restarts.value ? saveRestartQuestion(n) : undefined, run: save },
+      // Asked only while agents run, in the bar's words; a save confirmed here is not asked again by the bar.
+      { key: 'page:save', label: restarts.value ? 'Save and restart' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value || blocked.value, ask: restarts.value && n ? saveRestartQuestion(n) : undefined, run: save },
       ...(desktop.isDesktop.value
         ? [
             { key: 'page:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: restartQuestion(n), run: () => void desktop.bridge.value?.restartServer() },
@@ -430,7 +476,6 @@ usePalette().registerPage(() => {
         </nav>
         <!-- A fieldset, so a save that may move the page holds every field of the sections at once (holding). -->
         <fieldset :disabled="holding" class="@container m-0 flex min-w-0 flex-1 flex-col gap-5 border-0 p-0" data-settings-sections>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-settings-error />
         <UAlert
           v-if="desktop.serverState.value"
           :color="desktop.serverState.value.state === 'running' ? 'success' : desktop.serverState.value.state === 'failed' ? 'error' : 'neutral'"
@@ -440,78 +485,46 @@ usePalette().registerPage(() => {
           :description="desktop.serverState.value.lastError || (desktop.serverState.value.version ? `conductor ${desktop.serverState.value.version}` : '')"
           data-server-state
         />
-        <UCard v-if="ice" :ui="cardUi" :class="sectionClass" data-settings-section="webrtc" data-ice-status>
-          <template #header><SettingsCardTitle title="WebRTC from WSL" description="What the app forwards so a shared session connects from inside the distribution." /></template>
-          <div class="flex flex-col gap-3 text-sm">
-            <p v-if="ice.forwarding">
-              The app forwards UDP port <code>{{ ice.port }}</code> on <code>{{ ice.publicIp }}</code> into the distribution at <code>{{ ice.wslAddress }}</code>, so a shared session connects peer to peer through your router only. WSL's own networking is left as it is.
-            </p>
-            <p v-else class="text-muted">Nothing is forwarded{{ ice.reason ? `: ${ice.reason}` : '' }}.</p>
-            <div v-if="ice.forwarding" class="flex flex-wrap items-center gap-2">
-              <UBadge :label="ice.firewall === 'present' ? 'firewall rule present' : ice.firewall === 'missing' ? 'firewall rule missing' : 'firewall rule unknown'" :color="ice.firewall === 'present' ? 'success' : ice.firewall === 'missing' ? 'warning' : 'neutral'" variant="subtle" data-ice-firewall />
-              <UButton v-if="ice.firewall !== 'present'" label="Allow through the Windows firewall" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="allowing" data-ice-allow @click="allowFirewall" />
-              <span v-if="ice.firewall !== 'present'" class="text-xs text-muted">One elevation prompt adds an inbound rule for UDP {{ ice.port }}.</span>
-            </div>
-          </div>
-        </UCard>
-
-        <UCard :ui="cardUi" :class="sectionClass" data-settings-section="switchyard" data-switchyard-settings>
-          <template #header><SettingsCardTitle title="Switchyard" description="Share links that work from anywhere, through a switchyard." /></template>
-          <div class="flex flex-col gap-4">
-            <USwitch v-model="form.switchyardEnabled" label="Publish sessions to a switchyard" description="So a share link works from anywhere." data-switchyard-enabled />
-            <p class="text-sm text-muted">
-              Every session here is published to a switchyard, switchyard.rslabs.net unless you name another. It is told each session's name, agent and folder name, this machine's name, and whether the session waits on you; never its chat, activity or command line. It mints and checks the links and decides who joins, and the terminal goes between the viewer and this machine over WebRTC, or through the switchyard's relay, which can read it, when no direct path forms. Publish only to a switchyard whose operator you trust. Off, links work where this machine is reachable.
-            </p>
-            <UFormField label="Switchyard" description="Leave empty for the public one. https://, or http:// only for one on this machine (localhost)." :error="switchyardError || undefined" :ui="fieldUi" data-switchyard-server>
-              <UInput v-model="form.switchyardServer" class="w-full font-mono text-xs" placeholder="https://switchyard.rslabs.net" :disabled="!form.switchyardEnabled" />
-            </UFormField>
-            <UFormField label="Host token" description="Optional: a host token for a private switchyard, or a trusted seat on the public one, outside its per-address limits." :ui="fieldUi">
-              <UInput v-model="form.switchyardToken" type="password" class="w-full font-mono text-xs" autocomplete="off" :disabled="!form.switchyardEnabled" />
-            </UFormField>
-            <UFormField label="Shown there as" description="How this machine is named at the switchyard; its host name when empty." :ui="fieldUi">
-              <UInput v-model="form.switchyardName" class="w-full" maxlength="64" :disabled="!form.switchyardEnabled" />
-            </UFormField>
-          </div>
-        </UCard>
-
         <UCard :ui="cardUi" :class="sectionClass" data-settings-section="folders">
-          <template #header><SettingsCardTitle title="Where agents work" description="The folders sessions may run in, and where the server keeps its data." /></template>
+          <template #header><SettingsCardTitle title="Where agents work" description="The folders agents may use." /></template>
           <div class="flex flex-col gap-4">
-            <p v-if="desktop.bridge.value?.platform === 'win32'" class="text-sm text-muted" data-wsl-paths>
-              The server runs inside your WSL distribution, so these are its paths (such as <code class="font-mono">/home/&lt;user&gt;/code</code>); the folder picker browses the distribution. Windows folders need the switch under "How agents run" and live under <code class="font-mono">/mnt</code>.
+            <p v-if="onWindows" class="text-sm text-muted" data-wsl-paths>
+              These are paths inside your WSL distribution, such as <code class="font-mono">/home/&lt;user&gt;/code</code>; the folder picker browses the distribution. Windows folders are under <code class="font-mono">/mnt</code>.
             </p>
-            <UFormField label="Allowed roots" description="Directories server sessions may run in, one per line. The agents can read and change everything under them." :ui="fieldUi">
-              <div class="flex gap-2">
-                <UTextarea v-model="rootsText" :rows="3" class="min-w-0 flex-1 font-mono text-xs" />
-                <IconButton icon="i-lucide-folder-plus" color="neutral" variant="outline" label="Add a root" data-pick-dir="root" @click="openPicker('root')" />
-              </div>
+            <!-- One chip a folder, wrapping and never scrolling sideways; the last cannot be taken away (UX3 R55). -->
+            <UFormField label="Folders agents can use" description="Agents can read and change anything inside." :error="folders.roots" :ui="fieldUi" data-allowed-roots>
+              <ul class="flex flex-wrap items-center gap-2">
+                <li v-for="r in form.allowedRoots" :key="r" class="flex min-w-0 max-w-full items-center gap-0.5 rounded-md border border-default bg-elevated/40 ps-2" :data-root-chip="r">
+                  <span class="min-w-0 font-mono text-xs [overflow-wrap:anywhere]" :title="r" data-mono="path">{{ r }}</span>
+                  <span :title="form.allowedRoots.length > 1 ? undefined : 'Agents need at least one folder.'" class="flex-none">
+                    <IconButton :label="`Remove ${r}`" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :disabled="form.allowedRoots.length <= 1" data-root-remove @click="removeRoot(r)" />
+                  </span>
+                </li>
+                <li class="flex-none">
+                  <UButton label="Add folder" icon="i-lucide-plus" size="sm" color="neutral" variant="outline" data-pick-dir="root" @click="openPicker('root')" />
+                </li>
+              </ul>
             </UFormField>
-            <UFormField label="Default working directory" description="Where a launch runs when it names no directory; under an allowed root." :ui="fieldUi">
-              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the default working directory" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
+            <UFormField v-if="onWindows" label="Also allow your Windows folders" description="Your Windows profile under /mnt. Slower." :ui="switchUi">
+              <USwitch v-model="form.wslWindowsHome" aria-label="Also allow your Windows folders" data-wsl-windows-home />
             </UFormField>
-            <UFormField label="Data directory" description="The server's catalog, crews, hooks and certificates. Keep it outside the allowed roots." :ui="fieldUi">
-              <div class="flex gap-2"><UInput v-model="form.dataDir" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the data directory" data-pick-dir="dataDir" @click="openPicker('dataDir')" /></div>
+            <UFormField label="Default folder" description="Where a launch runs when you pick no folder." :error="folders.defaultCwd" :ui="fieldUi" data-default-folder>
+              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the default folder" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
+            </UFormField>
+            <UFormField label="Where Conductor keeps its data" description="Its catalog, crews and certificates. Keep it outside the folders agents can use." :help="folders.dataDir" :ui="{ ...fieldUi, help: 'text-warning' }" data-data-folder>
+              <div class="flex gap-2"><UInput v-model="form.dataDir" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick where Conductor keeps its data" data-pick-dir="dataDir" @click="openPicker('dataDir')" /></div>
             </UFormField>
           </div>
         </UCard>
 
         <UCard :ui="cardUi" :class="sectionClass" data-settings-section="running">
-          <template #header><SettingsCardTitle title="How agents run" description="Permission prompts, reach from outside your network, and the WSL distribution." /></template>
+          <template #header><SettingsCardTitle title="How agents run" description="Whether agents ask before they act." /></template>
           <div class="flex flex-col gap-4">
-            <UFormField label="Yolo" description="Launch every agent with its yolo recipe, skipping its permission prompts (Codex's drops its sandbox). Only for roots you would let an agent change unasked." :ui="fieldUi">
-              <USwitch v-model="form.yolo" label="Skip permission prompts" data-yolo-switch />
+            <UFormField label="Yolo" description="Skips permission prompts: agents run commands and change files without asking you. The default for new launches. Changing it restarts the server." :ui="switchUi">
+              <USwitch v-model="form.yolo" aria-label="Yolo" data-yolo-switch />
             </UFormField>
-            <UFormField label="Reach" description="How the server finds out it can be reached from outside your network. Links become public only once a TLS listener has a certificate." :ui="fieldUi">
-              <USelect v-model="form.reach" :items="reachItems" class="w-full" />
-            </UFormField>
-            <div v-if="reach" class="rounded-md bg-elevated px-3 py-2 text-xs font-mono" data-reach-state>
-              reach {{ reach.mode }}<template v-if="reach.externalIp"> · public address {{ reach.externalIp }}</template><template v-if="reach.mapped"> · port {{ reach.externalPort }} mapped via {{ reach.method }}</template><template v-if="reach.tls"> · certificate {{ reach.tls.ready ? 'ready' : 'pending' }}</template><template v-if="reach.error"> · {{ reach.error }}</template>
-            </div>
-            <UFormField v-if="desktop.bridge.value?.platform === 'win32'" label="WSL distribution" description="The distribution the server runs in; empty for the default. Agents are found on its PATH." :ui="fieldUi">
+            <UFormField v-if="onWindows" label="WSL distribution" description="Where Conductor runs. Empty for the default." :ui="fieldUi">
               <UInput v-model="form.wslDistro" class="w-full font-mono text-xs" placeholder="Ubuntu" />
-            </UFormField>
-            <UFormField v-if="desktop.bridge.value?.platform === 'win32'" label="Windows folders" :ui="fieldUi">
-              <USwitch v-model="form.wslWindowsHome" label="Also allow your Windows profile under /mnt (slower)" />
             </UFormField>
           </div>
         </UCard>
@@ -519,22 +532,73 @@ usePalette().registerPage(() => {
         <UCard v-if="agents.length" :ui="cardUi" :class="sectionClass" data-settings-section="agents">
           <template #header>
             <div class="flex items-start gap-3">
-              <SettingsCardTitle class="min-w-0 flex-1" title="Agents on this machine" description="What the server finds on its PATH; a restart reads the PATH again." />
+              <SettingsCardTitle class="min-w-0 flex-1" title="Agents on this machine" description="What Conductor finds on this machine's PATH. Restart the server after you change your PATH." />
               <UButton label="Open Agents" to="/agents" icon="i-lucide-bot" size="xs" color="neutral" variant="outline" class="flex-none" data-settings-agents-link />
             </div>
           </template>
-          <!-- Two columns once the column has room, so a long catalog stays within the visible body (#433). -->
+          <!-- Two columns once the column has room, so a long catalog stays within the visible body (#433). The badges are drawn as on the Agents page (utils/agentBadges.ts). -->
           <ul class="grid gap-x-8 gap-y-1.5 text-sm @3xl:grid-cols-2">
             <li v-for="a in agents" :key="a.id" class="flex min-w-0 items-center gap-2" :data-agent="a.id">
               <span class="min-w-0 truncate font-medium" :title="a.name">{{ a.name }}</span>
-              <UBadge v-if="a.available === false" class="flex-none" label="not installed" :title="notInstalledBadge(a, serverHost.host.value).title" color="warning" variant="subtle" size="sm" :data-not-agent="notInstalledBadge(a, serverHost.host.value).notAgent || undefined" />
-              <UBadge v-else-if="identity(a, serverHost.host.value).state !== 'unprobed'" class="flex-none" :label="identity(a, serverHost.host.value).label" :title="identity(a, serverHost.host.value).title" :color="identity(a, serverHost.host.value).state === 'ok' ? 'success' : identity(a, serverHost.host.value).state === 'impostor' ? 'error' : 'neutral'" variant="subtle" size="sm" />
+              <UBadge v-if="a.available === false" class="flex-none" label="not installed" :title="notInstalledBadge(a, serverHost.host.value).title" :icon="NOT_INSTALLED_BADGE.icon" :color="NOT_INSTALLED_BADGE.color" variant="subtle" size="sm" data-not-installed :data-not-agent="notInstalledBadge(a, serverHost.host.value).notAgent || undefined" />
+              <UBadge
+                v-else-if="identityBadge(identity(a, serverHost.host.value).state)"
+                class="flex-none"
+                :label="identity(a, serverHost.host.value).label"
+                :title="identity(a, serverHost.host.value).title"
+                :icon="identityBadge(identity(a, serverHost.host.value).state)!.icon"
+                :color="identityBadge(identity(a, serverHost.host.value).state)!.color"
+                variant="subtle"
+                size="sm"
+                :data-identity="identity(a, serverHost.host.value).state"
+              />
               <code class="min-w-0 flex-1 truncate text-right text-xs text-muted" :title="a.command.join(' ')">{{ a.command.join(' ') }}</code>
             </li>
           </ul>
         </UCard>
 
         <AccountsCard :class="sectionClass" data-settings-section="accounts" />
+
+        <UCard :ui="cardUi" :class="sectionClass" data-settings-section="switchyard" data-switchyard-settings>
+          <template #header><SettingsCardTitle title="Switchyard" description="How a share link reaches this machine." /></template>
+          <div class="flex flex-col gap-4">
+            <!-- What the switchyard is told and does: a statement about links, every fact of it kept (UX3 R54). -->
+            <UFormField
+              label="Share links work from anywhere"
+              description="Through a switchyard. It is told each session's name, agent and folder name, this machine's name, and whether it waits on you; never its chat, activity or command line. It mints and checks the links and decides who joins. What a viewer sees goes straight to them, or through its relay, which can read it, when no direct path forms. Publish only to a switchyard whose operator you trust."
+              :ui="switchUi"
+            >
+              <USwitch v-model="form.switchyardEnabled" aria-label="Share links work from anywhere" data-switchyard-enabled />
+            </UFormField>
+            <UFormField label="Switchyard address" :description="`Empty for the public one, ${PUBLIC_SWITCHYARD}.`" :error="switchyardError || undefined" :ui="fieldUi" data-switchyard-server>
+              <UInput v-model="form.switchyardServer" class="w-full font-mono text-xs" :placeholder="`https://${PUBLIC_SWITCHYARD}`" :disabled="!form.switchyardEnabled" />
+            </UFormField>
+            <UFormField label="Host token" description="Only for a private switchyard, or a trusted seat on the public one." :ui="fieldUi">
+              <UInput v-model="form.switchyardToken" type="password" class="w-full font-mono text-xs" autocomplete="off" :disabled="!form.switchyardEnabled" />
+            </UFormField>
+            <UFormField label="This machine's name there" description="Its host name when empty." :ui="fieldUi">
+              <UInput v-model="form.switchyardName" class="w-full" maxlength="64" :disabled="!form.switchyardEnabled" />
+            </UFormField>
+            <UFormField label="Reach from outside your network" description="How Conductor finds out it can be reached from outside your network. A link uses the public address only once it has a certificate." :ui="fieldUi">
+              <USelect v-model="form.reach" :items="reachItems" class="w-full" aria-label="Reach from outside your network" />
+              <p v-if="reach && (reach.externalIp || reach.mapped || reach.tls || reach.error)" class="mt-1.5 text-xs text-muted" data-reach-state>
+                <template v-if="reach.externalIp">Public address <code data-mono="id">{{ reach.externalIp }}</code></template><template v-if="reach.mapped"> · port <code data-mono="id">{{ reach.externalPort }}</code> mapped via {{ reach.method }}</template><template v-if="reach.tls"> · certificate {{ reach.tls.ready ? 'ready' : 'pending' }}</template><template v-if="reach.error"> · {{ reach.error }}</template>
+              </p>
+            </UFormField>
+            <!-- WebRTC from WSL, a section before UX3 R54: its address (?section=webrtc) lands on this row. -->
+            <div v-if="ice" :class="sectionClass" data-settings-section="webrtc" data-ice-status>
+              <UFormField label="Windows firewall" description="Lets viewers connect straight to agents in WSL." :ui="fieldUi">
+                <div v-if="ice.forwarding" class="flex flex-wrap items-center gap-2">
+                  <UBadge :label="ice.firewall === 'present' ? 'rule present' : ice.firewall === 'missing' ? 'rule missing' : 'rule unknown'" :color="ice.firewall === 'missing' ? 'warning' : 'neutral'" variant="subtle" data-ice-firewall />
+                  <UButton v-if="ice.firewall !== 'present'" label="Allow" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="allowing" data-ice-allow @click="allowFirewall" />
+                  <span v-if="ice.firewall !== 'present'" class="text-xs text-muted">Windows asks once for permission.</span>
+                </div>
+                <p v-else class="text-sm text-muted">Nothing is forwarded{{ ice.reason ? `: ${ice.reason}` : '' }}.</p>
+                <p v-if="iceError" class="mt-1.5 text-xs text-error" role="alert" data-ice-error>{{ iceError }}</p>
+              </UFormField>
+            </div>
+          </div>
+        </UCard>
 
         <SettingsGitHub :class="sectionClass" data-settings-section="github" />
 
@@ -552,10 +616,26 @@ usePalette().registerPage(() => {
     <!-- The save bar is the panel's footer: in reach wherever the page is scrolled (#366). In a browser it saves Brakeman's section (#707).
          Save at its right end, its note in the room left of it, wrapping there, so a phone never pushes the button out of view (#1154). -->
     <template v-if="desktop.isDesktop.value || brakeman.available.value !== false" #footer>
-      <div class="flex items-center gap-3 border-t border-default px-4 py-3 sm:px-6" data-settings-save-bar>
-        <span v-if="blocked" class="min-w-0 flex-1 text-xs text-error" data-settings-blocked>Brakeman's settings hold a value it refuses: fix it, where it says, to save.</span>
-        <span v-else-if="restarts" class="min-w-0 flex-1 text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
-        <UButton class="ms-auto shrink-0" :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty || blocked" data-save-settings @click="save" />
+      <!--
+        Left to right: the bar's words, Discard, Save (UX3 R56). The words say what changed, by section, and what a save costs; a refusal in
+        the error tone, beside Save, announced. While agents run, Save and restart asks here first: Keep editing, or Save and restart.
+      -->
+      <div class="flex items-center gap-3 border-t border-default px-4 py-3 sm:px-6" data-settings-save-bar :data-settings-asking="asking || undefined" @keydown.esc="keepEditing">
+        <template v-if="asking">
+          <span class="min-w-0 flex-1 text-sm text-highlighted" role="status" data-settings-question>{{ question.title }} {{ question.detail }}</span>
+          <UButton ref="keepEditingEl" class="shrink-0" :label="question.keep" color="neutral" variant="ghost" data-settings-keep-editing @click="keepEditing" />
+          <UButton class="shrink-0" :label="question.confirm" icon="i-lucide-save" :loading="saving" data-save-settings data-settings-confirm @click="confirmSave" />
+        </template>
+        <template v-else>
+          <span class="min-w-0 flex-1 text-xs" aria-live="polite">
+            <span v-if="error" class="text-error" role="alert" data-settings-error>{{ error }}</span>
+            <span v-else-if="blocked" class="text-error" data-settings-blocked>{{ changed ? `${changed} ` : '' }}Fix the marked field to save.</span>
+            <span v-else-if="restarts && dirty" class="text-muted" data-settings-changed>{{ changed }} Saving restarts the server.</span>
+            <span v-else-if="dirty" class="text-muted" data-settings-changed>{{ changed }}</span>
+          </span>
+          <UButton v-if="dirty" class="shrink-0" label="Discard" color="neutral" variant="ghost" :disabled="saving" data-settings-discard @click="discard" />
+          <UButton class="shrink-0" :label="restarts ? 'Save and restart' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty || blocked" data-save-settings @click="pressSave" />
+        </template>
       </div>
     </template>
   </UDashboardPanel>

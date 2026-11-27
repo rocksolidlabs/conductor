@@ -14,10 +14,9 @@ import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type Attention, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TranscriptEntry, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import type { LaneWire } from '~/utils/transport/decide'
-import type { QuestionReply } from '~/utils/reply'
+import type { QuestionReply, ReplyTaken } from '~/utils/reply'
 import { useSessionConnection } from '~/composables/useSessionConnection'
 import { FIT_DEBOUNCE_MS, helloSize, tileFit, tileScale } from '~/utils/tile'
-import { lastWords } from '~/utils/transcript'
 
 const props = withDefaults(
   defineProps<{
@@ -52,8 +51,12 @@ const props = withDefaults(
     opensChanges?: boolean
     /** The note shown once, the first time a person presses Chat (ChatView's `note`); `dismissNote` when it is closed. */
     chatNote?: { site?: string } | null
+    /** A chat's box (ChatView's): the agent's name, the session whose line the app keeps, and the question the page shows. */
+    agentName?: string
+    draftKey?: string
+    asked?: { id?: string; choices: boolean; reply: boolean } | null
   }>(),
-  { readOnly: false, autoConnect: true, fontSize: 13, scrollback: 5000, compact: false, fit: 'fill', autoFocus: true, operator: false, verbatim: undefined, opensChanges: false, chatNote: null },
+  { readOnly: false, autoConnect: true, fontSize: 13, scrollback: 5000, compact: false, fit: 'fill', autoFocus: true, operator: false, verbatim: undefined, opensChanges: false, chatNote: null, agentName: undefined, draftKey: undefined, asked: null },
 )
 
 const emit = defineEmits<{
@@ -81,6 +84,8 @@ const emit = defineEmits<{
   /** A chat's file change asks for its diff in the editor (ChatView). */
   openChange: [entry: TranscriptEntry]
   dismissNote: []
+  /** A line typed in a chat's box as the answer to the page's question (ChatView's `reply`, UX3 R5). */
+  reply: [text: string, question: string | undefined, taken: ReplyTaken]
 }>()
 
 const host = ref<HTMLDivElement>()
@@ -313,14 +318,10 @@ conn.onControl(handleControl)
 conn.onTranscript(() => transcriptFrames.value++)
 /**
  * A chat (the session's way `protocol`) is drawn by ChatView over the terminal's pane, from the same connection (design 11); the
- * terminal stays mounted under it, hidden, with its marks, for the move back. A tile shows that it runs as a chat and the agent's
- * last line of words, never an empty terminal.
+ * terminal stays mounted under it, hidden, with its marks, for the move back. A tile shows the end of the conversation, read-only
+ * (ChatView's tile form), never an empty terminal.
  */
 const chatShown = computed(() => conn.way.value === 'protocol')
-const chatLast = computed(() => {
-  void conn.transcriptVersion.value
-  return chatShown.value && props.compact ? lastWords(conn.transcript.list()) : ''
-})
 const chatView = ref<{ showQuestion: () => void } | null>(null)
 conn.onClose((info, t) => {
   if (conn.transport.value !== t) return
@@ -977,12 +978,12 @@ onBeforeUnmount(() => {
       <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile', invisible: chatShown }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-scaled-font="scaledAt" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>
 
-    <!-- A chat, over the terminal's pane: the whole view, or a tile's line. -->
-    <ChatView v-if="chatShown && !compact" ref="chatView" :connection="conn" :read-only="readOnly" :operator="operator" :verbatim="verbatim" :opens-changes="opensChanges" :note="chatNote" @dismiss-note="emit('dismissNote')" class="absolute inset-0 z-10" @open-diff="emit('openChange', $event)" />
-    <div v-else-if="chatShown" class="absolute inset-0 z-10 flex flex-col gap-1 bg-default px-2.5 py-2 text-xs" data-chat-tile>
-      <span class="text-muted">Runs as a chat.</span>
-      <span v-if="chatLast" class="line-clamp-3 break-words text-default" data-chat-tile-words>{{ chatLast }}</span>
-    </div>
+    <!-- A chat, over the terminal's pane: the whole view, or a tile's form (the end of the conversation, read-only). The page's `ask` (the card for a question) goes to the chat,
+         which draws it just above its box. -->
+    <ChatView v-if="chatShown && !compact" ref="chatView" :connection="conn" :read-only="readOnly" :operator="operator" :verbatim="verbatim" :opens-changes="opensChanges" :note="chatNote" :agent-name="agentName" :draft-key="draftKey" :asked="asked" @dismiss-note="emit('dismissNote')" class="absolute inset-0 z-10" @open-diff="emit('openChange', $event)" @reply="(text, question, taken) => emit('reply', text, question, taken)">
+      <template v-if="$slots.ask" #ask><slot name="ask" /></template>
+    </ChatView>
+    <ChatView v-else-if="chatShown" tile :connection="conn" read-only class="absolute inset-0 z-10" />
 
     <!-- Where the link under the pointer goes, from its parsed address whatever its words (#1020); text, never markup. The scheme and
          host come first and are never cut (a long one wraps); only the path after them is cut, at its end. A visual aid, as a

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ref, type Ref } from 'vue'
 import { useTypedAnswers } from '~/composables/useTypedAnswers'
 import { MAX_TRANSCRIPT_ENTRY, MAX_TRANSCRIPT_PAGE, type TranscriptEntry, type TranscriptReply, type TranscriptRequest } from './protocol'
-import { ANSWERED_WORDS, answerOf, answerShown, chatBlocks, conductorStep, entryValid, lastWords, limitReads, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
+import { ANSWERED_WORDS, answerOf, answerShown, chatBlocks, conductorStep, entryValid, fileLine, lastWords, limitReads, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
 
 // A chat's transcript as the page keeps it (docs/plans/chat-or-terminal.md, designs 5, 6 and 11): each entry at its latest revision
 // by seq, the highest mark held as the next hello's resume point, what is past the wire's bounds refused, a message that answers a
@@ -282,3 +282,12 @@ describe('conductorStep', () => {
   })
 })
 
+
+describe('fileLine', () => {
+  it("says the file, what was done and its counts: `split_test.go changed · +38 −2`, no count it does not have", () => {
+    expect(fileLine({ path: 'internal/refunds/split_test.go', op: 'edit', added: 38, removed: 2 })).toEqual({ name: 'split_test.go', words: 'changed', added: '+38', removed: '\u22122' })
+    expect(fileLine({ path: 'notes.txt', op: 'create', added: 3 })).toEqual({ name: 'notes.txt', words: 'created', added: '+3', removed: '' })
+    expect(fileLine({ path: 'old.go', op: 'delete', removed: 0 })).toEqual({ name: 'old.go', words: 'deleted', added: '', removed: '' })
+    expect(fileLine({ path: '/etc/hosts', outside: true, op: 'edit' }).name).toBe('A file outside the folder')
+  })
+})

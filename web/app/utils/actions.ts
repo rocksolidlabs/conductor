@@ -161,19 +161,19 @@ export function stopFinishedQuestion(names: readonly string[]): Ask {
   return { title: `Stop ${names.length} finished ${names.length === 1 ? 'session' : 'sessions'}?`, detail: names.join(', '), confirm: 'Stop them', keep: 'Cancel' }
 }
 
-/** What a server's restart ends: its `n` running sessions. */
-function endsWith(n: number): string {
-  return n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.'
+/** What a server's restart stops: its `n` running agents (every running or starting session of this machine, a shell's too). */
+function agentsStop(n: number): string {
+  return n ? `${n} running ${n === 1 ? 'agent stops' : 'agents stop'}.` : 'No agent is running.'
 }
 
 /** Restart server (the desktop app's): Settings' own button says Restart server. */
 export function restartQuestion(n: number): Ask {
-  return { title: 'Restart the server?', detail: endsWith(n), confirm: 'Restart server', keep: 'Cancel' }
+  return { title: 'Restart the server?', detail: agentsStop(n), confirm: 'Restart server', keep: 'Cancel' }
 }
 
-/** Settings' Save when what changed takes a restart: its own button says Save and restart the server. */
+/** Settings' Save when what changed takes a restart and agents run: the save bar asks the same, with its own Save and restart (UX3 R56). */
 export function saveRestartQuestion(n: number): Ask {
-  return { title: 'Save and restart the server?', detail: endsWith(n), confirm: 'Save and restart the server', keep: 'Cancel' }
+  return { title: 'Restart the server now?', detail: agentsStop(n), confirm: 'Save and restart', keep: 'Keep editing' }
 }
 
 /** A session's link revoked: the Share dialog's own button says Revoke. */
