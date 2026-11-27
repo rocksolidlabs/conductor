@@ -251,6 +251,19 @@ test('on a very wide window the strip is in the header row and the terminal as t
   const alone = await api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'e2e wide alone', cwd })
   let big: Run | undefined
   let bigCrew = ''
+  let six: Run | undefined
+  let sixCrew = ''
+  /** A crew of `n` shells launched and its members started. */
+  async function crewOf(n: number, label: string): Promise<{ crew: string; run: Run }> {
+    const members = Array.from({ length: n }, (_, i) => ({ name: `member-${String(i + 1).padStart(2, '0')}`, agentId: 'shell', prompt: '', start: { when: 'immediately' } }))
+    const crew = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name: `${CREW} ${label}`, goal: '', cwd, where: 'server', isolation: 'none', openAfterLaunch: false, members })).crew.id
+    let r = await api.launchCrew(crew)
+    budget(2 * LONG_MS)
+    const last = `member-${String(n).padStart(2, '0')}`
+    await expect.poll(async () => member(await api.run(r.id), last).sessionId ?? '', { timeout: 2 * LONG_MS }).not.toBe('')
+    r = await api.run(r.id)
+    return { crew, run: r }
+  }
   try {
     budget(4 * LONG_MS)
     const tall = async () => {
@@ -264,13 +277,18 @@ test('on a very wide window the strip is in the header row and the terminal as t
     await headerWhole(page, true)
     expect(Math.abs((await tall()) - aloneTall), `a member's terminal against ${aloneTall} px`).toBeLessThanOrEqual(2)
 
-    // Twelve members: the tabs scroll inside the strip, the open one in view, the name whole.
-    const members = Array.from({ length: 12 }, (_, i) => ({ name: `member-${String(i + 1).padStart(2, '0')}`, agentId: 'shell', prompt: '', start: { when: 'immediately' } }))
-    bigCrew = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name: `${CREW} twelve`, goal: '', cwd, where: 'server', isolation: 'none', openAfterLaunch: false, members })).crew.id
-    big = await api.launchCrew(bigCrew)
-    budget(2 * LONG_MS)
-    await expect.poll(async () => member(await api.run(big!.id), 'member-12').sessionId ?? '', { timeout: 2 * LONG_MS }).not.toBe('')
-    big = await api.run(big.id)
+    // Six members: the strip takes the row's room, every tab whole and none past an edge.
+    ;({ crew: sixCrew, run: six } = await crewOf(6, 'six'))
+    await page.goto(`/sessions/${encodeURIComponent(member(six, 'member-03').sessionId!)}`)
+    const sixTabs = page.locator(`[data-member-strip][data-run="${six.id}"] [data-member-tabs]`)
+    await expect(sixTabs.locator('[data-member-tab]')).toHaveCount(6, { timeout: LONG_MS })
+    await headerWhole(page, true)
+    for (const t of await sixTabs.locator('[data-member-tab]').all()) await uncut(t)
+    await expect(sixTabs).not.toHaveAttribute('data-tabs-more')
+    expect(await sixTabs.evaluate((el) => el.scrollWidth <= el.clientWidth), 'six tabs fit').toBe(true)
+
+    // Twelve members: the tabs scroll inside the strip, the open one whole in view, the edge that cuts says there are more.
+    ;({ crew: bigCrew, run: big } = await crewOf(12, 'twelve'))
     await page.goto(`/sessions/${encodeURIComponent(member(big, 'member-12').sessionId!)}`)
     const tabs = page.locator(`[data-member-strip][data-run="${big.id}"] [data-member-tabs]`)
     await expect(tabs.locator('[data-member-tab]')).toHaveCount(12, { timeout: LONG_MS })
@@ -279,11 +297,15 @@ test('on a very wide window the strip is in the header row and the terminal as t
     await expect(tabs.locator('[data-member-tab="member-12"]')).toBeInViewport()
     const [list, open] = [await tabs.boundingBox(), await tabs.locator('[data-member-tab="member-12"]').boundingBox()]
     expect(list && open && open.x >= list.x - 0.5 && open.x + open.width <= list.x + list.width + 0.5, 'the open tab inside the strip').toBe(true)
+    await uncut(tabs.locator('[data-member-tab="member-12"]'))
+    await expect(tabs).toHaveAttribute('data-tabs-more', /left|both/)
   } finally {
     await page.context().close()
     await api.stopSession(alone.id)
     if (big) await api.stopRun(big.id)
     if (bigCrew) await api.call('DELETE', `/api/crews/${encodeURIComponent(bigCrew)}`)
+    if (six) await api.stopRun(six.id)
+    if (sixCrew) await api.call('DELETE', `/api/crews/${encodeURIComponent(sixCrew)}`)
   }
 })
 

@@ -258,6 +258,9 @@ watch(
   { immediate: true },
 )
 const stripInline = computed(() => headWidth.value >= STRIP_INLINE_MIN)
+/** What the strip may take of the header's row: all but the session's name at its least, its meta line and the buttons at the right. */
+const STRIP_RESERVE = 680
+const stripRoom = computed(() => Math.max(360, Math.round(headWidth.value - STRIP_RESERVE)))
 /** A hosted session whose machine is away: its files cannot be read until it returns (design 4f). */
 const hostAway = computed(() => (current.value?.kind === 'hosted' && current.value.status === 'host_disconnected' ? current.value.hostName || 'The host' : undefined))
 const copy = useCopy()
@@ -875,7 +878,7 @@ palette.registerPage(() => {
       <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }" data-session-bar>
         <template #leading>
           <!-- A member's way back is its strip's: above (UX3 R12), or here on a very wide header (UX3 R12b). -->
-          <MemberStrip v-if="memberRun && !gone && stripInline" inline :run-id="memberRun" :session-id="id" @gone="stripGone = memberRun" />
+          <MemberStrip v-if="memberRun && !gone && stripInline" inline :room="stripRoom" :run-id="memberRun" :session-id="id" @gone="stripGone = memberRun" />
           <IconButton v-if="!memberRun" icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
         </template>
         <template #title>

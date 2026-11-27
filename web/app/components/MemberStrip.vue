@@ -19,7 +19,8 @@ import { backByHistory, backTitle, BACK_TO_CREW, memberTabs, stripsRun } from '~
  * (usePageAltCodes, as the Yard does), so a page that is no member keeps Alt+Q for its terminal. Escape is not bound: in a terminal it
  * is the agent's own key. A run the server no longer holds, or a Brakeman turn's run, says `gone`, and the page draws no strip.
  */
-const props = defineProps<{ runId: string; sessionId: string; inline?: boolean }>()
+const props = defineProps<{ runId: string; sessionId: string; inline?: boolean; room?: number }>()
+// `room`: inline, the width the strip may take in the header's row (px): the session's name and meta yield before it does.
 const emit = defineEmits<{ gone: [] }>()
 
 const live = useAttention()
@@ -53,14 +54,33 @@ watch(run, (r) => r && !stripsRun(r) && emit('gone'), { immediate: true })
 // members are added, and when the strip's width changes (the window, the strip moving into the header's row).
 const list = useTemplateRef<HTMLElement>('list')
 const openName = computed(() => tabs.value.find((t) => t.selected)?.name ?? '')
+/** The tabs run past an edge of the strip: that edge fades, so a cut tab says there are more. */
+const more = ref<{ left: boolean; right: boolean }>({ left: false, right: false })
+function measureMore() {
+  const el = list.value
+  if (!el) return
+  const left = el.scrollLeft > 1
+  const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+  if (left !== more.value.left || right !== more.value.right) more.value = { left, right }
+}
+const fade = computed(() => {
+  const { left, right } = more.value
+  if (!left && !right) return undefined
+  const mask = `linear-gradient(to right, ${left ? 'transparent, black 1.5rem' : 'black'}, ${right ? 'black calc(100% - 1.5rem), transparent' : 'black'})`
+  return { maskImage: mask, WebkitMaskImage: mask }
+})
 function keepInView() {
+  measureMore()
   const el = list.value
   if (!el || !openName.value) return
   const tab = el.querySelector<HTMLElement>(`[data-member-tab="${CSS.escape(openName.value)}"]`)
   if (!tab) return
   const [l, t] = [el.getBoundingClientRect(), tab.getBoundingClientRect()]
-  if (t.left < l.left) el.scrollLeft -= l.left - t.left
-  else if (t.right > l.right) el.scrollLeft += t.right - l.right
+  // Clear of the edges' fade, so the open tab stays whole and readable.
+  const pad = 24
+  if (t.left < l.left + (el.scrollLeft > 0 ? pad : 0)) el.scrollLeft -= l.left - t.left + pad
+  else if (t.right > l.right - pad) el.scrollLeft += t.right - l.right + pad
+  measureMore()
 }
 watch([list, openName, () => tabs.value.length], () => void nextTick(keepInView), { immediate: true })
 watch(
@@ -90,7 +110,8 @@ const TAB = 'inline-flex flex-none items-center gap-1.5 rounded-md px-2 py-1 tex
 <template>
   <div
     class="flex min-w-0 items-center gap-2"
-    :class="inline ? 'max-w-[min(48rem,45%)] flex-none border-r border-default pr-3' : 'h-10 flex-none border-b border-default px-4 sm:px-6'"
+    :class="inline ? 'flex-none border-r border-default pr-3' : 'h-10 flex-none border-b border-default px-4 sm:px-6'"
+    :style="inline && room ? { maxWidth: `${room}px` } : undefined"
     data-member-strip
     :data-run="runId"
     :data-strip-inline="inline ? '' : undefined"
@@ -101,7 +122,16 @@ const TAB = 'inline-flex flex-none items-center gap-1.5 rounded-md px-2 py-1 tex
     </UTooltip>
     <USeparator orientation="vertical" class="h-4 flex-none" />
     <span v-if="title" class="min-w-0 max-w-64 truncate text-sm font-semibold text-highlighted" :title="title" data-member-strip-title>{{ title }}</span>
-    <nav v-if="tabs.length" ref="list" class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]" aria-label="Members of the crew" data-member-tabs>
+    <nav
+      v-if="tabs.length"
+      ref="list"
+      class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
+      :style="fade"
+      aria-label="Members of the crew"
+      data-member-tabs
+      :data-tabs-more="more.left && more.right ? 'both' : more.left ? 'left' : more.right ? 'right' : undefined"
+      @scroll.passive="measureMore"
+    >
       <template v-for="t in tabs" :key="t.name">
         <NuxtLink
           v-if="t.sessionId"
