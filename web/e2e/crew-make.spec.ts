@@ -118,7 +118,7 @@ test('a crew of two made from nothing by its labelled fields says why it cannot 
     await expect(row.locator('[data-crew-launch-model]')).toHaveText("The agent's choice")
     await expect(row.locator('[data-crew-launch-account]')).not.toBeEmpty()
   }
-  await expect(page.locator('[data-crew-launch-yolo]')).toHaveText(/^Yolo: (on|off)\. /)
+  await expect(page.locator('[data-crew-launch-yolo]')).toHaveText(/^Yolo is (on|off): /)
   // The header's button now reads Launch run, the crew saved (the page behind the sheet is hidden from the accessibility tree).
   await expect(launch).toHaveAttribute('aria-label', 'Launch run')
   const started = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/api/crews/${crew.id}/launch`)
@@ -219,7 +219,7 @@ test('a saved crew with edits says so beside its launch, which saves them first;
   await launch.click()
   expect((await put).postDataJSON()).toMatchObject({ openAfterLaunch: true, yolo: true, viewLinkTtlSeconds: 8 * 3600 })
   await expect(page.locator('[data-crew-launch-line="lead"]')).toBeVisible()
-  await expect(page.locator('[data-crew-launch-yolo]')).toHaveText("Yolo: on. The members act without asking (the crew's setting)")
+  await expect(page.locator('[data-crew-launch-yolo]')).toHaveText("Yolo is on: the members act without asking (the crew's setting).")
   await expect(page.locator('[data-launch-unsaved]')).toHaveCount(0)
   await page.locator('[data-crew-launch-cancel]').click()
   await expect(page.locator('[data-crew-launch-confirm]')).toHaveCount(0)

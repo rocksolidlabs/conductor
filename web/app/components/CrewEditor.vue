@@ -226,7 +226,7 @@ function refused(message: string) {
     </UFormField>
 
     <!-- Yolo is used all the time: in view, never in the fold (docs/design/system.md). -->
-    <UFormField :label="SETUP_WORDS.permissions" name="yolo" :ui="{ help: 'mt-1 text-xs' }" help="On, a member acts without asking you first: only for work you trust." data-crew-yolo-field>
+    <UFormField :label="SETUP_WORDS.permissions" name="yolo" data-crew-yolo-field>
       <USelect v-model="yolo" :items="yoloItems" :aria-label="SETUP_WORDS.permissions" class="w-full" data-crew-yolo />
     </UFormField>
 
