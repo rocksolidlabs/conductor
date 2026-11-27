@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { trusted } from '../src/ipc'
-import { join } from 'node:path'
+import { ownPage, workbenchFrame } from '../src/ipc'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { external, firstBounds, followOrigin, logWindowOptions, permissionAllowed, readBounds, sameOrigin, workbenchPreferences, workbenchWindows, writeBounds } from '../src/window'
@@ -13,11 +14,29 @@ describe('window guards', () => {
     expect(external('file:///etc/passwd')).toBe(false)
     expect(external('javascript:alert(1)')).toBe(false)
   })
-  it('trusts only the workbench and the app\'s own pages as IPC senders', () => {
-    expect(trusted('http://127.0.0.1:4312/agents', 'http://127.0.0.1:4312')).toBe(true)
-    expect(trusted('file:///app/static/log.html', 'http://127.0.0.1:4312')).toBe(true)
-    expect(trusted('https://evil.example/', 'http://127.0.0.1:4312')).toBe(false)
-    expect(trusted('', 'http://127.0.0.1:4312')).toBe(false)
+  it("answers the workbench's main frame as an IPC sender, and each of the app's own pages its own calls alone", () => {
+    let id = 1
+    const frame = (url: string, origin: string, parent: unknown = null) => ({ url, origin, parent, frameTreeNodeId: id++, executeJavaScript: async () => {} }) as never
+    const sent = (f: never) => ({ sender: { mainFrame: f }, senderFrame: f })
+    const wb = 'http://127.0.0.1:4312'
+    expect(workbenchFrame(sent(frame(wb + '/agents', wb)), wb)).toBe(true)
+    expect(workbenchFrame(sent(frame('file:///app/static/log.html', 'file://')), wb)).toBe(false)
+    expect(workbenchFrame(sent(frame('https://evil.example/', 'https://evil.example')), wb)).toBe(false)
+    expect(workbenchFrame(sent(frame(wb + '/agents', wb)), '')).toBe(false)
+    // The setup page: its own window's main frame, at its own file, and nothing else.
+    // The page's file: address as the system makes it (on Windows, with its drive).
+    const setup = resolve('/app/static/setup.html')
+    const setupUrl = pathToFileURL(setup).href
+    const top = frame(setupUrl + '?reason=x', 'file://')
+    const wc = { mainFrame: top, isDestroyed: () => false }
+    expect(ownPage({ sender: wc, senderFrame: top }, wc, setup)).toBe(true)
+    expect(ownPage({ sender: wc, senderFrame: frame(pathToFileURL(resolve('/app/static/log.html')).href, 'file://') }, wc, setup)).toBe(false)
+    expect(ownPage({ sender: { mainFrame: top }, senderFrame: top }, wc, setup)).toBe(false)
+    expect(ownPage({ sender: wc, senderFrame: frame(setupUrl, 'file://', top) }, wc, setup)).toBe(false)
+    const workbenchTop = frame(wb + '/', wb)
+    const wbc = { mainFrame: workbenchTop }
+    expect(ownPage({ sender: wbc, senderFrame: workbenchTop }, wbc, setup)).toBe(false)
+    expect(ownPage({ sender: wc, senderFrame: top }, { ...wc, isDestroyed: () => true }, setup)).toBe(false)
   })
 })
 

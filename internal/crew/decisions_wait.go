@@ -1833,7 +1833,7 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 	if len(to) == 0 {
 		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
 	}
-	if err := e.refuseSelection(ctx, id, "%s is a comparison's selection, the operator's to answer: it is not routed"); err != nil {
+	if err := e.refuseSelection(ctx, id, "%s is a trial's selection, the operator's to answer: it is not routed"); err != nil {
 		return OpReceipt{}, err
 	}
 	label, ok := routeLabel(to)

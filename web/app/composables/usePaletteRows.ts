@@ -301,7 +301,8 @@ export function usePaletteRows(ctx: PaletteContext) {
       const skipped = res.skipped?.length ?? 0
       toast.add({ title: `Sent to ${sent}${skipped ? `, ${skipped} skipped` : ''}`, description: skipped ? res.skipped.map((m) => `${m.member}: ${skipWords(m.reason)}`).join(' · ') : undefined, icon: 'i-lucide-megaphone', color: skipped ? 'warning' : 'success' })
     } catch (e) {
-      fail('Broadcast')(e)
+      // The run bar's own word for a line that reached nobody.
+      toast.add({ title: 'Not sent', description: (e as Error).message, color: 'error' })
     }
   }
   // A crew's launch opens its sheet on the crew's page (useCrewLaunch): only the sheet's Launch starts the run.
@@ -480,7 +481,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     ).flat()
     const more: Action[] = []
     if (r && live) {
-      more.push({ id: 'broadcast', kind: 'run', target: r.id, label: 'Broadcast…', icon: 'i-lucide-megaphone', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
+      more.push({ id: 'broadcast', kind: 'run', target: r.id, label: 'Message the crew…', icon: 'i-lucide-megaphone', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
       if (runOffer(r).add) more.push({ id: 'add-agent', kind: 'run', target: r.id, label: 'Add agent…', icon: 'i-lucide-user-plus', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
     }
     if (r && !live) more.push({ id: 'resume-run', kind: 'run', target: r.id, label: 'Resume as new run', icon: 'i-lucide-history', run: () => void resumeRun(r) })
@@ -909,7 +910,7 @@ export function usePaletteRows(ctx: PaletteContext) {
         if (!r) return null
         const typed = r.members.filter((m) => m.status === 'running' && !m.needsInput)
         const skipped = r.members.filter((m) => m.status !== 'running' || m.needsInput)
-        return { key: `verb:broadcast:${r.id}`, label: `Broadcast to ${v.target.name}: “${v.text}”`, detail: `Send to ${typed.length}${skipped.length ? ` · skipped: ${skipped.map((m) => m.name).join(', ')}` : ''}`, icon: 'i-lucide-megaphone', disabled: !typed.length, run: () => broadcast(r, v.text) }
+        return { key: `verb:broadcast:${r.id}`, label: `Message to ${v.target.name}: “${v.text}”`, detail: `Send to ${typed.length}${skipped.length ? ` · skipped: ${skipped.map((m) => m.name).join(', ')}` : ''}`, icon: 'i-lucide-megaphone', disabled: !typed.length, run: () => broadcast(r, v.text) }
       }
       case 'launch':
         return { key: `verb:launch:${v.target.id}`, label: `Launch ${v.target.name}${v.dir ? ` in ${v.dir}` : ''}`, detail: 'Opens the Launch dialog, filled in', icon: 'i-lucide-play', agentId: v.target.id, run: () => ctx.launch({ agentId: v.target.id, cwd: v.dir }) }

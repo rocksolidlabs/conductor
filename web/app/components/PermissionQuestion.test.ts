@@ -215,4 +215,8 @@ describe('the permission question', () => {
     expect(src).toMatch(/<dd class="[^"]*\[overflow-wrap:anywhere\][^"]*"><MarkedText :pieces="r\.value\.pieces" \/><\/dd>/)
     expect(src).toMatch(/<dd class="[^"]*\[overflow-wrap:anywhere\][^"]*"><MarkedText :pieces="cwd\.pieces" \/><\/dd>/)
   })
+  it('saysTheReasonGoesWithADeny: the field for the agent names a deny, the old words gone', () => {
+    expect(src).toContain('placeholder="Why you deny, for the agent (optional)"')
+    expect(src).not.toContain('Why, for the agent')
+  })
 })

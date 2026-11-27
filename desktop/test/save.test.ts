@@ -104,4 +104,38 @@ describe('SettingsSaver', () => {
     expect(a.stored().updateDownloaded).toBe('0.7.0-rc.12')
     expect(a.stored().updateFailedNoticed).toBe('0.7.0-rc.11')
   })
+
+  it('a save made after Allow this folder holds the folder and does not restart for it', async () => {
+    const s = new SettingsSaver()
+    const a = app()
+    // The press kept /srv/proj (allow.ts), with no restart: the Settings page then saves its form, which holds it (onSettings).
+    a.d.set({ ...a.stored(), pressedRoots: [{ path: '/srv/proj', confirmed: '' }] })
+    await s.save(a.d, { closeToTray: false, allowedRoots: ['/home/me', '/srv/proj'] })
+    expect(a.restarts).toHaveLength(0)
+    expect(a.stored().allowedRoots).toEqual(['/home/me'])
+    expect(a.stored().pressedRoots).toEqual([{ path: '/srv/proj', confirmed: '' }])
+    expect(s.take()).toBe('saved')
+  })
+
+  it('takes the one list of folders apart again: a pressed folder the page drops is dropped, and a new one is a typed one', async () => {
+    const s = new SettingsSaver()
+    const a = app()
+    a.d.set({ ...a.stored(), pressedRoots: [{ path: '/srv/proj', confirmed: '' }, { path: '/srv/wide', confirmed: 'above_home' }] })
+    await s.save(a.d, { allowedRoots: ['/home/me', '/srv/wide', '/srv/typed'], pressedRoots: [{ path: '/srv/sneaked', confirmed: 'home' }], pressedPaths: ['/srv/typed', '/srv/more'] } as never)
+    expect(a.stored().allowedRoots).toEqual(['/home/me', '/srv/typed'])
+    // The page's own pressedRoots and pressedPaths are never taken: the press's folders are the app's.
+    expect(a.stored().pressedRoots).toEqual([{ path: '/srv/wide', confirmed: 'above_home' }])
+    expect(a.stored()).not.toHaveProperty('pressedPaths')
+    expect(a.restarts).toHaveLength(1)
+  })
+
+  it('makes the folder of a default chosen inside a pressed folder a typed one, so the file loads in the release before', async () => {
+    const s = new SettingsSaver()
+    const a = app()
+    a.d.set({ ...a.stored(), pressedRoots: [{ path: '/srv/proj', confirmed: '' }] })
+    await s.save(a.d, { defaultCwd: '/srv/proj/app', allowedRoots: ['/home/me', '/srv/proj'] })
+    expect(a.stored().defaultCwd).toBe('/srv/proj/app')
+    expect(a.stored().allowedRoots).toEqual(['/home/me', '/srv/proj'])
+    expect(a.stored().pressedRoots).toEqual([])
+  })
 })

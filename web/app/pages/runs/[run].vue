@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { scopeItems } from '~/utils/chat'
-import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, type RecipientPick, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
+import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopRunPageQuestion, type Action } from '~/utils/actions'
 import { taskActions, taskWords } from '~/utils/tasks'
 import { attemptSession, markSection, sessionStatus, taskStatus } from '~/utils/status'
@@ -12,13 +12,14 @@ import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { RUN_LAYOUTS, RUN_LAYOUT_LOOK, type RunLayout, type RunWallTile } from '~/utils/wall'
-import { choiceFor, choose, crewOfRun, largeOf, readRunTiles, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
+import { choiceFor, choose, crewOfRun, crewsForDoc, largeOf, readRunTiles, takeKept, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 import { previewPath } from '~/utils/capture'
 import type { BrakemanRequest } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
+import { RUN_SHORTCUTS } from '~/composables/useShortcuts'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
@@ -148,13 +149,23 @@ const tiles = computed<RunWallTile[]>(() => {
 
 
 // Who gets a line from the message bar (broadcastSelection): everyone who can get one while `All` is on (`pick` null), else the
-// members the person ticked in the bar. The pick outlasts every read of the run and every run event; another run starts afresh.
-const pick = ref<RecipientPick>(null)
+// members the person ticked in the bar. The pick outlasts every read of the run and every run event, and a trip to a member and
+// back: it is kept for each run for the tab's life (useRunRecipients), with the line begun.
+const { pick } = useRunRecipients(runId)
+// While the bar holds the focus, each tile that will get the line carries the ring.
+const barFocused = ref(false)
+const receiving = computed(() => (barFocused.value ? selection.value.to : []))
+const wall = useTemplateRef<{ show: (name: string) => boolean }>('wall')
+/** The message bar's chip of a member that waits on a question: the Members view, its tile in view and focused. */
+async function showMember(name: string) {
+  view.value = 'grid'
+  await nextTick()
+  wall.value?.show(name)
+}
 const recipients = computed(() => tiles.value.map((t) => ({ name: t.name, state: recipientState(t.member, t.session) })))
 const selection = computed(() => broadcastSelection(recipients.value, pick.value))
 
 watch(runId, (_, before) => {
-  pick.value = null
   gone.value = false
   load()
   dispatch.gate.drop(`run-ticket:${before}`)
@@ -221,8 +232,8 @@ const viewItems = computed(() => [
 /** The view shown: Tasks is a managed run's alone, so a legacy run asked for it gets the grid. */
 const shownView = computed(() => (view.value === 'tasks' && !run.value?.managed ? 'grid' : view.value))
 
-// How the Members view draws the crew's tiles (runTiles): their layout, the member One large draws large, and whether Activity shows
-// beside them. Kept for the crew in this app's storage; a crew opened for the first time takes the last choice made for any crew.
+// How the Members view draws the crew's tiles (runTiles): their layout, the member One large draws large, the sizes its gaps were
+// dragged to, and whether Activity shows beside them. Kept for the crew in this app's storage; a crew opened for the first time takes the last choice made for any crew.
 function pageStorage(): Storage | null {
   try {
     return localStorage
@@ -236,7 +247,23 @@ const tilesChoice = computed(() => choiceFor(tilesRecord.value, crew.value))
 function chooseTiles(change: Partial<RunTilesChoice>) {
   tilesRecord.value = choose(tilesRecord.value, crew.value, change)
   writeRunTiles(pageStorage(), tilesRecord.value)
+  // The record is the layout document's too (R88, R73): the desktop app's server starts on a fresh address, whose page storage is
+  // empty, and the server's copy brings the choices back; another machine's arrive the same way.
+  const { last, crews } = tilesRecord.value
+  ui.setLayout({ runTiles: { layout: last.layout, activity: last.activity, crews: crewsForDoc(crews) } })
 }
+// The server's copy, taken up when it arrives.
+watch(
+  () => ui.layout.value.runTiles,
+  (kept) => {
+    const next = takeKept(tilesRecord.value, kept)
+    if (next !== tilesRecord.value) {
+      tilesRecord.value = next
+      writeRunTiles(pageStorage(), next)
+    }
+  },
+  { immediate: true },
+)
 function setActivity(on: boolean) {
   chooseTiles({ activity: on })
 }
@@ -389,6 +416,7 @@ watch(() => admin.token.value, () => {
 // This page's group in the command palette (#302): the header's buttons, the view, the chat, then the members as rows, the one
 // asking first. The broadcast takes its line in the row and says who gets it and who is skipped, as the bar does.
 const palette = usePalette()
+useShortcutsModal().registerPage(RUN_SHORTCUTS)
 const header = useTemplateRef<{ openAdd: () => void; share: () => void; stopNow: () => Promise<void>; resume: () => Promise<void>; togglePause: () => Promise<void>; isEnded: () => boolean }>('header')
 const identity = useIdentity()
 async function paletteBroadcast(text: string) {
@@ -588,7 +616,8 @@ palette.registerPage(() => {
       <PageEmpty v-if="gone" state="missing" :words="`No run has the id ${runId}. The server forgets runs when it restarts.`" :actions="[{ label: 'Crews', icon: 'i-lucide-arrow-left', to: '/crews' }]" data-run-missing />
 
       <template v-else>
-        <div class="flex flex-none items-center gap-2 px-3 pt-3">
+        <!-- The views, then the layouts and Activity at the right; on a narrow window that group wraps under the views, its words kept. -->
+        <div class="flex flex-none flex-wrap items-center gap-2 px-3 pt-3">
           <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-run-view />
           <div v-if="shownView === 'grid'" class="ml-auto flex items-center gap-2">
             <RunLayoutSwitch v-if="!wallStacked" v-model="tilesLayout" />
@@ -640,6 +669,7 @@ palette.registerPage(() => {
         </div>
         <RunWall
           v-else
+          ref="wall"
           :tiles="tiles"
           :run="run"
           :run-id="runId"
@@ -650,16 +680,20 @@ palette.registerPage(() => {
           :create-transport="transportFor"
           :answerable="runChatAnswers.answerable"
           :answer="runChatAnswers.answer"
+          :receiving="receiving"
           v-model:narrow="wallStacked"
           :activity="tilesChoice.activity"
           :layout="tilesLayout"
           :large="largeMember"
+          :sizes="tilesChoice.sizes?.[tilesLayout]"
+          @resize="(axis, shares) => chooseTiles(withShares(tilesChoice, tilesLayout, axis, shares))"
           @show-large="chooseTiles({ large: $event })"
+          @decision="decisionModal.open($event)"
           @open="router.push(`/sessions/${$event}`)"
           @start="startMember"
         />
         <div class="flex-none px-3 pb-3">
-          <BroadcastBar v-model:pick="pick" :run-id="runId" :members="recipients" :ended="!!run?.stoppedAt" :disabled="!run" />
+          <BroadcastBar v-model:pick="pick" :run-id="runId" :members="recipients" :ended="!!run?.stoppedAt" :disabled="!run" @update:focused="barFocused = $event" @show="showMember" />
         </div>
       </template>
     </template>

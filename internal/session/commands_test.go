@@ -90,12 +90,12 @@ func drainedSub(t *testing.T, sub *Subscription) {
 func TestCommandsBoundedAndCleaned(t *testing.T) {
 	var list []Command
 	list = append(list,
-		Command{Name: "fix issue"}, Command{Name: "two\nlines"}, Command{Name: "a@b"}, Command{Name: "x‮y"},
+		Command{Name: "fix issue"}, Command{Name: "two\nlines"}, Command{Name: "a@b"}, Command{Name: "x" + fromCode(0x202E) + "y"},
 		Command{Name: "-dash"}, Command{Name: "a/b"}, Command{Name: strings.Repeat("n", 65)}, Command{Name: ""},
-		Command{Name: "compact", Words: strings.Repeat("é", 1000), Hint: "<a>\n<b>\t​ " + strings.Repeat("h", 100),
+		Command{Name: "compact", Words: strings.Repeat("é", 1000), Hint: "<a>\n<b>\t" + fromCode(0x200B) + fromCode(0x2028) + strings.Repeat("h", 100),
 			Aliases: []string{"compact", "squash", "sq uash", "c", "d", strings.Repeat("a", 33)}},
 		Command{Name: "compact", Words: "the second of the name"},
-		Command{Name: "words", Words: "one\x1b[31m two⁦ three\r\n\u0000four\xff"},
+		Command{Name: "words", Words: "one\x1b[31m two" + fromCode(0x2066) + " three\r\n\u0000four\xff"},
 	)
 	for i := range 10_000 {
 		list = append(list, Command{Name: fmt.Sprintf("c%05d", i), Words: strings.Repeat("w", 2000)})
@@ -111,7 +111,7 @@ func TestCommandsBoundedAndCleaned(t *testing.T) {
 	if !utf8.ValidString(c.Words) || len(c.Words) > proto.MaxCommandWords || !strings.HasSuffix(c.Words, "…") {
 		t.Fatalf("the words cut %q (%d bytes)", c.Words, len(c.Words))
 	}
-	if len(c.Hint) > proto.MaxCommandHint || strings.ContainsAny(c.Hint, "\n\t​ ") || !strings.HasPrefix(c.Hint, "<a> <b> hhh") {
+	if len(c.Hint) > proto.MaxCommandHint || strings.ContainsAny(c.Hint, "\n\t"+fromCode(0x200B)+fromCode(0x2028)) || !strings.HasPrefix(c.Hint, "<a> <b> hhh") {
 		t.Fatalf("the hint %q", c.Hint)
 	}
 	if strings.Join(c.Aliases, ",") != "squash,c" {
@@ -364,3 +364,7 @@ func TestCommandsWithdrawnWhenTheStandingChanges(t *testing.T) {
 		t.Fatalf("a crew member's chat was sent a later list: %+v", got)
 	}
 }
+
+// fromCode is the character of code point n, built from its number so that
+// no character a person cannot see sits in the source as itself.
+func fromCode(n rune) string { return string(n) }

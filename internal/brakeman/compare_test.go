@@ -176,7 +176,7 @@ func TestACompareBriefNeedsItsTable(t *testing.T) {
 	v = good()
 	v["items"] = append(v["items"].([]any), jsonValue(t, kinds[4].Example))
 	inv := wantInvalid(t, CheckCompareBrief(decodeCompare(t, v), shape), "items[2]")
-	if !strings.Contains(inv.Why, "the selection is the person's, on the comparison") {
+	if !strings.Contains(inv.Why, "the selection is the person's, on the trial") {
 		t.Errorf("a decision card: %s", inv.Why)
 	}
 

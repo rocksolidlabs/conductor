@@ -530,3 +530,131 @@ func TestAUIDocumentIsBoundedAsItIsStored(t *testing.T) {
 		t.Fatalf("the next PUT's document: %v", got)
 	}
 }
+
+// The layout keeps the run page's last choice for its members' tiles
+// (runTiles): each of the four layouts, with Activity on and with it
+// off, is kept and answered as put; an unknown layout, a member runTiles
+// does not have and a value of the wrong type are refused, and the
+// document kept stays; a document past the bound is refused with it.
+func TestUIStateKeepsTheRunTiles(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t, nil)
+	for _, layout := range []string{"grid", "columns", "rows", "large"} {
+		for _, activity := range []bool{true, false} {
+			putUIDoc(t, e, "layout", map[string]any{"v": 1, "runView": "grid", "runTiles": map[string]any{"layout": layout, "activity": activity}}, http.StatusOK)
+			got := e.expect(t, "GET", "/api/ui/layout", nil, http.StatusOK, "")
+			if rt, _ := got["runTiles"].(map[string]any); rt["layout"] != layout || rt["activity"] != activity || got["runView"] != "grid" {
+				t.Fatalf("%s with activity %v read back: %v", layout, activity, got)
+			}
+		}
+	}
+	for _, c := range []struct {
+		body any
+		want string
+	}{
+		{map[string]any{"v": 1, "runTiles": map[string]any{"layout": "focus"}}, "runTiles.layout is grid, columns, rows or large"},
+		{map[string]any{"v": 1, "runTiles": map[string]any{"layout": "grid", "large": "core"}}, `unknown field "large"`},
+		{map[string]any{"v": 1, "runTiles": map[string]any{"activity": "yes"}}, "cannot unmarshal"},
+		{map[string]any{"v": 1, "runTiles": map[string]any{"layout": 2}}, "cannot unmarshal"},
+		{map[string]any{"v": 1, "runTiles": "grid"}, "cannot unmarshal"},
+	} {
+		out := putUIDoc(t, e, "layout", c.body, http.StatusBadRequest)
+		if errorCode(out) != "invalid_request" || !strings.Contains(apiMessage(out), c.want) {
+			t.Errorf("%v: %v", c.body, out)
+		}
+	}
+	if rt, _ := uiFile(t, e, "layout")["runTiles"].(map[string]any); rt["layout"] != "large" || rt["activity"] != false {
+		t.Fatalf("a refused layout changed the one kept: %v", rt)
+	}
+	big := []byte(`{"v":1,"runTiles":{"layout":"rows","activity":true},"runView":"` + strings.Repeat("x", maxUIDoc) + `"}`)
+	if out := putUIDoc(t, e, "layout", big, http.StatusRequestEntityTooLarge); errorCode(out) != "bound" {
+		t.Fatalf("past its bound: %v", out)
+	}
+}
+
+// A layout another machine left that holds runTiles is taken through the
+// sync store's door, and one whose runTiles is past its schema is refused.
+func TestALayoutFromElsewhereKeepsItsRunTiles(t *testing.T) {
+	ctx := context.Background()
+	e, own := syncDoorsEnv(t, newFakeSync())
+	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	doc := laterDoc(t, map[string]any{"v": 1, "runTiles": map[string]any{"layout": "columns", "activity": true}}, t0, strings.Repeat("a", 32))
+	if err := own.SetUIState(ctx, "layout", doc); err != nil {
+		t.Fatal(err)
+	}
+	if rt, _ := uiFile(t, e, "layout")["runTiles"].(map[string]any); rt["layout"] != "columns" || rt["activity"] != true {
+		t.Fatalf("the layout as kept: %v", rt)
+	}
+	bad := laterDoc(t, map[string]any{"v": 1, "runTiles": map[string]any{"layout": "mosaic"}}, t0.Add(time.Second), strings.Repeat("b", 32))
+	if err := own.SetUIState(ctx, "layout", bad); !errors.Is(err, ext.ErrRefused) || !strings.Contains(err.Error(), "runTiles.layout") {
+		t.Fatalf("a runTiles past its schema: %v", err)
+	}
+}
+
+// Each crew's own choice joins runTiles (crews): kept and answered with
+// its layout, Activity, the member drawn large and each layout's shares;
+// refused past its bounds (a 31st crew, a crew twice, an id or a member
+// that is no name, an unknown layout, a share past 1 or at 0, one share
+// or 13 an axis); and the document's bound stands with 30 crews in it.
+func TestUIStateKeepsEachCrewsRunTiles(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t, nil)
+	crew := map[string]any{"crew": "refunds", "layout": "large", "activity": true, "large": "core", "sizes": map[string]any{"large": map[string]any{"cols": []any{0.7, 0.3}}, "grid": map[string]any{"cols": []any{0.5, 0.25, 0.25}, "rows": []any{0.4, 0.6}}}}
+	putUIDoc(t, e, "layout", map[string]any{"v": 1, "runTiles": map[string]any{"layout": "large", "activity": true, "crews": []any{crew, map[string]any{"crew": "docs", "layout": "grid", "activity": false}}}}, http.StatusOK)
+	got := e.expect(t, "GET", "/api/ui/layout", nil, http.StatusOK, "")
+	crews, _ := got["runTiles"].(map[string]any)["crews"].([]any)
+	if len(crews) != 2 {
+		t.Fatalf("the crews read back: %v", got)
+	}
+	if g, w := string(must(json.Marshal(crews[0]))), string(must(json.Marshal(crew))); g != w {
+		t.Fatalf("the first crew read back: %s, put %s", g, w)
+	}
+	if c := crews[1].(map[string]any); c["crew"] != "docs" || c["activity"] != false || c["large"] != nil || c["sizes"] != nil {
+		t.Fatalf("the second crew read back: %v", c)
+	}
+	with := func(c map[string]any) map[string]any {
+		return map[string]any{"v": 1, "runTiles": map[string]any{"crews": []any{c}}}
+	}
+	thirtyOne := []any{}
+	for i := range uiMaxTileCrews + 1 {
+		thirtyOne = append(thirtyOne, map[string]any{"crew": fmt.Sprintf("crew-%d", i), "layout": "grid", "activity": false})
+	}
+	tooMany := make([]any, uiMaxTileShares+1)
+	for i := range tooMany {
+		tooMany[i] = 0.05
+	}
+	for _, c := range []struct {
+		body any
+		want string
+	}{
+		{map[string]any{"v": 1, "runTiles": map[string]any{"crews": thirtyOne}}, "more than 30"},
+		{map[string]any{"v": 1, "runTiles": map[string]any{"crews": []any{crew, crew}}}, "twice"},
+		{with(map[string]any{"crew": "Bad Id", "layout": "grid", "activity": false}), "a crew's id"},
+		{with(map[string]any{"crew": "docs", "layout": "focus", "activity": false}), "layout is grid"},
+		{with(map[string]any{"crew": "docs", "layout": "grid", "activity": false, "large": "../x"}), "member's name"},
+		{with(map[string]any{"crew": "docs", "layout": "grid", "activity": false, "sizes": map[string]any{"mosaic": map[string]any{"cols": []any{0.5, 0.5}}}}), "no layout"},
+		{with(map[string]any{"crew": "docs", "layout": "grid", "activity": false, "sizes": map[string]any{"grid": map[string]any{"cols": []any{1.5, 0.5}}}}), "fractions"},
+		{with(map[string]any{"crew": "docs", "layout": "grid", "activity": false, "sizes": map[string]any{"grid": map[string]any{"rows": []any{0, 1}}}}), "fractions"},
+		{with(map[string]any{"crew": "docs", "layout": "grid", "activity": false, "sizes": map[string]any{"grid": map[string]any{"cols": []any{1}}}}), "2 to 12"},
+		{with(map[string]any{"crew": "docs", "layout": "grid", "activity": false, "sizes": map[string]any{"grid": map[string]any{"cols": tooMany}}}), "2 to 12"},
+		{with(map[string]any{"crew": "docs", "layout": "grid", "activity": false, "width": 3}), `unknown field "width"`},
+		{with(map[string]any{"crew": "docs", "layout": "grid", "activity": "yes"}), "cannot unmarshal"},
+	} {
+		out := putUIDoc(t, e, "layout", c.body, http.StatusBadRequest)
+		if errorCode(out) != "invalid_request" || !strings.Contains(apiMessage(out), c.want) {
+			t.Errorf("%v: %v", c.body, out)
+		}
+	}
+	// Thirty crews, each with its layout's shares at their most (the page keeps four decimals of a share, and the shares of the
+	// crew's own layout alone), are within the document's bound.
+	full := []any{}
+	twelve := make([]any, uiMaxTileShares)
+	for i := range twelve {
+		twelve[i] = 0.0833
+	}
+	for i := range uiMaxTileCrews {
+		sizes := map[string]any{"rows": map[string]any{"cols": twelve, "rows": twelve}}
+		full = append(full, map[string]any{"crew": fmt.Sprintf("crew-%02d-%s", i, strings.Repeat("x", 50)), "layout": "rows", "activity": true, "large": strings.Repeat("m", 40), "sizes": sizes})
+	}
+	putUIDoc(t, e, "layout", map[string]any{"v": 1, "runTiles": map[string]any{"layout": "rows", "activity": true, "crews": full}}, http.StatusOK)
+}

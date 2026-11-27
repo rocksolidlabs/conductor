@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // Secret is a credential the server was given in its environment and must
@@ -32,6 +34,17 @@ func (s Secret) Reveal() string {
 		return ""
 	}
 	return s.v()
+}
+
+// Equal reports whether got is the value, compared in constant time
+// (share.Equal), and never for an empty side: two empty strings are not a
+// match. The value is not handed out: a check that only compares (the
+// desktop app's key) asks this, never Reveal.
+func (s Secret) Equal(got string) bool {
+	if s.v == nil || got == "" {
+		return false
+	}
+	return share.Equal(got, s.v())
 }
 
 // String is "set" or "unset".

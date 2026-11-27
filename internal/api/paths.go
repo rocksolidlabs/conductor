@@ -95,7 +95,7 @@ var errNoAllowedDir = errors.New("no directory in the prefix is under the allowe
 // typed a path outside them sees where to start. The route is the admin's,
 // who configured the roots.
 func (s *Server) noAllowedDir() string {
-	return errNoAllowedDir.Error() + ": " + strings.Join(s.cfg.AllowedRoots, ", ")
+	return errNoAllowedDir.Error() + ": " + strings.Join(s.roots.paths(), ", ")
 }
 
 // resolveDir is resolveCwd behind a stat, with resolveCwd's errors. The

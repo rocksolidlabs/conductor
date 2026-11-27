@@ -1,7 +1,10 @@
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { external } from './window'
-import type { DesktopSettings } from './settings'
+import { shownSettings, type DesktopSettings } from './settings'
 import { SettingsSaver } from './save'
+import type { FolderAllow } from './allow'
 import type { ServerSupervisor, ServerStatus } from './server'
 import type { IceStatus } from './firewall'
 import { zoomStatus, type ZoomStatus } from './zoom'
@@ -47,24 +50,17 @@ export interface IpcDeps {
   previewFetch?: BridgeDeps['fetch']
   /** The size of a window's content (preview.ts capturePreview); without it the shell takes no screenshot. */
   contentSize?: CaptureDeps['contentSize']
-}
-
-/** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
-export function trusted(senderUrl: string, origin: string): boolean {
-  try {
-    const u = new URL(senderUrl)
-    const o = new URL(origin)
-    if (u.protocol === 'file:') return true
-    return u.protocol === o.protocol && u.host === o.host
-  } catch {
-    return false
-  }
+  /**
+   * Allow this folder (allow.ts): the press, one at a time, never beside a Settings save or a restart from the page. Without it
+   * (the app on Windows until its switch is on) the call is refused and nothing is asked.
+   */
+  folders?: FolderAllow
 }
 
 /**
  * workbenchFrame says whether an IPC call came from the workbench's own main frame: the top frame of the window that sent it (no
- * other frame of it, which the preload is never put in anyway), whose page and whose origin are the server's, over http(s). A page
- * of the app's own (a file: page), which trusted lets through for the other channels, is refused here.
+ * other frame of it, which the preload is never put in anyway), whose page and whose origin are the server's, over http(s). Every
+ * channel of the bridge answers that frame alone; the app's own local pages have channels of their own (ownPage).
  */
 export function workbenchFrame(e: { sender?: { mainFrame?: PreviewFrame } | null; senderFrame?: PreviewFrame | null }, origin: string): boolean {
   const f = e.senderFrame
@@ -79,19 +75,39 @@ export function workbenchFrame(e: { sender?: { mainFrame?: PreviewFrame } | null
   }
 }
 
-/** registerIpc wires the handlers the preload bridge calls; each checks its sender first. */
+/**
+ * ownPage says whether an IPC call came from the main frame of the app's own window wc showing its local page file, and from nothing
+ * else: each of the app's local pages is answered only the calls it needs, each by a check of its own.
+ */
+export function ownPage(
+  e: { sender?: unknown; senderFrame?: PreviewFrame | null },
+  wc: { mainFrame?: PreviewFrame; isDestroyed?: () => boolean },
+  file: string,
+): boolean {
+  const f = e.senderFrame
+  if (!f || e.sender !== wc || wc.isDestroyed?.() || f.parent !== null || !sameFrame(f, wc.mainFrame)) return false
+  try {
+    const u = new URL(f.url)
+    if (u.protocol !== 'file:') return false
+    // The page's file and the one meant, as the system names them (a drive and its letter's case on Windows).
+    const got = resolve(fileURLToPath(u))
+    const want = resolve(file)
+    return process.platform === 'win32' ? got.toLowerCase() === want.toLowerCase() : got === want
+  } catch {
+    return false
+  }
+}
+
+/** registerIpc wires the handlers the preload bridge calls; each answers the workbench's main frame alone. */
 export function registerIpc(d: IpcDeps): void {
   const saver = new SettingsSaver()
-  const guard = <T>(f: (e: IpcMainInvokeEvent, ...args: unknown[]) => T) => (e: IpcMainInvokeEvent, ...args: unknown[]): T => {
-    if (!trusted(e.senderFrame?.url ?? '', d.origin())) throw new Error('refused: not the workbench')
-    return f(e, ...args)
-  }
-  // The preview's two (docs/architecture.md, Previews and captures): they run script in the asking window's frames and read its
-  // pixels, so they answer the workbench's main frame alone, and act on that window alone.
+  // Every channel answers the workbench's main frame alone. The preview's two (docs/architecture.md, Previews and captures) also
+  // act on that window alone: they run script in its frames and read its pixels.
   const mainFrameOnly = <T>(f: (e: IpcMainInvokeEvent, ...args: unknown[]) => T) => (e: IpcMainInvokeEvent, ...args: unknown[]): T => {
     if (!workbenchFrame(e as never, d.origin())) throw new Error("refused: not the workbench's main frame")
     return f(e, ...args)
   }
+  const guard = mainFrameOnly
   ipcMain.handle('conductor:token', guard(() => d.token()))
   ipcMain.handle(
     'conductor:previewBridge',
@@ -126,7 +142,8 @@ export function registerIpc(d: IpcDeps): void {
     }),
   )
   ipcMain.handle('conductor:browsers', guard(() => installedBrowsers(browsers())))
-  ipcMain.handle('conductor:settings:get', guard(() => d.settings.get()))
+  // The page sees one list of folders: the typed ones and the press's (shownSettings).
+  ipcMain.handle('conductor:settings:get', guard(() => shownSettings(d.settings.get())))
   ipcMain.handle('conductor:update', guard(() => d.update?.() ?? { ready: '', announce: false, restart: '', failed: '' }))
   ipcMain.handle(
     'conductor:installUpdate',
@@ -134,23 +151,36 @@ export function registerIpc(d: IpcDeps): void {
   )
   ipcMain.handle('conductor:notice', guard(() => d.notice()))
   ipcMain.handle('conductor:zoom', guard(() => d.zoom?.() ?? { ...zoomStatus(0), announce: false }))
+  // A save, and a restart asked from the page, wait for a press of Allow this folder under way, and a press meanwhile is busy.
+  const serial = <T>(f: () => Promise<T>): Promise<T> => (d.folders ? d.folders.save(f) : f())
   ipcMain.handle(
     'conductor:settings:set',
-    guard((_e, patch) => saver.save({ get: d.settings.get, set: d.settings.set, restart: () => d.supervisor.restart(), posix: !!d.wsl?.() }, patch as Partial<DesktopSettings>)),
+    guard((_e, patch) =>
+      serial(() => saver.save({ get: d.settings.get, set: d.settings.set, restart: () => d.supervisor.restart(), posix: !!d.wsl?.() }, patch as Partial<DesktopSettings>)).then(shownSettings),
+    ),
+  )
+  // Allow this folder: it changes where agents may work, so it answers the workbench's main frame alone, as Settings' own page.
+  ipcMain.handle(
+    'conductor:allowFolder',
+    mainFrameOnly(async (_e, path, confirmed) => {
+      if (!d.folders) return { ok: false, code: 'not_supported', message: 'this app cannot allow a folder while Conductor runs' }
+      return d.folders.allow(path, confirmed ?? '')
+    }),
   )
   // What became of the last save, once: the page that followed a restarted server to its fresh port asks (SettingsSaver).
   ipcMain.handle('conductor:settings:outcome', guard(() => saver.take()))
   ipcMain.handle(
     'conductor:restartServer',
     guard(async () => {
-      await d.supervisor.restart()
+      await serial(() => d.supervisor.restart())
     }),
   )
   ipcMain.handle(
     'conductor:openInBrowser',
     guard(async () => {
       // The token travels in the fragment, which never reaches the server and which the workbench takes and drops.
-      await shell.openExternal(`${d.origin()}/#token=${encodeURIComponent(d.token())}`)
+      const o = d.origin()
+      if (o) await shell.openExternal(`${o}/#token=${encodeURIComponent(d.token())}`)
     }),
   )
   ipcMain.handle(

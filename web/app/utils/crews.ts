@@ -1352,7 +1352,7 @@ export interface MessageSelection {
 export const MESSAGE_ALL_TIP = 'Everyone who can get a line now'
 
 const CHIP_WHY: Record<Exclude<RecipientState, 'ready'>, { word: string; tip: (name: string) => string }> = {
-  waiting: { word: 'answer it first', tip: (n) => `${n} waits on your answer.` },
+  waiting: { word: 'answer it first', tip: (n) => `${n} waits on your answer. Press to see its question.` },
   ended: { word: 'ended', tip: (n) => `${n} has ended. Resume it on its tile.` },
   starting: { word: 'starting', tip: (n) => `${n} is starting.` },
   not_started: { word: 'not started', tip: (n) => `${n} has not started yet.` },
@@ -1401,6 +1401,39 @@ export function togglePick(members: readonly BroadcastMember[], pick: RecipientP
   const from = pick ?? ready
   const next = from.includes(name) ? from.filter((n) => n !== name) : [...from, name]
   return ready.every((n) => next.includes(n)) ? null : next
+}
+
+/** The line's bound on the server, in bytes, and the length from which the bar shows its count. */
+export const MESSAGE_MAX = 4096
+export const MESSAGE_COUNT_FROM = 3072
+
+/** The bar's count of a line's bytes, from MESSAGE_COUNT_FROM (`3,100 / 4,096`), else empty. */
+export function messageCount(bytes: number): string {
+  return bytes >= MESSAGE_COUNT_FROM ? `${bytes.toLocaleString('en-US')} / ${MESSAGE_MAX.toLocaleString('en-US')}` : ''
+}
+
+/**
+ * What became of a line from the bar: `all` when every member it named got it, `some` when only some did, `none` when nobody did. Only
+ * `all` is said in the bar alone (sentWords); the others are toasts (messageToast).
+ */
+export function sendOutcome(r: BroadcastResult, asked: readonly string[]): 'all' | 'some' | 'none' {
+  if (!r.sent.length) return 'none'
+  return !r.skipped.length && asked.every((n) => r.sent.includes(n)) ? 'all' : 'some'
+}
+
+/** The bar's words after a line every member it named got: `Sent to lead and core.` */
+export function sentWords(names: readonly string[]): string {
+  return `Sent to ${receiversWords(names)}.`
+}
+
+/**
+ * The pick that gives the line to one member alone (a double-click on its chip); `All` (null) when it is the only one who can get a
+ * line. A member that cannot get a line changes nothing.
+ */
+export function alonePick(members: readonly BroadcastMember[], pick: RecipientPick, name: string): RecipientPick {
+  const ready = members.filter((m) => m.state === 'ready').map((m) => m.name)
+  if (!ready.includes(name)) return pick
+  return ready.length === 1 ? null : [name]
 }
 
 /**
