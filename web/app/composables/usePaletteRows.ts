@@ -600,11 +600,11 @@ export function usePaletteRows(ctx: PaletteContext) {
     const marked = Object.keys(events.marks.value)
     out.push({ key: 'action:clear-marks', label: `Clear the new-event badges${marked.length ? ` · ${marked.length}` : ''}`, icon: 'i-lucide-bell-off', disabled: !marked.length, keepOpen: true, run: () => marked.forEach((id) => events.clearMark(id)) })
     out.push({ key: 'action:alerts', label: 'Alerts…', detail: 'The switches and where each kind of event goes', icon: 'i-lucide-bell', run: () => alertsPanel.show() })
-    out.push({ key: 'action:notifications', label: 'Browser notifications', icon: 'i-lucide-bell', on: settings.settings.value.notifications, run: () => settings.setNotifications(!settings.settings.value.notifications) })
+    out.push({ key: 'action:notifications', label: 'Notifications on this device', icon: 'i-lucide-bell', on: settings.settings.value.notifications, run: () => settings.setNotifications(!settings.settings.value.notifications) })
     out.push({ key: 'action:chime', label: 'Chime when a session needs you', icon: 'i-lucide-bell-ring', on: settings.settings.value.chime, run: () => settings.setChime(!settings.settings.value.chime) })
     const needs = events.routes.value.needs_input
     for (const k of ['badge', 'browser', 'wall', 'feed'] as const) {
-      const words: Record<typeof k, string> = { badge: 'the sidebar badge', browser: 'a browser alert', wall: 'the Roundhouse jump', feed: 'the feed in History' }
+      const words: Record<typeof k, string> = { badge: 'the sidebar badge', browser: 'an alert on this device', wall: 'the Roundhouse jump', feed: 'the feed in History' }
       out.push({ key: `action:route:${k}`, label: `Needs input → ${words[k]}`, icon: 'i-lucide-route', on: needs[k], run: () => events.setRoute('needs_input', k, !needs[k]) })
     }
     for (const i of integrations.value.filter((i) => i.installable && !i.installed)) out.push({ key: `action:install:${i.id}`, label: `Install hooks for ${i.name}`, icon: 'i-lucide-plug', run: () => void installHooks(i.id, i.name) })

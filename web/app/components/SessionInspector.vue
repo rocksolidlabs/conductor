@@ -223,7 +223,7 @@ const items = computed(() =>
               <UButton label="New link" icon="i-lucide-plus" size="xs" variant="link" color="secondary" class="ml-auto normal-case tracking-normal" @click="emit('newLink')" />
             </h3>
             <!-- What a link is, said where the list is empty (#365). -->
-            <p v-if="!liveLinks.length" class="text-xs text-muted" data-share-links-empty>No share links yet. A link lets someone watch this session from their browser, or take control of it, until it expires or you revoke it.</p>
+            <p v-if="!liveLinks.length" class="text-xs text-muted" data-share-links-empty>No share links yet. A link lets someone watch this session from anywhere, or take control of it, until it expires or you revoke it.</p>
             <div v-for="l in liveLinks" :key="l.id" class="flex flex-col gap-1 rounded-md border border-default px-3 py-2.5">
               <div class="flex items-center gap-2">
                 <span class="text-sm font-medium truncate">{{ l.label || 'unlabelled' }}</span>

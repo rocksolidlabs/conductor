@@ -679,15 +679,7 @@ const SETTINGS_FOLDS_KNOWN: Known = {
 
 const BROWSER_WORDS_KNOWN: Known = {
   'components/AddAgentSlideover.vue': { count: 1, why: "a real browser: an agent's browser profile folder" },
-  'components/AlertSwitches.vue': { count: 2, why: 'the notification and its routing named Browser: to be reworded' },
-  'components/AlertsPanel.vue': { count: 1, why: 'where routing is kept, "in this browser": to be reworded' },
-  'components/BrakemanAskBar.vue': { count: 1, why: `"in this browser's time": to be reworded` },
-  'components/DecisionsRecent.vue': { count: 1, why: '"From this browser": to be reworded' },
-  'components/DispatchViewsBar.vue': { count: 1, why: '"for every browser": to be reworded' },
-  'components/ReviewDraft.vue': { count: 2, why: 'where a draft is kept, "this browser": to be reworded' },
-  'components/SessionInspector.vue': { count: 1, why: '"watch this session from their browser": to be reworded' },
   'components/WelcomeCard.vue': { count: 1, why: '"from any browser": to be reworded as from anywhere' },
-  'components/WorkbenchTokenGate.vue': { count: 1, why: 'where the token is kept, "in this browser": to be reworded' },
   'pages/settings.vue': { count: 3, why: 'a real browser: Open in browser, which the desktop app opens' },
 }
 
