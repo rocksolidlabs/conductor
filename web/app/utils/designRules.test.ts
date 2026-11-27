@@ -613,8 +613,8 @@ describe('the design rules judge what they are shown', () => {
 
 // ---- What stays in view, and the words (docs/design/system.md, #1158) ----
 
-/** A fold: a part that hides what it holds until a person opens it. */
-const FOLD = /^(UCollapsible|UAccordion)$/
+/** A fold: a part that hides what it holds until a person opens it (MoreOptions, the forms' own, among them). */
+const FOLD = /^(UCollapsible|UAccordion|MoreOptions)$/
 
 /** Per source, the controls bound to a Yolo value (`v-model="yolo"`, `:model-value="crew.yolo"`) that sit inside a fold. */
 function foldedYolo(from: Record<string, TNode> = templates): Record<string, number> {
@@ -708,6 +708,7 @@ describe('what stays in view, and the words', () => {
     expect(
       foldedYolo(sample(`<template><div><USwitch v-model="yolo" /><UCollapsible><template #content><USwitch v-model="crew.yolo" /><USwitch v-model="yoloDefault" /></template></UCollapsible></div></template>`)),
     ).toEqual({ 'components/Sample.vue': 1 })
+    expect(foldedYolo(sample(`<template><div><MoreOptions v-model:open="more"><USwitch v-model="form.yolo" /></MoreOptions></div></template>`))).toEqual({ 'components/Sample.vue': 1 })
     const page = sample('<template><div><SampleCard /></div></template>')['components/Sample.vue']!
     const card = sample('<template><UCard><UAccordion :items="items" /></UCard></template>')['components/Sample.vue']!
     expect(settingsFolds({ 'pages/settings.vue': page, 'components/SampleCard.vue': card })).toEqual({ 'components/SampleCard.vue': 1 })
