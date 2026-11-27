@@ -11,7 +11,7 @@ import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
 import { ServerSupervisor, StartStopped, trustedOrigin } from './server'
-import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
+import { defaultSettings, keepIn, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
 import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
@@ -303,10 +303,10 @@ async function run() {
 
   // A zoom level kept from before is said once per start, to the first workbench page that asks (ZoomStart).
   const zoomStart = new ZoomStart()
-  const keepSettings = (s: DesktopSettings) => {
+  // Written first, then taken: a file that cannot be written leaves the settings the app runs with as they were.
+  const keepSettings = keepIn(settingsFile, (s) => {
     settings = s
-    saveSettings(settingsFile, s)
-  }
+  })
   // Allow this folder, where the app offers it (on Windows once its switch is on): the server asked over loopback with the token
   // and the key, following no redirect; the settings kept with no restart; every workbench window told.
   const folders = allowOffered(process.platform)
@@ -318,6 +318,22 @@ async function run() {
         key: () => desktopKey,
         fetch: (url, init) => fetch(url, init),
         posix: !!wsl,
+        whenRunning: (ms) =>
+          new Promise((resolve) => {
+            const now = () => ({ url: origin(), pid: supervisor.status.pid, running: supervisor.status.state === 'running' })
+            if (now().running) return resolve(now())
+            const timer = setTimeout(() => {
+              supervisor.off('state', on)
+              resolve(null)
+            }, ms)
+            const on = (st: { state: string }) => {
+              if (st.state !== 'running') return
+              clearTimeout(timer)
+              supervisor.off('state', on)
+              resolve(now())
+            }
+            supervisor.on('state', on)
+          }),
         told: () => {
           for (const w of workbenchWindows(BrowserWindow.getAllWindows(), origin())) w.webContents.send('conductor:settings')
         },

@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -11,7 +12,7 @@ vi.mock('electron', () => ({
 import { ALLOW_ON_WINDOWS, allowOffered, covered, FolderAllow, keyFor, listRefusal, MAX_ROOTS, pathRefusal, type AllowDeps } from '../src/allow'
 import { ALLOW_FOLDER_ON_WINDOWS, allowFolderCall } from '../src/preload'
 import { secretsLine, serverEnv } from '../src/env'
-import { defaultSettings, type DesktopSettings } from '../src/settings'
+import { defaultSettings, keepIn, type DesktopSettings } from '../src/settings'
 
 const TOKEN = 'tok-' + 'a'.repeat(60)
 const KEY = 'key-' + 'b'.repeat(60)
@@ -27,7 +28,7 @@ interface Asked {
  * A fake app around FolderAllow: its settings store (which can be made to fail), its server (url, pid, running) and a fake
  * fetch answering each request with reply (a 200 with the folder by default), every request kept.
  */
-function fake(o: { reply?: (a: Asked) => { status: number; body: unknown } | Promise<{ status: number; body: unknown }>; roots?: string[] } = {}) {
+function fake(o: { reply?: (a: Asked) => { status: number; body: unknown } | Promise<{ status: number; body: unknown }>; roots?: string[]; whenRunning?: AllowDeps['whenRunning']; set?: (s: DesktopSettings, keep: (s: DesktopSettings) => void) => void } = {}) {
   let stored: DesktopSettings = { ...defaultSettings('/home/me', '/home/me/.config/conductor-desktop'), allowedRoots: o.roots ?? ['/home/me'] }
   const asked: Asked[] = []
   const saves: DesktopSettings[] = []
@@ -38,6 +39,7 @@ function fake(o: { reply?: (a: Asked) => { status: number; body: unknown } | Pro
   const d: AllowDeps = {
     get: () => stored,
     set: (s) => {
+      if (o.set) return o.set(s, (k) => (stored = k))
       if (failSave) throw failSave
       stored = s
       saves.push(s)
@@ -53,6 +55,7 @@ function fake(o: { reply?: (a: Asked) => { status: number; body: unknown } | Pro
     },
     posix: false,
     told: () => void told++,
+    whenRunning: o.whenRunning,
   }
   return {
     allow: new FolderAllow(d),
@@ -122,6 +125,56 @@ describe('Allow this folder', () => {
       expect(await f.allow.allow('/srv/proj', ''), url).toMatchObject({ ok: false })
       expect(f.asked, url).toHaveLength(0)
     }
+  })
+
+  it('waits for a server restarted meanwhile and asks it, saying so when it does not take the folder or does not come', async () => {
+    // The first server answers, and is gone by the save: its successor is still starting.
+    const starting = (f: ReturnType<typeof fake>) => Object.assign(f.server, { url: '', pid: undefined, running: false })
+    let comes: (s: { url: string; pid?: number; running: boolean } | null) => void = () => {}
+    const f = fake({
+      reply: (a) => {
+        if (f.asked.length === 1) starting(f)
+        return { status: 200, body: { root: a.body.path, added: f.asked.length === 1 } }
+      },
+      whenRunning: () => new Promise((r) => (comes = r)),
+    })
+    const press = f.allow.allow('/srv/proj', '')
+    await vi.waitFor(() => expect(f.stored().allowedRoots).toContain('/srv/proj'))
+    expect(f.asked).toHaveLength(1)
+    Object.assign(f.server, { url: 'http://127.0.0.1:5000', pid: 300, running: true })
+    comes({ ...f.server })
+    expect(await press).toEqual({ ok: true, root: '/srv/proj', saved: true })
+    expect(f.asked.map((a) => a.url)).toEqual(['http://127.0.0.1:4312/api/roots', 'http://127.0.0.1:5000/api/roots'])
+    // None comes in time: kept in Settings, and the answer says a restart may be needed.
+    const g = fake({
+      reply: (a) => {
+        starting(g)
+        return { status: 200, body: { root: a.body.path, added: true } }
+      },
+      whenRunning: async () => null,
+    })
+    const late = await g.allow.allow('/srv/proj', '')
+    expect(late).toMatchObject({ ok: true, root: '/srv/proj', saved: true, error: expect.stringContaining('restart Conductor') })
+    // The successor runs and refuses it: the answer says so.
+    const h = fake({
+      reply: (a) => {
+        if (h.asked.length === 1) Object.assign(h.server, { url: 'http://127.0.0.1:5001', pid: 301 })
+        return h.asked.length === 1 ? { status: 200, body: { root: a.body.path, added: true } } : { status: 409, body: { error: { code: 'too_many_roots', message: 'agents may use at most 64 folders' } } }
+      },
+    })
+    expect(await h.allow.allow('/srv/proj', '')).toMatchObject({ ok: true, saved: true, error: expect.stringContaining('did not take the folder') })
+  })
+
+  it('keeps nothing in the settings it runs with when the file cannot be written', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-keep-'))
+    // A file where the settings' folder would be: the write fails.
+    writeFileSync(join(dir, 'blocked'), 'x')
+    const f = fake({ set: (s, take) => keepIn(join(dir, 'blocked', 'settings.json'), take)(s) })
+    const before = f.stored().allowedRoots
+    const a = await f.allow.allow('/srv/proj', '')
+    expect(a).toMatchObject({ ok: true, root: '/srv/proj', saved: false })
+    expect(f.stored().allowedRoots).toEqual(before)
+    expect(f.told()).toBe(0)
   })
 
   it('sends nothing to a server not running, or whose process is not the one its handshake named', async () => {

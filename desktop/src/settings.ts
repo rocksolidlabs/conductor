@@ -277,6 +277,17 @@ export function saveSettings(file: string, s: DesktopSettings): void {
   renameSync(tmp, file)
 }
 
+/**
+ * keepIn is the app's way to keep settings: written to file first, and only once the file holds them taken as the settings the app
+ * runs with (assign). A file that cannot be written throws, and the settings the app runs with are left as they were.
+ */
+export function keepIn(file: string, assign: (s: DesktopSettings) => void): (s: DesktopSettings) => void {
+  return (s) => {
+    saveSettings(file, s)
+    assign(s)
+  }
+}
+
 /** serverAffecting says whether changing from a to b needs the server restarted. */
 export function serverAffecting(a: DesktopSettings, b: DesktopSettings): boolean {
   return SERVER_SETTINGS.some((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]))

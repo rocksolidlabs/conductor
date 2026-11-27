@@ -42,9 +42,12 @@ export function keyFor(platform: string, mint: () => string): string {
 const CONFIRMED = ['', 'home', 'above_home', 'holds_data'] as const
 export type Confirmed = (typeof CONFIRMED)[number]
 
-/** What the press answers the page. No answer carries the workbench token or the key. */
+/**
+ * What the press answers the page. No answer carries the workbench token or the key. saved true with an error: the settings keep
+ * the folder, but Conductor restarted meanwhile and the server running now has not taken it (the error says to restart it).
+ */
 export type AllowAnswer =
-  | { ok: true; root: string; saved: true }
+  | { ok: true; root: string; saved: true; error?: string }
   | { ok: true; root: string; saved: false; error: string }
   | { ok: false; code: string; message: string; real?: string; wide?: string; reason?: string }
 
@@ -63,6 +66,11 @@ export interface AllowDeps {
   told: () => void
   /** The wait for the server's answer; ALLOW_WAIT_MS when not given. */
   waitMs?: number
+  /**
+   * Resolves with the server once it runs (at once when it does), or null once ms have gone by without one: a server restarted
+   * while the press was under way is waited for and asked. Without it, the server as it is now.
+   */
+  whenRunning?: (ms: number) => Promise<{ url: string; pid?: number; running: boolean } | null>
 }
 
 /**
@@ -149,11 +157,19 @@ export class FolderAllow {
     } catch (e) {
       return { ok: true, root, saved: false, error: (e as Error)?.message ?? 'the settings file could not be written' }
     }
-    // The server that took it is gone (a restart, a crash and the supervisor's start again): the one running now was started from
-    // settings read before the save, or after it. It is asked once more, which allows it there or says it holds it already.
-    const now = this.d.server()
-    if (now.running && now.url && now.pid !== undefined && now.pid !== first.pid) await this.ask(now, p, confirmed)
     this.d.told()
+    // The server that took it is gone (a restart, a crash and the supervisor's start again): the one running now, or once it runs,
+    // was started from settings read before the save or after it. It is asked once more, which allows it there or says it holds
+    // it already; when no server runs in time, or the one running does not take it, the answer says so.
+    const now = this.d.server()
+    if (now.running && now.pid === first.pid && now.url === first.url) return { ok: true, root, saved: true }
+    const wait = this.d.waitMs ?? ALLOW_WAIT_MS
+    const later = this.d.whenRunning ? await this.d.whenRunning(wait) : now.running ? now : null
+    if (!later || !later.running || !later.url || later.pid === undefined) {
+      return { ok: true, root, saved: true, error: 'Conductor restarted meanwhile and is not running yet: if agents cannot use the folder once it runs, restart Conductor' }
+    }
+    const again = await this.ask(later, p, confirmed)
+    if (!again.ok) return { ok: true, root, saved: true, error: `Conductor restarted meanwhile and did not take the folder (${again.message}): restart Conductor to use it` }
     return { ok: true, root, saved: true }
   }
 
@@ -161,9 +177,6 @@ export class FolderAllow {
   private async ask(s: { url: string; pid?: number }, path: string, confirmed: string): Promise<{ ok: true; root: string } | Extract<AllowAnswer, { ok: false }>> {
     // The token and the key go to a loopback address written as one, the socket the server bound, and to nothing else.
     if (!s.url || loopbackOrigin(s.url.replace(/^http:\/\//, '')) !== s.url) return { ok: false, code: 'busy', message: 'Conductor is restarting: try again' }
-    const now = this.d.server()
-    // Only to the server whose handshake gave this origin, while that process runs.
-    if (!now.running || now.url !== s.url || now.pid !== s.pid) return { ok: false, code: 'busy', message: 'Conductor is restarting: try again' }
     let res: { status: number; json: () => Promise<unknown> }
     try {
       res = await this.d.fetch(`${s.url.replace(/\/+$/, '')}/api/roots`, {
