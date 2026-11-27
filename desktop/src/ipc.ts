@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url'
 import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { external } from './window'
 import type { DesktopSettings } from './settings'
@@ -55,22 +56,10 @@ export interface IpcDeps {
   folders?: FolderAllow
 }
 
-/** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
-export function trusted(senderUrl: string, origin: string): boolean {
-  try {
-    const u = new URL(senderUrl)
-    const o = new URL(origin)
-    if (u.protocol === 'file:') return true
-    return u.protocol === o.protocol && u.host === o.host
-  } catch {
-    return false
-  }
-}
-
 /**
  * workbenchFrame says whether an IPC call came from the workbench's own main frame: the top frame of the window that sent it (no
- * other frame of it, which the preload is never put in anyway), whose page and whose origin are the server's, over http(s). A page
- * of the app's own (a file: page), which trusted lets through for the other channels, is refused here.
+ * other frame of it, which the preload is never put in anyway), whose page and whose origin are the server's, over http(s). Every
+ * channel of the bridge answers that frame alone; the app's own local pages have channels of their own (ownPage).
  */
 export function workbenchFrame(e: { sender?: { mainFrame?: PreviewFrame } | null; senderFrame?: PreviewFrame | null }, origin: string): boolean {
   const f = e.senderFrame
@@ -85,19 +74,35 @@ export function workbenchFrame(e: { sender?: { mainFrame?: PreviewFrame } | null
   }
 }
 
-/** registerIpc wires the handlers the preload bridge calls; each checks its sender first. */
+/**
+ * ownPage says whether an IPC call came from the main frame of the app's own window wc showing its local page file, and from nothing
+ * else: each of the app's local pages is answered only the calls it needs, each by a check of its own.
+ */
+export function ownPage(
+  e: { sender?: unknown; senderFrame?: PreviewFrame | null },
+  wc: { mainFrame?: PreviewFrame; isDestroyed?: () => boolean },
+  file: string,
+): boolean {
+  const f = e.senderFrame
+  if (!f || e.sender !== wc || wc.isDestroyed?.() || f.parent !== null || !sameFrame(f, wc.mainFrame)) return false
+  try {
+    const u = new URL(f.url)
+    return u.protocol === 'file:' && u.pathname === pathToFileURL(file).pathname
+  } catch {
+    return false
+  }
+}
+
+/** registerIpc wires the handlers the preload bridge calls; each answers the workbench's main frame alone. */
 export function registerIpc(d: IpcDeps): void {
   const saver = new SettingsSaver()
-  const guard = <T>(f: (e: IpcMainInvokeEvent, ...args: unknown[]) => T) => (e: IpcMainInvokeEvent, ...args: unknown[]): T => {
-    if (!trusted(e.senderFrame?.url ?? '', d.origin())) throw new Error('refused: not the workbench')
-    return f(e, ...args)
-  }
-  // The preview's two (docs/architecture.md, Previews and captures): they run script in the asking window's frames and read its
-  // pixels, so they answer the workbench's main frame alone, and act on that window alone.
+  // Every channel answers the workbench's main frame alone. The preview's two (docs/architecture.md, Previews and captures) also
+  // act on that window alone: they run script in its frames and read its pixels.
   const mainFrameOnly = <T>(f: (e: IpcMainInvokeEvent, ...args: unknown[]) => T) => (e: IpcMainInvokeEvent, ...args: unknown[]): T => {
     if (!workbenchFrame(e as never, d.origin())) throw new Error("refused: not the workbench's main frame")
     return f(e, ...args)
   }
+  const guard = mainFrameOnly
   ipcMain.handle('conductor:token', guard(() => d.token()))
   ipcMain.handle(
     'conductor:previewBridge',

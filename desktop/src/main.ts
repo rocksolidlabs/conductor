@@ -1,11 +1,11 @@
-import { app, BrowserWindow, dialog, Menu, type Tray } from 'electron'
+import { app, BrowserWindow, dialog, Menu, shell, type Tray } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { secretsLine, serverEnv, SERVE_ARGS } from './env'
 import { ensureStableBinary, stableBinaryPath } from './install'
-import { registerIpc } from './ipc'
+import { ownPage, registerIpc } from './ipc'
 import { allowOffered, FolderAllow, keyFor } from './allow'
 import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
@@ -14,7 +14,7 @@ import { ServerSupervisor, StartStopped, trustedOrigin } from './server'
 import { defaultSettings, keepIn, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
-import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
+import { createWindow, fenceLocalPage, followOrigin, type FenceContents, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
 import { moveZoom, zoomKey, ZoomStart, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
@@ -292,6 +292,7 @@ async function run() {
   }
   const showLog = () => {
     const w = new BrowserWindow(logWindowOptions(__dirname))
+    fenceLocalPage(w.webContents as unknown as FenceContents, (url) => void shell.openExternal(url))
     void w.loadFile(join(resources, app.isPackaged ? 'static/log.html' : 'static/log.html'))
     const send = (line: string) => w.webContents.send('log-line', line)
     w.webContents.once('did-finish-load', () => {
@@ -561,15 +562,23 @@ async function showSetup(reason: string) {
   const { ipcMain } = await import('electron')
   const { execFile } = await import('node:child_process')
   const w = new BrowserWindow({ width: 720, height: 560, title: 'Conductor needs WSL', webPreferences: { preload: join(__dirname, 'setup-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } })
+  const page = join(resources, 'static/setup.html')
+  fenceLocalPage(w.webContents as unknown as FenceContents, (url) => void shell.openExternal(url))
+  // The setup page's two calls, answered for that page alone.
+  const mine = (e: Electron.IpcMainInvokeEvent) => {
+    if (!ownPage(e as never, w.webContents as never, page)) throw new Error('refused: not the setup page')
+  }
   ipcMain.removeHandler('conductor:installWsl')
   ipcMain.removeHandler('conductor:retrySetup')
-  ipcMain.handle('conductor:installWsl', () => {
+  ipcMain.handle('conductor:installWsl', (e) => {
+    mine(e)
     execFile('powershell.exe', ['-NoProfile', '-Command', 'Start-Process wsl.exe -ArgumentList "--install" -Verb RunAs'], { windowsHide: true }, () => {})
   })
-  ipcMain.handle('conductor:retrySetup', () => {
+  ipcMain.handle('conductor:retrySetup', (e) => {
+    mine(e)
     app.relaunch()
     app.exit(0)
   })
-  await w.loadFile(join(resources, 'static/setup.html'), { query: { reason } })
+  await w.loadFile(page, { query: { reason } })
   w.on('closed', () => app.quit())
 }
