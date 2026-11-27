@@ -141,6 +141,35 @@ export function draftBack<T extends object>(form: T, draft: T, draftSaved: T, no
   return back
 }
 
+/**
+ * The folders agents can use after what is saved changed outside the page (UX3 R62): the list as edited here, less a folder taken
+ * out of what is saved since it was read (unless this page added it), plus each folder saved since that the list does not hold yet
+ * (a folder allowed from a dialog). Unedited, it is what is saved now. The press keeps its folders apart from the typed ones in the
+ * app; the page has one list, and its next Save sends it whole, so a folder allowed meanwhile is kept.
+ */
+export function rootsFollow(edited: readonly string[], read: readonly string[], now: readonly string[]): string[] {
+  const out = edited.filter((r) => now.includes(r) || !read.includes(r))
+  for (const r of now) if (!read.includes(r) && !out.includes(r)) out.push(r)
+  return out
+}
+
+/**
+ * The app's form after its settings changed outside the page while it was open (UX3 R62): every field not edited here follows what
+ * is saved now, an edited field keeps its edit, and the folders follow `rootsFollow`, so a folder allowed meanwhile joins the list
+ * though the list was edited. What arrived so is saved already: it is no change of this form, never counted in what a Save would
+ * change or cost, and Discard keeps it. Returns the fields set.
+ */
+export function followOutside(form: DesktopSettings, read: DesktopSettings, now: DesktopSettings): Array<keyof DesktopSettings> {
+  const keys = (Object.keys(now) as Array<keyof DesktopSettings>).filter((k) => k !== 'allowedRoots')
+  const set = followSaved(form, read, now, form, keys)
+  const roots = rootsFollow(form.allowedRoots, read.allowedRoots, now.allowedRoots)
+  if (stable(roots) !== stable(form.allowedRoots)) {
+    form.allowedRoots = roots
+    set.push('allowedRoots')
+  }
+  return set
+}
+
 /** A configuration form kept as the page was left (`configForm`'s `keep`): the form as the server takes it, what it was set from, its token's generation and whether a stale refusal waited. */
 export interface ConfigDraft<T> {
   form: T

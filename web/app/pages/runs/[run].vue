@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { scopeItems } from '~/utils/chat'
-import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, type RecipientPick, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
+import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopRunPageQuestion, type Action } from '~/utils/actions'
 import { taskActions, taskWords } from '~/utils/tasks'
 import { attemptSession, markSection, sessionStatus, taskStatus } from '~/utils/status'
@@ -185,13 +185,23 @@ const tiles = computed<RunWallTile[]>(() => {
 
 
 // Who gets a line from the message bar (broadcastSelection): everyone who can get one while `All` is on (`pick` null), else the
-// members the person ticked in the bar. The pick outlasts every read of the run and every run event; another run starts afresh.
-const pick = ref<RecipientPick>(null)
+// members the person ticked in the bar. The pick outlasts every read of the run and every run event, and a trip to a member and
+// back: it is kept for each run for the tab's life (useRunRecipients), with the line begun.
+const { pick } = useRunRecipients(runId)
+// While the bar holds the focus, each tile that will get the line carries the ring.
+const barFocused = ref(false)
+const receiving = computed(() => (barFocused.value ? selection.value.to : []))
+const wall = useTemplateRef<{ show: (name: string) => boolean }>('wall')
+/** The message bar's chip of a member that waits on a question: the Members view, its tile in view and focused. */
+async function showMember(name: string) {
+  view.value = 'grid'
+  await nextTick()
+  wall.value?.show(name)
+}
 const recipients = computed(() => tiles.value.map((t) => ({ name: t.name, state: recipientState(t.member, t.session) })))
 const selection = computed(() => broadcastSelection(recipients.value, pick.value))
 
 watch(runId, (_, before) => {
-  pick.value = null
   gone.value = false
   load()
   dispatch.gate.drop(`run-ticket:${before}`)
@@ -697,6 +707,7 @@ palette.registerPage(() => {
         </div>
         <RunWall
           v-else
+          ref="wall"
           :tiles="tiles"
           :run="run"
           :run-id="runId"
@@ -707,6 +718,7 @@ palette.registerPage(() => {
           :create-transport="transportFor"
           :answerable="runChatAnswers.answerable"
           :answer="runChatAnswers.answer"
+          :receiving="receiving"
           v-model:narrow="wallStacked"
           :activity="tilesChoice.activity"
           :layout="tilesLayout"
@@ -719,7 +731,7 @@ palette.registerPage(() => {
           @start="startMember"
         />
         <div class="flex-none px-3 pb-3">
-          <BroadcastBar v-model:pick="pick" :run-id="runId" :members="recipients" :ended="!!run?.stoppedAt" :disabled="!run" />
+          <BroadcastBar v-model:pick="pick" :run-id="runId" :members="recipients" :ended="!!run?.stoppedAt" :disabled="!run" @update:focused="barFocused = $event" @show="showMember" />
         </div>
       </template>
     </template>

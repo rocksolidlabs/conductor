@@ -10,7 +10,7 @@ Your role: You review candidate B of 3: you judge its result against the objecti
 
 Review this candidate's result at HEAD against the objective and each criterion your task file lists; run what you need to judge it, and change nothing. Approve when it meets the objective and the criteria; otherwise ask for changes, with a finding for each criterion it misses and each problem, naming its file and line.
 
-## A comparison
+## An agent trial
 
 You review approach-b, one of 3 candidates for this objective, each of which started at aaaaaaaaaaaa and worked alone. Judge its result against the objective and the criteria below and change nothing. Do not read, fetch or merge another candidate's branch or worktree: you review this one alone.
 
@@ -33,7 +33,7 @@ The results this task starts from:
 
 ## Context
 
-No derived context: a comparison's candidates and reviews read their task, the base and their own work.
+No derived context: a trial's candidates and reviews read their task, the base and their own work.
 
 ## How to finish
 

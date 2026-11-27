@@ -2535,6 +2535,7 @@ file must run `compinit` before that line.
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 | — | `conductor serve --token-env NAME` | off | the workbench token is the value of the environment variable `NAME`: it takes the place of a configured token (`workbenchToken`, `CONDUCTOR_WORKBENCH_TOKEN`) and of a generated one. Refused at start, with nothing written or bound and no other token taken instead, when the flag's value is not a variable's name (an empty one included) or the variable is unset or empty; no error or log line repeats what the flag was given. The variable is taken out of the environment the server hands on, so no process it starts inherits it, and its value is printed, logged and kept nowhere (not in the `--print-listen` line, not in a token file). For a server started by a program that holds a token an argument should not carry, such as a tree of this repository's own manifest |
+| — | `conductor serve --secrets-stdin` | off | the workbench token, and the desktop app's key, are read from the first line of stdin, one JSON object `{workbenchToken, desktopKey?}`, before anything else is read, written or bound: they take the place of a configured token and of a generated one, and reach the server through no environment variable or argument. Bounded to 4,096 bytes and 60 s; unknown fields refused; the key 32 to 256 characters of A-Z, a-z, 0-9, `_` and `-`; no error repeats a byte of the line. Not with `--token-env`, and not for a switchyard (`conductor switchyard` has no such flag). The desktop app starts its server so; with a key, the app alone may allow one more folder while the server runs. |
 | — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, workbenchToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
 | — | `CONDUCTOR_DESKTOP_DIR` | none | the desktop app's own directory, named by the app for the server it starts (on Windows, its folder in the Windows profile as WSL mounts it): no session's file read reaches it; an absolute path, not a config-file key |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
@@ -2841,8 +2842,9 @@ that matches neither an empty id nor one that begins with a dash.
 - Server sessions run with an allowlisted environment and a working directory
   under `allowedRoots`. Hosted sessions run as you, with your environment.
 - Yolo launches agents without their permission prompts, as the user running
-  `conductor serve`, and Codex's recipe turns its sandbox off too: turn it on
-  only on a server whose allowed roots you would let an agent change unasked.
+  `conductor serve`, and Codex's recipe turns its sandbox off too: it removes
+  the agent's own questions, so turn it on only where you would let an agent
+  act as you unasked.
   Recipes are catalog data, held to the catalog's limits, passed as arguments
   and through the filtered environment. An agent session id that Resume passes
   to an agent must match its agent's `idPattern` and begin with a letter or a

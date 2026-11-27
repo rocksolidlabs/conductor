@@ -200,6 +200,12 @@ func (s *Local) matchLocked(p *protocolWay, a proto.PermissionAnswer) (*openPerm
 		if r.call != "" && p.resulted[r.call] {
 			return nil, ErrStaleRequest
 		}
+		// The call as it was shown: a call the session no longer holds, or
+		// holds announced again with another input, is not the one asked
+		// about.
+		if t := p.tools[r.call]; r.call != "" && (t == nil || t.digest != r.digest) {
+			return nil, ErrStaleRequest
+		}
 		return r, nil
 	}
 	return nil, ErrQuestionAnswered

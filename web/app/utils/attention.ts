@@ -99,6 +99,16 @@ export function choiceKey(o: AttentionOption, i: number): number | undefined {
   return o.mode || i >= 9 ? undefined : i + 1
 }
 
+/**
+ * The number, 1 to 9, a key press gives every place that answers a question by its number key (choiceKey); 0 for any other press.
+ * A key held down (its repeats), a key of a composition (an input method's) and a press with Alt, Ctrl or Meta answer nothing: a
+ * held key would otherwise answer the next question that appears under the same focus with a press meant for the one before.
+ */
+export function answerDigit(e: Pick<KeyboardEvent, 'key' | 'repeat' | 'isComposing' | 'altKey' | 'ctrlKey' | 'metaKey'>): number {
+  if (e.repeat || e.isComposing || e.altKey || e.ctrlKey || e.metaKey || !/^[1-9]$/.test(e.key)) return 0
+  return Number(e.key)
+}
+
 const RECOMMENDED = /\(recommended\)$/i
 
 /**

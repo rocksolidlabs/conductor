@@ -68,3 +68,17 @@ func TestOverlapsDataDir(t *testing.T) {
 		}
 	}
 }
+
+// A Secret compares itself in constant time and never matches an empty
+// side: an unset key matches nothing, the empty string included.
+func TestASecretComparesItself(t *testing.T) {
+	const k = "PLANTEDdesktopKEY_0123456789-abcdefWXYZ"
+	s := NewSecret(k)
+	if !s.Equal(k) || s.Equal(k[:len(k)-1]) || s.Equal("") || s.Equal(k+"x") {
+		t.Fatal("a set Secret compares wrongly")
+	}
+	var unset Secret
+	if unset.Equal("") || unset.Equal(k) {
+		t.Fatal("an unset Secret matches")
+	}
+}

@@ -62,6 +62,10 @@ const (
 	// ACPDeclinedWords is the notice of a request about more than the
 	// client can show: declined.
 	ACPDeclinedWords = "The agent asked about something a chat cannot show here; Conductor declined it."
+	// ACPSkippedWords is the notice of a line the client does not read
+	// strictly (a key twice, text that is not UTF-8): skipped, every open
+	// question closed.
+	ACPSkippedWords = "The agent sent a line Conductor could not read; it was skipped."
 )
 
 var (
@@ -486,15 +490,8 @@ func (c *ACP) Read(ctx context.Context, e session.ProtocolEvents) error {
 			return l.err
 		}
 		if l.cut {
-			// A line the client could not read may have changed any call:
-			// every open call is changed, and every open request about one
-			// is withdrawn.
 			e.Notice(NoticeTooLarge, TooLargeWords)
-			for id, t := range c.r.tools {
-				t.changed = true
-				c.r.tools[id] = t
-				c.withdrawAbout(id, e)
-			}
+			c.unreadLine(e)
 			continue
 		}
 		if len(bytes.TrimSpace(l.b)) == 0 {
@@ -506,6 +503,17 @@ func (c *ACP) Read(ctx context.Context, e session.ProtocolEvents) error {
 	}
 }
 
+// unreadLine is a line the client could not read, which may have changed
+// any call: every open call is changed, and every open request is
+// withdrawn, the agent answered cancelled.
+func (c *ACP) unreadLine(e session.ProtocolEvents) {
+	for id, t := range c.r.tools {
+		t.changed = true
+		c.r.tools[id] = t
+	}
+	c.withdrawAbout("", e)
+}
+
 func (c *ACP) handle(b []byte, e session.ProtocolEvents) error {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(b, &m); err != nil || m == nil {
@@ -513,6 +521,14 @@ func (c *ACP) handle(b []byte, e session.ProtocolEvents) error {
 			err = errors.New("not an object")
 		}
 		return fmt.Errorf("%w (%v)", ErrACPUnreadable, err)
+	}
+	if _, strict := session.StrictCanonical(b); !strict {
+		// A line is read strictly: a key twice at any level, text that is
+		// not UTF-8, a lone surrogate. Read loosely its last copy would
+		// stand for what the agent sent.
+		e.Notice(NoticeDeclined, ACPSkippedWords)
+		c.unreadLine(e)
+		return nil
 	}
 	var method string
 	field(m, "method", &method)
@@ -749,14 +765,15 @@ func (c *ACP) changeOf(id string, t acpTool, u map[string]json.RawMessage, e ses
 	}
 }
 
-// withdrawAbout withdraws every open request about the call id: the agent
-// is answered cancelled, and the person's card closes.
+// withdrawAbout withdraws every open request about the call id (every
+// open request for ""): the agent is answered cancelled, and the person's
+// card closes.
 func (c *ACP) withdrawAbout(id string, e session.ProtocolEvents) {
 	c.mu.Lock()
 	var gone []string
 	var ids []json.RawMessage
 	for ref, r := range c.requests {
-		if r.call == id {
+		if id == "" || r.call == id {
 			gone = append(gone, ref)
 			ids = append(ids, r.id)
 			delete(c.requests, ref)
@@ -785,15 +802,13 @@ func acpChanges(was, u map[string]json.RawMessage) bool {
 	return false
 }
 
-// jsonEqual says a and b are the same JSON value.
+// jsonEqual says a and b are the same JSON value: their canonical bytes
+// (numbers as written, keys sorted) are the same, and both read strictly.
+// A number written another way is another value.
 func jsonEqual(a, b json.RawMessage) bool {
-	var x, y any
-	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
-		return false
-	}
-	ab, _ := json.Marshal(x)
-	bb, _ := json.Marshal(y)
-	return bytes.Equal(ab, bb)
+	x, okA := session.StrictCanonical(a)
+	y, okB := session.StrictCanonical(b)
+	return okA && okB && bytes.Equal(x, y)
 }
 
 // acpStep is a tool call's step: its name (the agent's name for the tool,
@@ -870,11 +885,24 @@ func (c *ACP) announce(id string, t acpTool, summary string, e session.ProtocolE
 	}
 	r.toolSeq = append(r.toolSeq, id)
 	if len(r.toolSeq) > maxOpenTools {
-		delete(r.tools, r.toolSeq[0])
+		// The oldest open call is no longer followed: a request about it
+		// is withdrawn, never left open for a call the client forgot.
+		gone := r.toolSeq[0]
+		delete(r.tools, gone)
 		r.toolSeq = r.toolSeq[1:]
+		c.withdrawAbout(gone, e)
 	}
 	r.tools[id] = t
 	e.ToolStarted(session.ToolStep{Ref: id, Name: name, Input: bytes.Clone(input), Summary: summary})
+}
+
+// forgetTool is the call id no longer followed: it leaves the calls
+// counted toward maxOpenTools.
+func (c *ACP) forgetTool(id string) {
+	delete(c.r.tools, id)
+	if i := slices.Index(c.r.toolSeq, id); i >= 0 {
+		c.r.toolSeq = slices.Delete(c.r.toolSeq, i, i+1)
+	}
 }
 
 // toolStatus ends a step whose status is completed or failed: its output
@@ -885,7 +913,7 @@ func (c *ACP) toolStatus(id string, u map[string]json.RawMessage, e session.Prot
 	if status != "completed" && status != "failed" {
 		return
 	}
-	delete(c.r.tools, id)
+	c.forgetTool(id)
 	res := session.ToolResult{Status: session.ToolOK}
 	if status == "failed" {
 		res.Status = session.ToolError
@@ -985,18 +1013,36 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 		_ = c.answerOutcome(id, acpCancelled())
 		return
 	}
+	// The call it names. A request's own toolCall is an update of the
+	// call: a request declined for any reason, its toolCall's fields
+	// compared or not, changes the call it names when that call is open
+	// (marked changed, every open card about it closed), so that a later
+	// request giving only the call's id is declined too.
+	tc := object(p["toolCall"])
+	var call string
+	field(tc, "toolCallId", &call)
+	step, announced := c.r.tools[call]
+	decline := func(outcome map[string]any, words string) {
+		if announced {
+			step.changed = true
+			c.r.tools[call] = step
+			c.withdrawAbout(call, e)
+		}
+		_ = c.answerOutcome(id, outcome)
+		if words != "" {
+			e.Notice(NoticeDeclined, words)
+		}
+	}
 	if extraFields(p, []string{"sessionId", "toolCall", "options"}) {
 		// A request asking for more than the client reads: declined.
-		_ = c.answerOutcome(id, acpCancelled())
-		e.Notice(NoticeDeclined, ACPDeclinedWords)
+		decline(acpCancelled(), ACPDeclinedWords)
 		return
 	}
 	options, read := acpOptions(p["options"])
 	if !read {
 		// Options the client does not read whole: declined, never put to a
 		// person.
-		_ = c.answerOutcome(id, acpCancelled())
-		e.Notice(NoticeDeclined, ACPDeclinedWords)
+		decline(acpCancelled(), ACPDeclinedWords)
 		return
 	}
 	allowOnce := false
@@ -1006,59 +1052,30 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 	if !allowOnce {
 		// No way to allow it once: declined at once, never put to a person
 		// as an Allow the client could not keep.
-		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
-		e.Notice(NoticeDeclined, ACPNoAllowOnceWords)
+		decline(acpOutcome(options, session.Verdict{}), ACPNoAllowOnceWords)
 		return
 	}
-	// The call it names, as the stream announced it: its id the call, its
-	// name and input the step's; what the request's own toolCall gives
-	// beside them goes into that input, so that a request about more than
-	// the step showed is bound to no call. A request about a call holding
-	// what the client does not read, or changed since it was announced, or
-	// whose own toolCall holds a field the client does not read, is
-	// declined.
-	tc := object(p["toolCall"])
-	var call string
-	field(tc, "toolCallId", &call)
-	step, announced := c.r.tools[call]
-	if !announced || step.unread || step.changed || tc == nil || extraFields(tc, append(append([]string{}, acpShownFields...), acpUpdateFields...)) {
-		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
-		e.Notice(NoticeDeclined, ACPDeclinedWords)
+	// The call as the stream announced it: its id the call, its name and
+	// input the step's. A request about a call holding what the client
+	// does not read, or changed since it was announced, or whose own
+	// toolCall holds a field the client does not read or gives a shown
+	// field another value, is declined.
+	if !announced || step.unread || step.changed || tc == nil ||
+		extraFields(tc, append(append([]string{}, acpShownFields...), acpUpdateFields...)) || acpChanges(step.fields, tc) {
+		decline(acpOutcome(options, session.Verdict{}), ACPDeclinedWords)
 		return
 	}
-	fields := map[string]json.RawMessage{}
-	name := "other"
-	if announced {
-		maps.Copy(fields, step.fields)
-		name = step.name
-	}
-	for _, k := range acpShownFields {
-		if raw, ok := tc[k]; ok && !isNull(raw) {
-			fields[k] = bytes.Clone(raw)
-		}
-	}
-	var reqName string
-	field(tc, "name", &reqName)
-	if reqName != "" {
-		name = reqName
-	} else if !announced {
-		var kind string
-		field(tc, "kind", &kind)
-		if kind != "" {
-			name = kind
-		}
-	}
-	input, ok := acpInput(fields)
-	if !ok || !rawInputRead(fields["rawInput"], c.keys) {
-		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
-		e.Notice(NoticeDeclined, ACPDeclinedWords)
+	name := step.name
+	input, ok := acpInput(step.fields)
+	if !ok || !rawInputRead(step.fields["rawInput"], c.keys) {
+		decline(acpOutcome(options, session.Verdict{}), ACPDeclinedWords)
 		return
 	}
 	key := idKey(id)
 	c.mu.Lock()
 	if len(c.requests) >= maxACPRequests {
 		c.mu.Unlock()
-		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
+		decline(acpOutcome(options, session.Verdict{}), "")
 		return
 	}
 	old, reused := c.byID[key]

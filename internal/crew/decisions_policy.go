@@ -493,7 +493,7 @@ func (e *Engine) RoutePolicy(ctx context.Context, id, by string, rev int, policy
 		}
 		switch {
 		case rec.Origin == ledger.OriginCompare:
-			return o, refuse(CodeInvalid, "%s is a comparison's selection: it takes no router's policy", id)
+			return o, refuse(CodeInvalid, "%s is a trial's selection: it takes no router's policy", id)
 		case ledger.RouterPolicy(rec.Policy):
 			return o, refuse(CodeRoutedByPolicy, "%s carries its router's policy already: a change of it is a re-route", id)
 		case rec.Final():
@@ -809,7 +809,7 @@ func rerouteJudged(rec ledger.DecisionRecord, policy ext.RoutePolicy, expectedRe
 		return ext.RerouteResult{}, true, fmt.Errorf("%w: %s is %s", ext.ErrQuestionAnswered, id, rec.State)
 	}
 	if rec.Origin == ledger.OriginCompare {
-		return ext.RerouteResult{}, true, fmt.Errorf("%w: %s is a comparison's selection: it takes no router's policy", ext.ErrRefused, id)
+		return ext.RerouteResult{}, true, fmt.Errorf("%w: %s is a trial's selection: it takes no router's policy", ext.ErrRefused, id)
 	}
 	p, routed := routedOf(rec.Policy)
 	if routed && p.Revision == policy.Revision {
@@ -836,7 +836,7 @@ func rerouteJudged(rec ledger.DecisionRecord, policy ext.RoutePolicy, expectedRe
 // the router was asked again, no rev. The caller tells the router again
 // once it has committed.
 func (e *Engine) AskRouter(ctx context.Context, id, opID string, expectedRev int, note, actor string) (OpReceipt, error) {
-	if err := e.refuseSelection(ctx, id, "%s is a comparison's selection, the operator's to answer: it is not routed"); err != nil {
+	if err := e.refuseSelection(ctx, id, "%s is a trial's selection, the operator's to answer: it is not routed"); err != nil {
 		return OpReceipt{}, err
 	}
 	fp := fingerprintOf([]any{"route", []Destination{{Kind: DestRouter}}, note})

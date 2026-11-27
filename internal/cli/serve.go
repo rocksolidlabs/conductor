@@ -211,7 +211,18 @@ func tokenFromEnv(name string) (string, error) {
 }
 
 func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	return runServeAs(ctx, "serve", args, stdin, stdout, stderr)
+}
+
+// runSwitchyard is conductor switchyard: serve as a switchyard. It takes no
+// secrets on stdin: that is the desktop app's way to start its own server,
+// and the app never starts a switchyard.
+func runSwitchyard(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return runServeAs(ctx, "switchyard", append([]string{"--switchyard"}, args...), stdin, stdout, stderr)
+}
+
+func runServeAs(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to a JSON config file")
 	listen := fs.String("listen", "", "listen address (overrides config)")
@@ -222,7 +233,10 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	printListen := fs.Bool("print-listen", false, "print one JSON line to stdout once listening: {listen, publicUrl, pid, version, workbenchToken?, tlsListen?} (for a parent process such as the desktop app)")
 	exitOnStdinClose := fs.Bool("exit-on-stdin-close", false, "shut down when stdin closes (a parent process that dies takes the server with it)")
 	switchyard := fs.Bool("switchyard", false, "coordinate hosted sessions and launch nothing: no sessions, crews, runs or catalog of its own (env CONDUCTOR_SWITCHYARD=1; conductor switchyard)")
-	secretsStdin := fs.Bool("secrets-stdin", false, "read the workbench token, and the desktop app's key, from the first line of stdin, one JSON object {workbenchToken, desktopKey?}, before anything else: they take the place of a configured token and of a generated one, and reach the server through no environment variable or argument (the desktop app starts its server so)")
+	secretsStdin := new(bool)
+	if name == "serve" {
+		secretsStdin = fs.Bool("secrets-stdin", false, "read the workbench token, and the desktop app's key, from the first line of stdin, one JSON object {workbenchToken, desktopKey?}, before anything else: they take the place of a configured token and of a generated one, and reach the server through no environment variable or argument (the desktop app starts its server so)")
+	}
 	tokenEnv := fs.String("token-env", "", "take the workbench token from the environment variable `NAME`: its value takes the place of a configured token (workbenchToken, CONDUCTOR_WORKBENCH_TOKEN) and of a generated one; a name that is no variable's name, or a variable unset or empty, stops the server, and the value is printed, logged and kept nowhere")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -239,6 +253,9 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// A --token-env given, whatever its value (the empty one included), is the token's one source: never the flag's absence.
 	tokenEnvGiven := false
 	fs.Visit(func(f *flag.Flag) { tokenEnvGiven = tokenEnvGiven || f.Name == "token-env" })
+	if *switchyard && *secretsStdin {
+		return 2, errors.New("--secrets-stdin is the desktop app's way to start its own server; a switchyard takes no secrets on stdin")
+	}
 	if tokenEnvGiven && *secretsStdin {
 		return 2, errors.New("--secrets-stdin and --token-env each name the workbench token's one source: give one")
 	}
@@ -564,7 +581,30 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			log.Warn("http shutdown", "err", err)
 		}
 	}
-	if *printListen {
+	// stdin's end is watched before the handshake is printed, and no
+	// handshake is printed once it has ended: a parent that told the server
+	// to stop while it started is never handed its address.
+	stdinEnded := make(chan struct{})
+	if *exitOnStdinClose {
+		go func() {
+			_, _ = io.Copy(io.Discard, stdin)
+			log.Info("stdin closed; shutting down")
+			close(stdinEnded)
+			stdinCancel()
+		}()
+	}
+	if beforeHandshake != nil {
+		beforeHandshake(stdinEnded)
+	}
+	ended := false
+	select {
+	case <-stdinEnded:
+		ended = true
+	default:
+	}
+	if *printListen && ended {
+		log.Info("stdin ended before the handshake; it is not printed")
+	} else if *printListen {
 		if err := printHandshake(stdout, cfg, ln, tlsLn); err != nil {
 			if cfg.GeneratedWorkbenchToken && !tokenKept {
 				// The handshake was the one place of this server's token:
@@ -575,14 +615,6 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			log.Warn("print-listen", "err", err)
 		}
 	}
-	if *exitOnStdinClose {
-		go func() {
-			_, _ = io.Copy(io.Discard, stdin)
-			log.Info("stdin closed; shutting down")
-			stdinCancel()
-		}()
-	}
-
 	select {
 	case <-ctx.Done():
 		log.Info("shutting down")
@@ -651,6 +683,11 @@ func (p uplinkPublisher) OpenDesk(ctx context.Context, run proto.DeskRun) (api.D
 // Server is the switchyard as a reply shows it (the links' fallback): its
 // scheme, host and path (config.ShownURL).
 func (p uplinkPublisher) Server() string { return config.ShownURL(p.u.ServerURL) }
+
+// beforeHandshake, when a test sets it before runServe, runs just before
+// the handshake would be printed, with the channel closed once stdin has
+// ended.
+var beforeHandshake func(stdinEnded <-chan struct{})
 
 // handshake is the JSON line --print-listen writes once the listeners are
 // bound: what a parent process needs to open the workbench and sign in.
