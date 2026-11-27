@@ -18,6 +18,9 @@ export interface DesktopSettings {
   noticed?: string[]
 }
 
+/** The public switchyard: what an empty Switchyard address publishes to (the server's default, README.md). */
+export const PUBLIC_SWITCHYARD = 'switchyard.rslabs.net'
+
 /** The words for a switchyard that is plain http on another machine: the desktop app's validate (desktop/src/settings.ts PLAIN_SWITCHYARD) says the same. */
 export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
 
