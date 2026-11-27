@@ -92,9 +92,9 @@ async function ask() {
 
     <div class="flex min-w-0 flex-col gap-1.5" data-compare-brakeman :data-brakeman-state="req?.state ?? b?.state ?? ''">
       <div class="flex min-w-0 flex-wrap items-center gap-2">
-        <h4 class="text-xs font-medium text-muted">Brakeman's draft</h4>
+        <h4 class="text-xs font-medium text-muted">Brakeman's summary</h4>
         <span class="min-w-0 break-words text-xs text-default" data-compare-brakeman-words>{{ brakeman.words }}</span>
-        <UButton label="Ask Brakeman to compare" icon="i-lucide-sparkles" size="xs" color="neutral" variant="outline" class="ms-auto max-lg:min-h-11" :loading="asking" :disabled="asking || brakeman.open || askedOpen || !run || !!askClosed" data-compare-ask-brakeman @click="ask" />
+        <UButton label="Ask Brakeman for a summary" icon="i-lucide-sparkles" size="xs" color="neutral" variant="outline" class="ms-auto max-lg:min-h-11" :loading="asking" :disabled="asking || brakeman.open || askedOpen || !run || !!askClosed" data-compare-ask-brakeman @click="ask" />
       </div>
       <p v-if="askClosed" class="break-words text-xs text-muted" data-compare-ask-closed>{{ askClosed }}</p>
       <p v-if="askWords" class="break-words text-xs text-muted" data-compare-ask-words>{{ askWords }}</p>

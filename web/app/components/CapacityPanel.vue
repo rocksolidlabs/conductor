@@ -13,7 +13,15 @@ import { capacityKey, capacityStatements, clockWords, compactWords, panelAction,
  * A launch with its own login (on this computer, or a login its environment sets) is shown with no account and no model; a launch on
  * this server of an agent whose entry sets its login, with no account and the entry's variable named (`launchLogin` decides which).
  */
-const props = defineProps<{ query: CapacityQuery | null; compact?: boolean; readOnOpen?: boolean; /** The model the launch names, shown as typed. */ model?: string }>()
+const props = defineProps<{
+  query: CapacityQuery | null
+  compact?: boolean
+  readOnOpen?: boolean
+  /** The model the launch names, shown as typed. */
+  model?: string
+  /** No border of its own: a row of a list that has its own dividers draws it (Settings' Accounts, UX3 R60). */
+  bare?: boolean
+}>()
 
 const cap = useCapacity()
 const now = ref(Date.now())
@@ -70,7 +78,7 @@ const checkTitle = computed(() => `Runs this version of ${view.value?.readBy?.pr
 </script>
 
 <template>
-  <div v-if="query" class="flex flex-col gap-2 rounded-md border border-default p-3 text-sm" :class="compact ? 'gap-1 p-2' : ''" data-capacity-panel :data-capacity-agent="query.agent" :data-capacity-state="view?.state">
+  <div v-if="query" class="flex flex-col text-sm" :class="[compact ? 'gap-1' : 'gap-2', bare ? '' : ['rounded-md border border-default', compact ? 'p-2' : 'p-3']]" data-capacity-panel :data-capacity-agent="query.agent" :data-capacity-state="view?.state">
     <p v-if="!view && !entry?.error" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />Reading what the server knows of this agent's usage…</p>
     <div v-else-if="view && compact && brief" class="flex min-w-0 flex-col gap-1">
       <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">

@@ -73,7 +73,7 @@ type aheadMeasure struct {
 
 // The selection's words (the plan's, Which record and Opening).
 const (
-	selectAuthorizes = "Continuing the selected candidate into review and repair, and delivering it. Final: the candidates not selected are kept and cannot be continued; a new comparison tries them again."
+	selectAuthorizes = "Continuing the selected candidate into review and repair, and delivering it. Final: the candidates not selected are kept and cannot be continued; a new trial tries them again."
 	noneOfThese      = "None of these"
 	noCandidateWords = "no candidate has a result: nothing to select"
 	// shortCommit is how much of a commit an option's label names.
@@ -83,7 +83,7 @@ const (
 // noRoomWords say why a comparison with candidates opened no selection:
 // the run has no room for one more decision.
 func noRoomWords() string {
-	return fmt.Sprintf("this run has recorded %s decisions: no room for a selection: continue the run to select in its continuation, or launch a new comparison", thousands(ledger.MaxDecisionsPerRun))
+	return fmt.Sprintf("this run has recorded %s decisions: no room for a selection: continue the run to select in its continuation, or run a new trial", thousands(ledger.MaxDecisionsPerRun))
 }
 
 func thousands(n int) string {
@@ -313,7 +313,7 @@ func (e *Engine) openSelection(r *run) {
 		r.sel.ended = ""
 	}
 	if r.sel.ended != "" {
-		r.note(session.ActivityStatus, "the comparison ended with no candidate selected: %s", r.sel.ended)
+		r.note(session.ActivityStatus, "the trial ended with no candidate selected: %s", r.sel.ended)
 		return
 	}
 	body, cands := r.selectionBody(opts)
@@ -361,7 +361,7 @@ func (e *Engine) openSelection(r *run) {
 // recommending none, what an answer authorizes and the comparison in
 // words; and the candidate each option names. The caller holds e.mu.
 func (r *run) selectionBody(opts []SettledCandidate) (selectionBody, []*SettledCandidate) {
-	what := "this comparison"
+	what := "this trial"
 	if r.pkg != nil {
 		what = cmp.Or(r.pkg.p.Ticket.Key, r.pkg.p.Ticket.ID, what)
 	}
@@ -389,7 +389,7 @@ func (r *run) selectionBody(opts []SettledCandidate) (selectionBody, []*SettledC
 		cands = append(cands, &c)
 		subjects = append(subjects, s)
 	}
-	body.Options = append(body.Options, selectionOption{Label: noneOfThese, Tradeoffs: "Ends the comparison with no candidate selected."})
+	body.Options = append(body.Options, selectionOption{Label: noneOfThese, Tradeoffs: "Ends the trial with no candidate selected."})
 	cands = append(cands, nil)
 	raw, _ := json.Marshal(subjects)
 	sum := sha256.Sum256(raw)
@@ -535,7 +535,7 @@ func (r *run) measuredNow() *Comparison {
 // notCompared is said of a candidate's checks when the comparison was not
 // read before the opening (a continuation's first change, a stop, a change
 // another one overtook): what it holds of them is the comparison's.
-const notCompared = "not compared when this opened: the comparison says whether its checks compare"
+const notCompared = "not compared when this opened: the trial's results say whether its checks compare"
 
 // tradeoffs are an option's facts in words: the attempt, then what the
 // comparison says of each of the candidate's checks (its outcome and the
@@ -575,7 +575,7 @@ func (r *run) tradeoffs(c SettledCandidate) string {
 // encoded: whole clauses, then how many more the comparison has.
 func fittedChecks(clauses []string, n int) string {
 	return fitClauses(clauses, "; ", n, encodedLen, fitEncoded, func(k int) string {
-		return fmt.Sprintf("; and %d more %s: the comparison has %s", k, plural(k, "check", "checks"), plural(k, "it", "them"))
+		return fmt.Sprintf("; and %d more %s: the trial's results have %s", k, plural(k, "check", "checks"), plural(k, "it", "them"))
 	})
 }
 
@@ -736,7 +736,7 @@ func (r *run) selectionContext(opts []SettledCandidate) string {
 			crit = append(crit, oneLine.Replace(fmt.Sprintf("%s: %s", cr.ID, cr.Text)))
 		}
 		head += " Criteria: " + fitClauses(crit, "; ", ledger.MaxDecisionContext/3, runes, fitRunes, func(k int) string {
-			return fmt.Sprintf("; and %d more %s: the comparison has %s", k, plural(k, "criterion", "criteria"), plural(k, "it", "them"))
+			return fmt.Sprintf("; and %d more %s: the trial's results have %s", k, plural(k, "criterion", "criteria"), plural(k, "it", "them"))
 		}) + "."
 	}
 	m := r.measuredNow()
@@ -762,7 +762,7 @@ func (r *run) selectionContext(opts []SettledCandidate) string {
 		lanes[i] = oneLine.Replace(lanes[i])
 	}
 	body := fitClauses(lanes, "", ledger.MaxDecisionContext-runes(head), runes, fitRunes, func(k int) string {
-		return fmt.Sprintf(" And %d more %s: the comparison has %s.", k, plural(k, "candidate", "candidates"), plural(k, "it", "them"))
+		return fmt.Sprintf(" And %d more %s: the trial's results have %s.", k, plural(k, "candidate", "candidates"), plural(k, "it", "them"))
 	})
 	return fitRunes(strings.TrimSpace(oneLine.Replace(head)+body), ledger.MaxDecisionContext)
 }

@@ -630,7 +630,7 @@ export function changedFields(draft: CrewInput, saved: CrewInput | undefined): s
   if (a.yolo !== b.yolo) out.push('Yolo')
   if (a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds) out.push('More options')
   if (JSON.stringify(a.members) !== JSON.stringify(b.members)) out.push('Members')
-  if (JSON.stringify(a.compare) !== JSON.stringify(b.compare)) out.push('Comparison')
+  if (JSON.stringify(a.compare) !== JSON.stringify(b.compare)) out.push('Agent trial')
   return out
 }
 

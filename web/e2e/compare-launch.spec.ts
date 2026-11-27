@@ -137,7 +137,7 @@ test("a comparison's launch says what it starts, its button says the count, and 
   const statement = dialog.locator('[data-launch-compare]')
   await expect(statement).toHaveAttribute('data-launch-candidates', '2', { timeout: 30_000 })
   await expect(statement.locator('[data-launch-compare-part="candidates"]')).toHaveText(
-    "This comparison starts 2 candidates (Worker (e2e stub), Worker, CLI (e2e stub)): 2 agent sessions, once the plan's decisions and the project's prerequisites let the work start",
+    "This trial starts 2 candidates (Worker (e2e stub), Worker, CLI (e2e stub)): 2 agent sessions, once the plan's decisions and the project's prerequisites let the work start",
   )
   await expect(statement.locator('[data-launch-compare-part="reviews"]')).toHaveText('then an agent review of each candidate that succeeds: up to 2 more sessions, none for a candidate that fails or is cancelled')
   await expect(statement.locator('[data-launch-compare-part="multiplier"]')).toContainText("a review's request for changes, an attempt that could not start and each Retry you give add more")
@@ -171,7 +171,7 @@ test("a comparison whose statement the server did not give is not launched from 
   await editPlanReads(page, (p) => delete p.compare)
   const sent = await watchLaunches(page, ticketKey, () => confirmRefusal)
   const dialog = await openLaunch(page, key)
-  await expect(dialog.locator('[data-launch-compare-unstated]')).toContainText('Revision 1 is a comparison, and the server did not say what it starts', { timeout: 30_000 })
+  await expect(dialog.locator('[data-launch-compare-unstated]')).toContainText('Revision 1 is a trial, and the server did not say what it starts', { timeout: 30_000 })
   await expect(dialog.locator('[data-launch-compare]')).toHaveCount(0)
   const confirm = dialog.locator('[data-launch-confirm]')
   await expect(confirm).toBeDisabled()

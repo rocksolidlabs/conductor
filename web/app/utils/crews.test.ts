@@ -85,7 +85,7 @@ describe("a comparison's crew in the editor", () => {
 
   it('names the comparison in what changed when only it differs', () => {
     const other = { ...comparison, compare: { ...comparison.compare!, criteria: [{ id: 'speed', text: 'The benchmark runs twice as fast' }] } }
-    expect(changedFields(other, comparison)).toEqual(['Comparison'])
+    expect(changedFields(other, comparison)).toEqual(['Agent trial'])
     expect(crewKey(other)).not.toBe(crewKey(comparison))
   })
 })

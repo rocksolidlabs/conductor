@@ -289,9 +289,9 @@ async function cancel(s: CaptureSendView) {
     </fieldset>
     <p v-if="reviewKind && dirty" class="text-xs text-muted" data-send-problem>Save your changes first: Send sends the saved r{{ capture.rev }}</p>
 
-    <div v-if="!reviewKind" class="flex flex-wrap items-center gap-2">
-      <UButton label="Send" icon="i-lucide-send" :loading="sending" :disabled="!!problem || sending" data-capture-send-go @click="send" />
-      <span v-if="problem" class="text-xs text-muted" data-send-problem>{{ problem }}</span>
+    <div v-if="!reviewKind" class="flex flex-wrap items-center gap-2" data-capture-send-foot>
+      <span v-if="problem" class="min-w-0 flex-1 text-xs text-muted" data-send-problem>{{ problem }}</span>
+      <UButton label="Send" icon="i-lucide-send" class="ms-auto" :loading="sending" :disabled="!!problem || sending" data-capture-send-go @click="send" />
     </div>
     <p v-if="error" class="text-sm text-muted" role="status" data-send-error>{{ error }}</p>
 
