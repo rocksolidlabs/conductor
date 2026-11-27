@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -853,3 +854,47 @@ func TestAnInStreamRequestForACallOfAnEarlierTurnIsDenied(t *testing.T) {
 	e, v = inStreamAsked(t, s, f, "req-2", "c2", "commandExecution", `{"command":"ls"}`)
 	deniedWith(t, s, e, v, NotACallWords)
 }
+
+// The floor holds on the in-stream path: a call announced and asked about
+// in the stream is denied before any question when its command line names
+// a denied place, when one of its changes' paths or the place a change
+// moves a file to is denied, when the root it asks to write under is, when
+// the folder its command runs in is, and when its command's relative words
+// name a denied place from the folder it runs in.
+func TestAnInStreamRequestIsFloored(t *testing.T) {
+	data := realDir(t, t.TempDir())
+	secret := filepath.Join(data, "secrets.json")
+	if err := os.WriteFile(secret, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, _, f := protocolSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	f.TurnStarted("")
+	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	change := func(path string, kind map[string]any) map[string]any {
+		return map[string]any{"path": path, "kind": kind, "diff": ""}
+	}
+	for i, tc := range []struct {
+		name, tool, input string
+		floored           bool
+	}{
+		{"a line naming the place", "commandExecution", j(map[string]any{"command": "cat " + secret, "cwd": ""}), true},
+		{"a change's path", "fileChange", j(map[string]any{"changes": []any{change(secret, map[string]any{"type": "update"})}}), true},
+		{"a move's destination", "fileChange", j(map[string]any{"changes": []any{change("notes.txt", map[string]any{"type": "update", "move_path": filepath.Join(data, "x")})}}), true},
+		{"a root to write under", "fileChange", j(map[string]any{"changes": []any{change("notes.txt", map[string]any{"type": "update"})}, "grantRoot": data}), true},
+		{"a command's folder", "commandExecution", j(map[string]any{"command": "ls", "cwd": data}), true},
+		{"a relative line from the folder it runs in", "commandExecution", j(map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "cwd": filepath.Dir(data)}), true},
+		{"a call naming nothing of the list", "commandExecution", j(map[string]any{"command": "make test", "cwd": ""}), false},
+	} {
+		call := fmt.Sprintf("c-%d", i)
+		f.ToolStarted(ToolStep{Ref: call, Name: tc.tool, Input: []byte(tc.input)})
+		e, v := inStreamAsked(t, s, f, "req-"+call, call, tc.tool, tc.input)
+		if !tc.floored {
+			if v != nil || e.State != PermissionOpen {
+				t.Fatalf("%s: %+v, replied %+v", tc.name, e, v)
+			}
+			continue
+		}
+		deniedWith(t, s, e, v, FloorWords)
+	}
+}
+

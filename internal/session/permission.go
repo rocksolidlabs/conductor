@@ -731,10 +731,22 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 	case "command":
 		// A command that names its own folder (Codex's) is run there: a
 		// folder under the list is the list's.
-		if cwd, ok := fields["cwd"].(string); ok && cwd != "" && s.pathDenied(cwd, deny) {
-			return true
+		// Its line's relative words are judged from that folder too (made
+		// absolute against the session's when it is relative).
+		text := commandText(fields)
+		if cwd, ok := fields["cwd"].(string); ok && cwd != "" {
+			if s.pathDenied(cwd, deny) {
+				return true
+			}
+			from := filepath.Clean(cwd)
+			if !filepath.IsAbs(from) && s.info.Cwd != "" {
+				from = filepath.Join(s.info.Cwd, from)
+			}
+			if filepath.IsAbs(from) && commandNamesDenied(text, deny, from) {
+				return true
+			}
 		}
-		return commandNamesDenied(commandText(fields), deny, s.info.Cwd)
+		return commandNamesDenied(text, deny, s.info.Cwd)
 	case "file", "read":
 		// A change of several files (Codex's file change: its changes'
 		// paths, and the root it asks to write under) is the list's when
@@ -769,8 +781,8 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 }
 
 // changesDenied says a file change's input names a path denied says is
-// under the deny list: one of its changes' paths, or the root it asks to
-// write under.
+// under the deny list: one of its changes' paths or the place it moves the
+// file to, or the root it asks to write under.
 func changesDenied(fields map[string]any, denied func(string) bool) bool {
 	if root, ok := fields["grantRoot"].(string); ok && root != "" && denied(root) {
 		return true
@@ -779,6 +791,10 @@ func changesDenied(fields map[string]any, denied func(string) bool) bool {
 	for _, c := range changes {
 		m, _ := c.(map[string]any)
 		if p, ok := m["path"].(string); ok && p != "" && denied(p) {
+			return true
+		}
+		kind, _ := m["kind"].(map[string]any)
+		if p, ok := kind["move_path"].(string); ok && p != "" && denied(p) {
 			return true
 		}
 	}
