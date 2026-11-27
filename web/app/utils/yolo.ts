@@ -24,18 +24,27 @@ export function hasYoloRecipe(agent: Pick<AgentInfo, 'yolo'> | undefined): boole
 }
 
 /**
+ * Why Yolo cannot be set for `agent`, in the words beside the Launch dialog's switch, which is then off and disabled: an agent with no
+ * recipe cannot skip its prompts, and the built-in shell has none to skip. "" when the agent has a recipe, or none is picked yet.
+ */
+export function yoloUnavailable(agent: (Pick<AgentInfo, 'name' | 'yolo'> & { id?: string }) | undefined): string {
+  if (!agent || hasYoloRecipe(agent)) return ''
+  return agent.id === 'shell' ? 'does not apply to a shell' : `${agent.name} cannot skip its prompts`
+}
+
+/**
  * What a launch of `agent` with `extra` arguments runs, yolo `on` or not: the argv the server builds (its command, the arguments, the
  * recipe's arguments when it applies; the adapter's flags come after, on the server), the recipe's variables by name, and a notice when
- * yolo is on and the agent has no recipe: it is launched as it would be without, and no badge shows.
+ * yolo is on and the agent has no recipe (yoloUnavailable's words): it is launched as it would be without, and no badge shows.
  */
-export function yoloSummary(agent: Pick<AgentInfo, 'name' | 'command' | 'yolo'> | undefined, on: boolean, extra: string[] = []): { argv: string[]; env: string[]; applies: boolean; notice: string } {
+export function yoloSummary(agent: (Pick<AgentInfo, 'name' | 'command' | 'yolo'> & { id?: string }) | undefined, on: boolean, extra: string[] = []): { argv: string[]; env: string[]; applies: boolean; notice: string } {
   if (!agent) return { argv: [], env: [], applies: false, notice: '' }
   const applies = on && hasYoloRecipe(agent)
   return {
     argv: [...agent.command, ...extra, ...(applies ? (agent.yolo?.args ?? []) : [])],
     env: applies ? Object.keys(agent.yolo?.env ?? {}).sort() : [],
     applies,
-    notice: on && !applies ? `${agent.name} has no yolo recipe: it launches as usual, with its permission prompts.` : '',
+    notice: on && !applies ? yoloUnavailable(agent) : '',
   }
 }
 
