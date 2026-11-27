@@ -180,8 +180,8 @@ export const DECLINED_WORDS = 'the screen was not shared, so the capture has no 
 /** How long the tab's capture is given to present a frame of the preview, and what is said when it presents none. */
 export const TAB_FRAME_MS = 1000
 export const TAB_ENDED_WORDS = 'the shared tab gave no picture of the preview within a second, so this capture has no screenshot: capture again to share the tab anew'
-/** The words of a browser that cannot capture its tab cropped to the frame. */
-export const NO_TAB_WORDS = 'this browser cannot capture its tab cropped to the frame (the desktop app and Chromium can), so the capture has no screenshot'
+/** The words where a capture cropped to the frame cannot be taken. */
+export const NO_TAB_WORDS = 'a picture cropped to the frame cannot be taken here (the desktop app and Chromium can take one), so the capture has no screenshot'
 
 interface CropTargetStatic {
   fromElement(el: Element): Promise<unknown>

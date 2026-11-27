@@ -274,11 +274,13 @@ Decided 2026-11-16 by the maintainers, #941.
 Amber is for what waits on a person: a question, a plan to approve, a
 task out of attempts, a decision, a confirm that loses work, a read that
 failed. Never a standing fact: a setting that is on, an agent that is not
-installed, a count.
+installed, a count. The yolo badge says a setting is on, so it is
+neutral wherever it is drawn, and a Yolo switch that is on is never amber.
 
 Checks: `main-action.spec.ts`, amber: Not installed and an identified
 agent's badge are neither amber nor green, the Yard's Needs you chip's
-mark is amber.
+mark is amber; `yolo-badge.spec.ts`: the yolo badge in a session's header
+and its sidebar row is not amber, in both themes.
 
 ### The page header
 
