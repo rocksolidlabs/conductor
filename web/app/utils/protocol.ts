@@ -101,7 +101,8 @@ export interface SubmitMsg {
   /**
    * Asks that a chat's agent get the line without its as-written mark, to expand its `@path` and run its `/command` (I19): sent
    * only by the Chat box, and only where this connection's welcome (or, after a move, its `way` message) said `expand`. The owner
-   * honours it from the operator's own chat connection alone; from anyone else it changes nothing. Absent means the mark.
+   * honours it from the operator's own chat connection alone; anywhere else it refuses the line (`not_sent`), nothing written.
+   * Absent means the mark.
    */
   expand?: boolean
 }

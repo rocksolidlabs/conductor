@@ -114,6 +114,7 @@ const (
 	QueuedWords         = "Sends when the turn ends."
 	TooManyQueuedWords  = "Too many messages are waiting."
 	PermissionCardWords = "Answer this request with its own buttons."
+	NoExpandWords       = "Not sent: from here a line goes to the agent as written."
 
 	// What a permission request's entry says once it is no longer open,
 	// and what the agent is told with a deny.
@@ -140,6 +141,12 @@ var (
 	ErrNotProtocol error = &wayWords{NotProtocolWords}
 	// ErrNoTurn refuses an interrupt while no turn runs.
 	ErrNoTurn error = &wayWords{NoTurnWords}
+	// ErrNoExpand refuses a line that asks to go without the as-written mark
+	// (Submission.Expand) where it cannot: from any connection but the
+	// operator's own chat connection, with a question, a decision or a
+	// relay, on a driver with no mark, on a session in its terminal.
+	// Nothing is written: the line is never sent otherwise than asked.
+	ErrNoExpand error = &wayWords{NoExpandWords}
 	// ErrTooManyQueued refuses a message while MaxQueuedMessages wait.
 	ErrTooManyQueued error = &wayWords{TooManyQueuedWords}
 	// ErrUnconfirmed is a message's word when the agent did not
@@ -773,7 +780,13 @@ func (s *Local) submitProtocol(p *protocolWay, sub Submission) (SubmitResult, er
 	// I19: the one place a message is sent without the as-written mark.
 	// Only the operator's own chat connection's typed line, naming no
 	// question or decision and relaying nobody, on a driver that has a mark.
-	if sub.Expand && sub.Question == "" && sub.Decision == "" && sub.From == nil && p.verbatim && s.operatorChatLocked(sub.By) {
+	// Asked anywhere else, the line is refused, never sent as something it
+	// did not ask to be (ErrNoExpand).
+	if sub.Expand {
+		if sub.Question != "" || sub.Decision != "" || sub.From != nil || !p.verbatim || !s.operatorChatLocked(sub.By) {
+			s.mu.Unlock()
+			return res, ErrNoExpand
+		}
 		q.msg.Expand = true
 	}
 	shownName := oneLine(sub.ByName, maxPromptName)

@@ -159,15 +159,19 @@ func TestOnlyTheOperatorsOwnLineIsExpanded(t *testing.T) {
 			t.Cleanup(func() { _ = s.Stop(context.Background()) })
 			sub := c.sub(t, made{s, f})
 			_, err := s.Submit(ctx, sub)
-			if !errors.Is(err, ErrSubmitPending) {
-				// Refused (a decision no question mirrors): nothing is sent.
-				if c.want {
-					t.Fatalf("Submit = %v", err)
+			if sub.Expand && !c.want {
+				// Asked where it cannot be honoured: refused, nothing sent,
+				// never sent as written in its place.
+				if !errors.Is(err, ErrNoExpand) {
+					t.Fatalf("Submit = %v, want ErrNoExpand", err)
 				}
 				if n := len(f.Sent()); n != 0 {
 					t.Fatalf("a refused line was sent: %+v", f.Sent())
 				}
 				return
+			}
+			if !errors.Is(err, ErrSubmitPending) {
+				t.Fatalf("Submit = %v", err)
 			}
 			waitCalls(t, f, "the write", sends(1))
 			m := f.Sent()[0]
@@ -182,7 +186,8 @@ func TestOnlyTheOperatorsOwnLineIsExpanded(t *testing.T) {
 }
 
 // Three lines queued in one turn (a guest's, the operator's, a guest's)
-// keep each its own word, in order.
+// keep each its own word, in order; a guest's line that asks for the word
+// is refused among them, and the others go on.
 func TestExpandIsPerMessage(t *testing.T) {
 	s, f := markedChat(t)
 	op, _ := attachAs(t, s, operatorChat)
@@ -190,13 +195,16 @@ func TestExpandIsPerMessage(t *testing.T) {
 	f.TurnStarted("")
 	ctx := context.Background()
 	for _, sub := range []Submission{
-		{Text: "/one", By: guest, Expand: true},
+		{Text: "/one", By: guest},
 		{Text: "/two", By: op, Expand: true},
-		{Text: "/three", By: guest, Expand: true},
+		{Text: "/three", By: guest},
 	} {
 		if _, err := s.Submit(ctx, sub); !errors.Is(err, ErrSubmitPending) {
 			t.Fatalf("Submit %q = %v", sub.Text, err)
 		}
+	}
+	if _, err := s.Submit(ctx, Submission{Text: "/four", By: guest, Expand: true}); !errors.Is(err, ErrNoExpand) {
+		t.Fatalf("a guest's line asking for the word: %v", err)
 	}
 	f.TurnEnded("done", Usage{})
 	for i := range 3 {
@@ -286,14 +294,30 @@ func TestAChoiceAndAnAnswerAreNeverExpanded(t *testing.T) {
 		s, f := markedChat(t)
 		id := fruit(t, s)
 		op, _ := attachAs(t, s, operatorChat)
-		if _, err := s.Submit(context.Background(), Submission{Text: "/compact", By: op, Question: id, Expand: true}); !errors.Is(err, ErrSubmitPending) {
+		if _, err := s.Submit(context.Background(), Submission{Text: "/compact", By: op, Question: id, Expand: true}); !errors.Is(err, ErrNoExpand) {
+			t.Fatalf("an answer asking for the word: %v", err)
+		}
+		if _, err := s.Submit(context.Background(), Submission{Text: "/compact", By: op, Question: id}); !errors.Is(err, ErrSubmitPending) {
 			t.Fatalf("the answer: %v", err)
 		}
 		waitCalls(t, f, "the write", sends(1))
-		if m := f.Sent()[0]; m.Expand {
-			t.Fatalf("an answer went %+v", m)
+		if m := f.Sent()[0]; m.Expand || len(f.Sent()) != 1 {
+			t.Fatalf("an answer went %+v", f.Sent())
 		}
 	})
+}
+
+// A session in its terminal refuses a line that asks for the word: it was
+// sent for a chat, and nothing of it is typed.
+func TestATerminalRefusesExpand(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096})
+	op, _ := attachAs(t, s, operatorChat)
+	if _, err := s.Submit(context.Background(), Submission{Text: "/compact", By: op, Expand: true}); !errors.Is(err, ErrNoExpand) {
+		t.Fatalf("Submit = %v", err)
+	}
+	if n := len(p.input); n != 0 {
+		t.Fatalf("%d writes reached the terminal", n)
+	}
 }
 
 // welcomeOf is the welcome a sink was sent first.

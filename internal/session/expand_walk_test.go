@@ -104,6 +104,9 @@ func TestOnlyTheViewersSubmitSetsExpand(t *testing.T) {
 		{"internal/session/protocol.go", "Expand", "read"}:    2, // sub.Expand judged; the entry's Expanded from the message
 		{"internal/session/protocol.go", "Expand", "set"}:     1, // q.msg.Expand = true, the one line
 		{"internal/agentproto/claude.go", "Expand", "read"}:   1, // Send leaves client_composed out
+		{"internal/hostagent/peer.go", "Expand", "set"}:       1, // passed on as it came: the session refuses it there
+		{"internal/hostagent/peer.go", "Expand", "read"}:      1, // m.Expand, never dropped
+		{"internal/session/submit.go", "Expand", "read"}:      1, // a terminal refuses it
 	}
 	if !maps.Equal(count, want) {
 		var got []string
