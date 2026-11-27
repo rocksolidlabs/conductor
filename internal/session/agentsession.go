@@ -57,14 +57,23 @@ func (s *Local) SetCrew(ref CrewRef) bool {
 		s.mu.Unlock()
 		return false
 	}
+	var could []*Subscription
+	s.hub.Each(func(sub *Subscription) {
+		if s.operatorChatLocked(sub) {
+			could = append(could, sub)
+		}
+	})
 	r := ref
 	s.info.Crew = &r
-	if s.way.Load() != nil {
+	if p := s.way.Load(); p != nil {
 		// A chat whose standing changed: every connection is told whether
 		// its typed line may still go for the agent to expand (a crew
 		// member's may not: operatorChatLocked), so a page never holds a
-		// word the session no longer honours.
+		// word the session no longer honours; and one that was sent the
+		// agent's commands and may be no more is sent an empty list, so
+		// its page keeps none it is no longer kept up to date with.
 		s.standingChangedLocked()
+		s.commandsWithdrawnLocked(p, could)
 	}
 	s.mu.Unlock()
 	s.notifyChange()

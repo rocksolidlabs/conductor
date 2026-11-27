@@ -3340,7 +3340,9 @@ adversarial read; the page's parts come after them. **30 h.**
   not an array of objects with a string name changes nothing, and past
   1,000 entries the rest is not read.
 - The session (`cleanCommands`) keeps a name only of the shape and bound,
-  once, its aliases of the same rules and never its own name, its words
+  once, its aliases of the same rules, never one that is a kept command's
+  name or an alias already given (so a name and an alias never mean two
+  commands), its words
   and hint on one line with every control, format and line-separator
   character dropped, cut at a character with `…` for the words; at most
   200, `more` past them. An unchanged list is not sent again; a change

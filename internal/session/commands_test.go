@@ -117,6 +117,20 @@ func TestCommandsBoundedAndCleaned(t *testing.T) {
 	if strings.Join(c.Aliases, ",") != "squash,c" {
 		t.Fatalf("the aliases %q", c.Aliases)
 	}
+	// An alias that is another command's name, or an alias already given,
+	// is dropped: a name and an alias never mean two commands.
+	clash, _ := cleanCommands([]Command{
+		{Name: "fix", Aliases: []string{"compact", "f"}},
+		{Name: "compact", Aliases: []string{"f", "squash"}},
+		{Name: "deploy", Aliases: []string{"fix", "squash", "d"}},
+	})
+	var got []string
+	for _, c := range clash {
+		got = append(got, c.Name+":"+strings.Join(c.Aliases, ","))
+	}
+	if strings.Join(got, " ") != "fix:f compact:squash deploy:d" {
+		t.Fatalf("aliases across commands: %q", got)
+	}
 	if w := kept[1].Words; w != "one[31m two three four" {
 		t.Fatalf("the words cleaned %q", w)
 	}
@@ -161,8 +175,9 @@ func TestCommandsGoToTheOperatorAlone(t *testing.T) {
 	if got := waitCommands(t, late, 1); got[0].Rev != 1 {
 		t.Fatalf("the late operator was sent %+v", got)
 	}
-	_, lateLink := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-3", Name: "Late", ViewerSocket: true})
+	ll, lateLink := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-3", Name: "Late", ViewerSocket: true})
 	drainedSub(t, op)
+	drainedSub(t, ll)
 	for who, sub := range subs {
 		drainedSub(t, sub)
 		if got := commandsSent(t, sinks[who]); len(got) != 0 {
@@ -235,8 +250,8 @@ func TestCommandsGoneWithTheChat(t *testing.T) {
 		p.exit()
 	})
 	s.SetAttention(AttentionDone, "a turn of its own", SourceAPI)
-	_, own := attachAs(t, s, operatorChat)
-	_, link := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
+	op, own := attachAs(t, s, operatorChat)
+	ln, link := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
 	ts := &terminals{}
 	ts.cleanup(t)
 	f := sessiontest.NewFakeProtocol()
@@ -254,7 +269,10 @@ func TestCommandsGoneWithTheChat(t *testing.T) {
 	}
 	settled(t, s)
 	timers.fire(900 * time.Millisecond)
-	_, back := attachAs(t, s, operatorChat)
+	bk, back := attachAs(t, s, operatorChat)
+	drainedSub(t, op)
+	drainedSub(t, ln)
+	drainedSub(t, bk)
 	if got := commandsSent(t, back); len(got) != 0 {
 		t.Fatalf("a terminal session sent the commands: %+v", got)
 	}
@@ -271,28 +289,78 @@ func TestCommandsGoneWithTheChat(t *testing.T) {
 func TestCommandsFollowTheMoveToTheOperatorAlone(t *testing.T) {
 	s, _ := movable(t, 0)
 	_, own := attachAs(t, s, operatorChat)
-	_, link := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
+	ln, link := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
 	ts := &terminals{}
 	ts.cleanup(t)
 	f := sessiontest.NewFakeProtocol()
 	f.IsVerbatim = true
-	// The list comes with the new child's start, before the move ends.
+	// The list comes as the new child begins, applied before the move ends
+	// (its Begin waits for it): the change path's send reaches the operator
+	// before the way message, and the list must follow the way message too.
 	start := f.Start()
 	listed := func(ctx context.Context, conv string) (Child, Protocol, error) {
 		c, d, err := start(ctx, conv)
-		go f.Commands([]Command{{Name: "compact"}})
-		return c, d, err
+		return c, listsAtBegin{Protocol: d, f: f}, err
 	}
 	st, err := s.SwapWay(WayProtocol, MoveStarts{Protocol: listed, Terminal: ts.start, Gone: GroupGone})
 	if err != nil || !st.Moving {
 		t.Fatalf("SwapWay = %+v, %v", st, err)
 	}
 	settled(t, s)
-	got := waitCommands(t, own, 1)
-	if got[len(got)-1].Commands[0].Name != "compact" {
-		t.Fatalf("the operator was sent %+v", got)
+	waitCommands(t, own, 2)
+	// In order: a commands message after the way message to the chat.
+	way, after := -1, false
+	for i := range own.count() {
+		fr, err := proto.Decode(own.frame(i))
+		if err != nil {
+			continue
+		}
+		var m map[string]any
+		_ = json.Unmarshal(fr.Payload, &m)
+		switch {
+		case fr.Type == proto.TypeControl && m["t"] == proto.CtlWay && m["way"] == proto.WayProtocol:
+			way = i
+		case fr.Type == proto.TypeTranscript && m["t"] == proto.TranscriptCommandsT && way >= 0:
+			after = true
+		}
 	}
+	if way < 0 || !after {
+		t.Fatalf("no commands message after the way message (way at %d)", way)
+	}
+	drainedSub(t, ln)
 	if got := commandsSent(t, link); len(got) != 0 {
 		t.Fatalf("a link was sent the commands: %+v", got)
+	}
+}
+
+// listsAtBegin is a driver whose Begin hands the session the agent's
+// commands and returns once they are applied: a list that comes before the
+// move to its chat ends.
+type listsAtBegin struct {
+	Protocol
+	f *sessiontest.FakeProtocol
+}
+
+func (d listsAtBegin) Begin(ctx context.Context) error {
+	d.f.Commands([]Command{{Name: "compact"}})
+	return d.Protocol.Begin(ctx)
+}
+
+// A connection that may no longer expand (a crew formed around the
+// session) is sent an empty list after the way message that says so.
+func TestCommandsWithdrawnWhenTheStandingChanges(t *testing.T) {
+	s, f := commandsChat(t, Options{})
+	op, own := attachAs(t, s, operatorChat)
+	f.Commands([]Command{{Name: "compact"}})
+	waitCommands(t, own, 1)
+	s.SetCrew(CrewRef{RunID: "run-1", Member: "lead"})
+	got := waitCommands(t, own, 2)
+	if got[1].Rev <= got[0].Rev || len(got[1].Commands) != 0 {
+		t.Fatalf("after the change: %+v", got)
+	}
+	f.Commands([]Command{{Name: "compact"}, {Name: "clear"}})
+	drainedSub(t, op)
+	if got := commandsSent(t, own); len(got) != 2 {
+		t.Fatalf("a crew member's chat was sent a later list: %+v", got)
 	}
 }

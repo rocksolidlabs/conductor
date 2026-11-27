@@ -31,38 +31,54 @@ const commandsScan = 1000
 
 // cleanCommands is the list as the session keeps it: names of
 // proto.CommandNameShape within proto.MaxCommandName (any other dropped, a
-// name already kept dropped, an alias that is another's name or its own
-// dropped too), at most proto.MaxCommandAliases aliases of the same shape
-// within proto.MaxCommandAlias, the words cut to proto.MaxCommandWords with
+// name already kept dropped), at most proto.MaxCommandAliases aliases of
+// the same shape within proto.MaxCommandAlias, an alias that is the name of
+// any command kept or an alias already given (to this command or an
+// earlier one) dropped, so that a name and an alias never mean two
+// commands; the words cut to proto.MaxCommandWords with
 // an ellipsis and the hint to proto.MaxCommandHint, each of one line with
 // every control and hidden character dropped; at most proto.MaxCommands
 // commands, more saying the agent listed more that would be kept.
 func cleanCommands(list []Command) (kept []proto.Command, more bool) {
 	seen := map[string]bool{}
+	var from [][]string
 	for i, c := range list {
 		if i >= commandsScan {
-			return kept, true
+			more = true
+			break
 		}
 		if len(c.Name) > proto.MaxCommandName || !proto.CommandNameShape.MatchString(c.Name) || seen[c.Name] {
 			continue
 		}
 		if len(kept) == proto.MaxCommands {
-			return kept, true
+			more = true
+			break
 		}
 		seen[c.Name] = true
-		pc := proto.Command{Name: c.Name, Words: commandWords(c.Words, proto.MaxCommandWords, "…"), Hint: commandWords(c.Hint, proto.MaxCommandHint, "")}
-		for _, a := range c.Aliases {
-			if len(pc.Aliases) == proto.MaxCommandAliases {
+		kept = append(kept, proto.Command{Name: c.Name, Words: commandWords(c.Words, proto.MaxCommandWords, "…"), Hint: commandWords(c.Hint, proto.MaxCommandHint, "")})
+		from = append(from, c.Aliases)
+	}
+	return withAliases(kept, from, seen), more
+}
+
+// withAliases gives each kept command its aliases, once every name is
+// known: an alias that is a kept name (seen) or one already given is
+// dropped, as one of another shape or past its bound is.
+func withAliases(kept []proto.Command, from [][]string, seen map[string]bool) []proto.Command {
+	given := map[string]bool{}
+	for i := range kept {
+		for _, a := range from[i] {
+			if len(kept[i].Aliases) == proto.MaxCommandAliases {
 				break
 			}
-			if a == c.Name || len(a) > proto.MaxCommandAlias || !proto.CommandNameShape.MatchString(a) || slices.Contains(pc.Aliases, a) {
+			if seen[a] || given[a] || len(a) > proto.MaxCommandAlias || !proto.CommandNameShape.MatchString(a) {
 				continue
 			}
-			pc.Aliases = append(pc.Aliases, a)
+			given[a] = true
+			kept[i].Aliases = append(kept[i].Aliases, a)
 		}
-		kept = append(kept, pc)
 	}
-	return kept, false
+	return kept
 }
 
 // commandWords is s on one line, valid UTF-8, every control and hidden
@@ -164,6 +180,26 @@ func (s *Local) sendCommandsLocked(p *protocolWay) {
 			sub.send(f)
 		}
 	})
+}
+
+// commandsWithdrawnLocked sends an empty list, under a revision of its
+// own, to each of was that is no longer an operator's own chat connection
+// (the session's standing changed: a crew formed around it), so its page
+// keeps no list the session no longer sends it. The caller holds s.mu.
+func (s *Local) commandsWithdrawnLocked(p *protocolWay, was []*Subscription) {
+	c := &p.commands
+	if c.rev == 0 {
+		return
+	}
+	f, err := proto.EncodeCommands(proto.TranscriptCommandsMsg{Rev: c.rev + 1})
+	if err != nil {
+		return
+	}
+	for _, sub := range was {
+		if !s.operatorChatLocked(sub) {
+			sub.send(f)
+		}
+	}
 }
 
 // commandsFrameLocked is the list's TRANSCRIPT frame, nil while no list
