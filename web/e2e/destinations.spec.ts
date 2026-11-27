@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test'
-import { dayPage, expect, test } from './fixtures'
+import { atRest, dayPage, expect, test } from './fixtures'
 
 // Every list of the pages, as drawn (the UX review's P12: ten destinations became seven): the sidebar's tiles and their More, the
 // rail, the palette's Go to rows, the phone's bar and its More. Each is compared with a literal list written here, so a change to the
@@ -63,4 +63,27 @@ test('every list of the pages, as drawn', async ({ browser, state }) => {
   const more = phone.locator('[data-bottom-more]')
   await expect(more.getByRole('link', { name: 'Brakeman' })).toBeVisible()
   await drawn(more.getByRole('link'), ['Dispatch', 'Brakeman', 'Agents', 'History', 'Hosts'])
+})
+
+test("a tile's tooltip never takes a press meant for the tile beside it: with Needs you's tooltip open over the Yard, a press there opens the Yard", async ({ browser, state }) => {
+  const page = await dayPage(browser, { server: state, path: '/crews', width: 1440, height: 900 })
+  const tiles = page.getByRole('navigation', { name: 'Pages' })
+  const needs = tiles.locator('[data-sidebar-tile="decisions"]')
+  const yard = tiles.locator('[data-sidebar-tile="yard"]')
+  await needs.hover()
+  const tip = page.locator('[data-slot="content"]').filter({ has: page.getByRole('tooltip', { name: /^Needs you:/, includeHidden: true }) })
+  await expect(tip, "Needs you's tooltip").toBeVisible()
+  await atRest(tip)
+  // The tooltip opens to the right, over the next tile: the press below is aimed where both lie.
+  const [t, y] = [(await tip.boundingBox())!, (await yard.boundingBox())!]
+  const left = Math.max(t.x, y.x)
+  const right = Math.min(t.x + t.width, y.x + y.width)
+  const top = Math.max(t.y, y.y)
+  const bottom = Math.min(t.y + t.height, y.y + y.height)
+  expect(left < right && top < bottom, 'the tooltip lies over the Yard tile').toBe(true)
+  // Straight onto where both lie and pressed with the mouse itself, so that a press the tooltip takes fails here.
+  await page.mouse.move((left + right) / 2, (top + bottom) / 2, { steps: 5 })
+  await page.mouse.down()
+  await page.mouse.up()
+  await expect(page, 'the press reached the Yard tile').toHaveURL(/\/yard$/)
 })
