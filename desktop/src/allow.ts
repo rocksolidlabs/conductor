@@ -2,7 +2,7 @@ import { validate, type DesktopSettings } from './settings'
 
 /**
  * Allow this folder (the Launch agent dialog's one press): the app asks the server it started to let agents use one more folder
- * (POST /api/roots, with the workbench token and the key the app gave that server for this run, CONDUCTOR_DESKTOP_KEY), then keeps
+ * (POST /api/roots, with the workbench token and the key the app handed that server on its stdin for this run), then keeps
  * the folder in its settings file, with no restart: running sessions go on. Only the workbench's own main frame may ask (ipc.ts),
  * exactly who may save Settings.
  */

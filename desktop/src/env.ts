@@ -2,21 +2,19 @@ import { switchyardRefusal, type DesktopSettings } from './settings'
 
 /**
  * serverEnv is the environment the server runs with: the app's own minus any CONDUCTOR_* that was set, the login shell's PATH, and
- * the CONDUCTOR_* values the settings choose. The workbench token is minted per run and never written anywhere. appDir is the app's
+ * the CONDUCTOR_* values the settings choose. The workbench token and the run's key are in it nowhere: the app hands them over on the
+ * server's stdin (secretsLine, serve --secrets-stdin), so neither is in what the system shows of the server's starting environment
+ * or its command line. appDir is the app's
  * own directory (userData: its settings, which hold the switchyard token, its logs and its browser data), which the server's sessions
  * must not read: CONDUCTOR_DESKTOP_DIR names it, a path on this machine (inside WSL, linuxEnv gives the distribution's path to it).
- * key is the second secret minted per run (CONDUCTOR_DESKTOP_KEY): with it, and the token, the app alone may allow one more folder
- * while the server runs (allow.ts); no page, log line or file gets it, and none is taken from the app's own environment.
  */
-export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, token: string, path: string, appDir: string, key = ''): Record<string, string> {
+export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, path: string, appDir: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(base)) {
     if (v === undefined || k.startsWith('CONDUCTOR_')) continue
     out[k] = v
   }
   if (path) out.PATH = path
-  out.CONDUCTOR_WORKBENCH_TOKEN = token
-  if (key) out.CONDUCTOR_DESKTOP_KEY = key
   out.CONDUCTOR_DATA_DIR = settings.dataDir
   if (appDir) out.CONDUCTOR_DESKTOP_DIR = appDir
   out.CONDUCTOR_ALLOWED_ROOTS = settings.allowedRoots.join(',')
@@ -43,5 +41,13 @@ export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, to
   return out
 }
 
-/** The server's arguments: a free loopback port, the handshake, and the exit with the app. */
-export const SERVE_ARGS = ['serve', '--listen', '127.0.0.1:0', '--print-listen', '--exit-on-stdin-close']
+/** The server's arguments: a free loopback port, the handshake, the exit with the app, and its secrets on stdin. */
+export const SERVE_ARGS = ['serve', '--listen', '127.0.0.1:0', '--print-listen', '--exit-on-stdin-close', '--secrets-stdin']
+
+/**
+ * secretsLine is the first line the app writes on its server's stdin (serve --secrets-stdin): the workbench token minted for this
+ * run, and the run's key where the app offers Allow this folder ('' for none: the server then allows no folder while it runs).
+ */
+export function secretsLine(token: string, key: string): string {
+  return JSON.stringify(key ? { workbenchToken: token, desktopKey: key } : { workbenchToken: token }) + '\n'
+}

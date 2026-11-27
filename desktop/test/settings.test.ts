@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, refusedSwitchyardNote, switchyardExtra, switchyardRefusal, switchyardRefused, switchyardShape, validate } from '../src/settings'
-import { serverEnv, SERVE_ARGS } from '../src/env'
+import { secretsLine, serverEnv, SERVE_ARGS } from '../src/env'
 
 // On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
 const win = process.platform === 'win32'
@@ -54,24 +54,27 @@ describe('settings', () => {
 })
 
 describe('server environment', () => {
-  it.skipIf(win)('drops the app\'s CONDUCTOR_* variables, sets the settings\' and the token, and the login shell\'s PATH', () => {
+  it.skipIf(win)('drops the app\'s CONDUCTOR_* variables, sets the settings\' and the login shell\'s PATH, and holds no token', () => {
     const defaults = defaultSettings('/home/me', '/ud')
-    const env = serverEnv({ HOME: '/home/me', PATH: '/usr/bin', CONDUCTOR_WORKBENCH_TOKEN: 'leaked', CONDUCTOR_YOLO: '1', CONDUCTOR_DESKTOP_DIR: '/elsewhere', LANG: 'C' }, { ...defaults, yolo: true, reach: 'manual' }, 'tok', '/opt/bin:/usr/bin', '/ud')
-    expect(env).toEqual({ HOME: '/home/me', PATH: '/opt/bin:/usr/bin', LANG: 'C', CONDUCTOR_WORKBENCH_TOKEN: 'tok', CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_DATA_DIR: '/ud/conductor', CONDUCTOR_DESKTOP_DIR: '/ud', CONDUCTOR_ALLOWED_ROOTS: '/home/me', CONDUCTOR_DEFAULT_CWD: '/home/me', CONDUCTOR_YOLO: '1', CONDUCTOR_REACH: 'manual', CONDUCTOR_PATHS_BROWSE: 'any' })
-    expect(SERVE_ARGS).toEqual(['serve', '--listen', '127.0.0.1:0', '--print-listen', '--exit-on-stdin-close'])
+    const env = serverEnv({ HOME: '/home/me', PATH: '/usr/bin', CONDUCTOR_WORKBENCH_TOKEN: 'leaked', CONDUCTOR_YOLO: '1', CONDUCTOR_DESKTOP_DIR: '/elsewhere', LANG: 'C' }, { ...defaults, yolo: true, reach: 'manual' }, '/opt/bin:/usr/bin', '/ud')
+    expect(env).toEqual({ HOME: '/home/me', PATH: '/opt/bin:/usr/bin', LANG: 'C', CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_DATA_DIR: '/ud/conductor', CONDUCTOR_DESKTOP_DIR: '/ud', CONDUCTOR_ALLOWED_ROOTS: '/home/me', CONDUCTOR_DEFAULT_CWD: '/home/me', CONDUCTOR_YOLO: '1', CONDUCTOR_REACH: 'manual', CONDUCTOR_PATHS_BROWSE: 'any' })
+    expect(SERVE_ARGS).toEqual(['serve', '--listen', '127.0.0.1:0', '--print-listen', '--exit-on-stdin-close', '--secrets-stdin'])
   })
   it('names the app\'s own directory, where its settings and their switchyard token are, for the server to refuse', () => {
     const defaults = defaultSettings('/home/me', '/home/me/.config/conductor-desktop')
-    expect(serverEnv({}, defaults, 'tok', '/usr/bin', '/home/me/.config/conductor-desktop').CONDUCTOR_DESKTOP_DIR).toBe('/home/me/.config/conductor-desktop')
-    expect(serverEnv({}, defaults, 'tok', '/usr/bin', 'C:\\Users\\me\\AppData\\Roaming\\conductor-desktop').CONDUCTOR_DESKTOP_DIR).toBe('C:\\Users\\me\\AppData\\Roaming\\conductor-desktop')
+    expect(serverEnv({}, defaults, '/usr/bin', '/home/me/.config/conductor-desktop').CONDUCTOR_DESKTOP_DIR).toBe('/home/me/.config/conductor-desktop')
+    expect(serverEnv({}, defaults, '/usr/bin', 'C:\\Users\\me\\AppData\\Roaming\\conductor-desktop').CONDUCTOR_DESKTOP_DIR).toBe('C:\\Users\\me\\AppData\\Roaming\\conductor-desktop')
     // None known: none named, and none the app itself was started with comes through.
-    expect(serverEnv({ CONDUCTOR_DESKTOP_DIR: '/elsewhere' }, defaults, 'tok', '/usr/bin', '')).not.toHaveProperty('CONDUCTOR_DESKTOP_DIR')
+    expect(serverEnv({ CONDUCTOR_DESKTOP_DIR: '/elsewhere' }, defaults, '/usr/bin', '')).not.toHaveProperty('CONDUCTOR_DESKTOP_DIR')
   })
-  it("carries the run's key it is given (Allow this folder), and none from the app's own environment", () => {
+  it("hands the server its token and its key on stdin alone: neither is in the environment it builds", () => {
     const defaults = defaultSettings('/home/me', '/ud')
-    expect(serverEnv({}, defaults, 'tok', '/usr/bin', '/ud', 'k'.repeat(64)).CONDUCTOR_DESKTOP_KEY).toBe('k'.repeat(64))
-    expect(serverEnv({ CONDUCTOR_DESKTOP_KEY: 'leaked' }, defaults, 'tok', '/usr/bin', '/ud')).not.toHaveProperty('CONDUCTOR_DESKTOP_KEY')
-    expect(serverEnv({ CONDUCTOR_DESKTOP_KEY: 'leaked' }, defaults, 'tok', '/usr/bin', '/ud', 'mine').CONDUCTOR_DESKTOP_KEY).toBe('mine')
+    const env = serverEnv({ CONDUCTOR_WORKBENCH_TOKEN: 'leaked', CONDUCTOR_DESKTOP_KEY: 'leaked' }, defaults, '/usr/bin', '/ud')
+    expect(env).not.toHaveProperty('CONDUCTOR_WORKBENCH_TOKEN')
+    expect(env).not.toHaveProperty('CONDUCTOR_DESKTOP_KEY')
+    expect(JSON.stringify(env)).not.toContain('leaked')
+    expect(secretsLine('tok', 'k'.repeat(64))).toBe(`{"workbenchToken":"tok","desktopKey":"${'k'.repeat(64)}"}\n`)
+    expect(secretsLine('tok', '')).toBe('{"workbenchToken":"tok"}\n')
   })
 })
 
@@ -85,15 +88,15 @@ describe('switchyard settings', () => {
     expect(validate({ ...base, switchyardServer: 'ftp://x' })).toContain(SWITCHYARD_SHAPE)
     expect(validate({ ...base, switchyardServer: 'https://switchyard.example.net' })).toEqual([]) // no token needed
     expect(validate({ ...base, switchyardName: 'x'.repeat(65) })).toContain('the name at the switchyard is at most 64 characters')
-    const byDefault = serverEnv({}, base, 'tok', '/usr/bin', '')
+    const byDefault = serverEnv({}, base, '/usr/bin', '')
     expect(byDefault.CONDUCTOR_RENDEZVOUS).toBe('1')
     expect(byDefault.CONDUCTOR_RENDEZVOUS_SERVER).toBeUndefined()
     expect(byDefault.CONDUCTOR_RENDEZVOUS_TOKEN).toBeUndefined()
-    const env = serverEnv({}, { ...base, switchyardServer: 'https://switchyard.example.net/', switchyardToken: 'sy-token', switchyardName: 'laptop' }, 'tok', '/usr/bin', '')
+    const env = serverEnv({}, { ...base, switchyardServer: 'https://switchyard.example.net/', switchyardToken: 'sy-token', switchyardName: 'laptop' }, '/usr/bin', '')
     expect(env.CONDUCTOR_RENDEZVOUS_SERVER).toBe('https://switchyard.example.net')
     expect(env.CONDUCTOR_RENDEZVOUS_TOKEN).toBe('sy-token')
     expect(env.CONDUCTOR_RENDEZVOUS_HOST_NAME).toBe('laptop')
-    expect(serverEnv({}, { ...base, switchyardEnabled: false }, 'tok', '/usr/bin', '').CONDUCTOR_RENDEZVOUS).toBe('0')
+    expect(serverEnv({}, { ...base, switchyardEnabled: false }, '/usr/bin', '').CONDUCTOR_RENDEZVOUS).toBe('0')
     expect(serverAffecting(base, { ...base, switchyardEnabled: false })).toBe(true)
     expect(serverAffecting(base, { ...base, switchyardServer: 'https://switchyard.example.net', switchyardToken: 't' })).toBe(true)
   })
@@ -130,12 +133,12 @@ describe('a plain switchyard', () => {
     const s = { ...base, switchyardServer: 'http://yard.example:8080', yolo: true }
     expect(switchyardRefused(s)).toBe(true)
     expect(switchyardRefused({ ...s, switchyardEnabled: false })).toBe(false)
-    const env = serverEnv({}, s, 'tok', '/usr/bin', '')
+    const env = serverEnv({}, s, '/usr/bin', '')
     expect(env.CONDUCTOR_RENDEZVOUS).toBe('0')
     expect(env).not.toHaveProperty('CONDUCTOR_RENDEZVOUS_SERVER')
-    expect(serverEnv({}, { ...s, switchyardEnabled: false }, 'tok', '/usr/bin', '')).not.toHaveProperty('CONDUCTOR_RENDEZVOUS_SERVER')
+    expect(serverEnv({}, { ...s, switchyardEnabled: false }, '/usr/bin', '')).not.toHaveProperty('CONDUCTOR_RENDEZVOUS_SERVER')
     // On this machine it is handed over as before.
-    const here = serverEnv({}, { ...s, switchyardServer: 'http://localhost:9090/' }, 'tok', '/usr/bin', '')
+    const here = serverEnv({}, { ...s, switchyardServer: 'http://localhost:9090/' }, '/usr/bin', '')
     expect(here.CONDUCTOR_RENDEZVOUS).toBe('1')
     expect(here.CONDUCTOR_RENDEZVOUS_SERVER).toBe('http://localhost:9090')
   })
@@ -181,12 +184,12 @@ describe('the switchyards the server takes', () => {
       if (app === 'shape') expect(switchyardShape(url), url).toBe(false)
       else if (app !== 'extra') expect(switchyardShape(url), url).toBe(true)
       expect(validate({ ...base, switchyardServer: url }), url).toEqual(app ? [words[app]] : [])
-      const env = serverEnv({}, { ...base, switchyardServer: url }, 'tok', '/usr/bin', '')
+      const env = serverEnv({}, { ...base, switchyardServer: url }, '/usr/bin', '')
       expect(env.CONDUCTOR_RENDEZVOUS, url).toBe(app ? '0' : '1')
       expect(env.CONDUCTOR_RENDEZVOUS_SERVER, url).toBe(app ? undefined : url.replace(/\/+$/, ''))
       // Off, nothing is published there: no refusal, and nothing the server would refuse handed to it.
       expect(validate({ ...base, switchyardEnabled: false, switchyardServer: url }), url).toEqual([])
-      expect(serverEnv({}, { ...base, switchyardEnabled: false, switchyardServer: url }, 'tok', '/usr/bin', '').CONDUCTOR_RENDEZVOUS_SERVER, url).toBe(app ? undefined : url.replace(/\/+$/, ''))
+      expect(serverEnv({}, { ...base, switchyardEnabled: false, switchyardServer: url }, '/usr/bin', '').CONDUCTOR_RENDEZVOUS_SERVER, url).toBe(app ? undefined : url.replace(/\/+$/, ''))
     }
   })
   it('logs a refused one as it starts in validate\'s words alone, never a part of the URL', () => {
@@ -209,7 +212,7 @@ describe('the switchyards the server takes', () => {
         const before = readFileSync(file, 'utf8')
         const loaded = loadSettings(file, base)
         expect(loaded, url).toEqual(s)
-        const env = serverEnv({}, loaded, 'tok', '/usr/bin', '')
+        const env = serverEnv({}, loaded, '/usr/bin', '')
         expect(env.CONDUCTOR_RENDEZVOUS, url).toBe('0')
         expect(env.CONDUCTOR_RENDEZVOUS_SERVER, url).toBeUndefined()
         expect(readFileSync(file, 'utf8')).toBe(before)

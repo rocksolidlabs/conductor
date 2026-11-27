@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -78,6 +78,47 @@ describe('server supervisor', () => {
     await s.stop()
     expect(s.status.state).toBe('stopped')
     await expect(fetch(h.publicUrl + '/api/health')).rejects.toThrow()
+  })
+  it('writes the first line on the server\'s stdin before anything else, and its secrets go in no environment', async () => {
+    // A server that reads one line of stdin before it listens, and writes down what it read and what its environment held.
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const seen = join(dir, 'seen.json')
+    const file = join(dir, 'server.js')
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+const fs = require('fs')
+let buf = ''
+const onData = (c) => {
+  buf += c
+  const i = buf.indexOf('\\n')
+  if (i < 0) return
+  process.stdin.off('data', onData)
+  fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ line: buf.slice(0, i), env: Object.keys(process.env).filter((k) => k.startsWith('CONDUCTOR_')) }))
+  const srv = http.createServer((req, res) => res.end('{}'))
+  srv.listen(0, '127.0.0.1', () => {
+    const port = srv.address().port
+    process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + port, publicUrl: 'http://localhost:' + port, pid: process.pid, version: 'fake' }) + '\\n')
+  })
+  process.stdin.on('end', () => process.exit(0))
+}
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', onData)
+`,
+    )
+    const s = new ServerSupervisor({
+      launcher: new ScriptLauncher(file),
+      args: [],
+      env: () => ({ PATH: process.env.PATH ?? '', CONDUCTOR_DATA_DIR: '/d' }),
+      firstLine: () => '{"workbenchToken":"tok","desktopKey":"key"}\n',
+      log: quiet,
+    })
+    await s.start()
+    const got = JSON.parse(readFileSync(seen, 'utf8')) as { line: string; env: string[] }
+    expect(got.line).toBe('{"workbenchToken":"tok","desktopKey":"key"}')
+    expect(got.env).toEqual(['CONDUCTOR_DATA_DIR'])
+    await s.stop()
   })
   it("a stop during the start's preparation spawns nothing (#363, Codex's review)", async () => {
     const launcher = new ScriptLauncher(fakeServer({}))

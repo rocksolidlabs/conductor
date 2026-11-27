@@ -10,7 +10,7 @@ vi.mock('electron', () => ({
 }))
 import { ALLOW_ON_WINDOWS, allowOffered, covered, FolderAllow, listRefusal, MAX_ROOTS, pathRefusal, type AllowDeps } from '../src/allow'
 import { ALLOW_FOLDER_ON_WINDOWS, allowFolderCall } from '../src/preload'
-import { serverEnv } from '../src/env'
+import { secretsLine, serverEnv } from '../src/env'
 import { defaultSettings, type DesktopSettings } from '../src/settings'
 
 const TOKEN = 'tok-' + 'a'.repeat(60)
@@ -228,14 +228,14 @@ describe('where the press is offered', () => {
 })
 
 describe('the key', () => {
-  it("is in the server's environment alone: none from the app's own, and none set on the app's process", () => {
+  it("goes to the server on its stdin with the token, never to an environment or a log line", () => {
     const defaults = defaultSettings('/home/me', '/ud')
-    const env = serverEnv({ HOME: '/home/me', CONDUCTOR_DESKTOP_KEY: 'leaked' }, defaults, 'tok', '/usr/bin', '/ud', KEY)
-    expect(env.CONDUCTOR_DESKTOP_KEY).toBe(KEY)
-    expect(serverEnv({ CONDUCTOR_DESKTOP_KEY: 'leaked' }, defaults, 'tok', '/usr/bin', '/ud')).not.toHaveProperty('CONDUCTOR_DESKTOP_KEY')
-    // main.ts mints it beside the token and hands it to serverEnv; no line of the app's own sets it on process.env or logs it.
+    expect(serverEnv({ HOME: '/home/me', CONDUCTOR_DESKTOP_KEY: 'leaked' }, defaults, '/usr/bin', '/ud')).not.toHaveProperty('CONDUCTOR_DESKTOP_KEY')
+    expect(secretsLine('tok', KEY)).toContain(KEY)
+    // main.ts mints it beside the token and hands it over in the first line alone; no line of the app's own sets it on
+    // process.env or logs it.
     const main = readFileSync(join(__dirname, '..', 'src', 'main.ts'), 'utf8')
-    expect(main).toContain('serverEnv(process.env, settings, token, shellPath(), userData, desktopKey)')
+    expect(main).toContain('firstLine: () => secretsLine(token, desktopKey)')
     expect(main).not.toMatch(/process\.env\.CONDUCTOR_DESKTOP_KEY|process\.env\[['"]CONDUCTOR_DESKTOP_KEY/)
     for (const line of main.split('\n')) if (/\blog\(/.test(line)) expect(line, line).not.toContain('desktopKey')
   })

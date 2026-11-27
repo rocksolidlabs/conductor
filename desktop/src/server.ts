@@ -18,6 +18,8 @@ export interface SupervisorOptions {
   launcher: Launcher
   args: string[]
   env: () => Record<string, string>
+  /** The first line written on the server's stdin as it is spawned (secretsLine): its secrets, which no environment holds. */
+  firstLine?: () => string
   /** Runs before each start of the server, before env(): the app reads the shell's PATH again while it has none (#363). */
   beforeStart?: () => Promise<void>
   /** How long beforeStart may take (60 s): one that does not settle by then is left behind and the start goes on without it. */
@@ -40,7 +42,7 @@ export interface SupervisorOptions {
 /**
  * ServerSupervisor keeps one `conductor serve` running: it spawns it through the launcher, reads the handshake from its stdout, polls
  * its health, restarts it with backoff when it dies or stops answering, and gives up after too many failures in a row. The admin
- * token travels in the environment it builds and in the handshake, never on disk.
+ * token travels on the server's stdin (firstLine), never in its environment, its arguments or on disk.
  */
 /** The start was stopped (stop) while it prepared, before the server spawned: nothing runs, and nothing is restarted. */
 export class StartStopped extends Error {
@@ -125,6 +127,10 @@ export class ServerSupervisor extends EventEmitter {
     const env = this.o.env()
     const child = this.o.launcher.spawn(this.o.args, env)
     this.child = child
+    // A server that exits before it read the line closes its stdin: nothing to do but let it fail as it does.
+    child.stdin?.on('error', () => {})
+    const first = this.o.firstLine?.()
+    if (first) child.stdin?.write(first)
     const reader = new HandshakeReader()
     const handshakeMs = this.o.handshakeMs ?? 60_000
     const handshake = new Promise<Handshake>((resolve, reject) => {

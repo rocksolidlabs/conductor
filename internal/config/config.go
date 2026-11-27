@@ -768,11 +768,13 @@ type Config struct {
 	GitHubToken Secret `json:"-"`
 	GitHubHost  string `json:"-"`
 	// DesktopKey is the key the desktop app minted for this run of the
-	// server it starts (CONDUCTOR_DESKTOP_KEY): with it, and the workbench
-	// token, the app alone may allow one more folder while the server runs
-	// (POST /api/roots). 32 to 256 characters of A-Z, a-z, 0-9, _ and -.
-	// Not a config-file key, so no file holds it; its every print is set or
-	// unset (Secret).
+	// server it starts, handed over on the server's standard input with the
+	// workbench token (serve --secrets-stdin), never in its environment:
+	// with it, and the workbench token, the app alone may allow one more
+	// folder while the server runs (POST /api/roots). 32 to 256 characters
+	// of A-Z, a-z, 0-9, _ and - (DesktopKeyForm). Not a config-file key, and
+	// no environment variable sets it; its every print is set or unset
+	// (Secret).
 	DesktopKey Secret `json:"-"`
 	// TrackerLoopback admits a tracker on a plain http loopback host
 	// (CONDUCTOR_TRACKER_LOOPBACK=1): tests and the e2e harness only.
@@ -911,9 +913,6 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		cfg.GitHubToken = NewSecret(v)
 	}
 	str("CONDUCTOR_GITHUB_HOST", &cfg.GitHubHost)
-	if v := getenv("CONDUCTOR_DESKTOP_KEY"); v != "" {
-		cfg.DesktopKey = NewSecret(v)
-	}
 	if v := getenv("CONDUCTOR_TRACKER_LOOPBACK"); v == "1" || v == "true" {
 		cfg.TrackerLoopback = true
 	}
@@ -1164,10 +1163,6 @@ func (c *Config) Validate() error {
 	}
 	if time.Duration(c.ExitedRetention) < 0 {
 		errs = append(errs, errors.New("exitedRetention must not be negative"))
-	}
-	// The message names the key's form, never a byte of it.
-	if c.DesktopKey.Set() && !desktopKeyForm(c.DesktopKey.Reveal()) {
-		errs = append(errs, errors.New("CONDUCTOR_DESKTOP_KEY must be 32 to 256 characters of A-Z, a-z, 0-9, _ and -"))
 	}
 	if c.GitHubToken.Set() || c.GitHubHost != "" {
 		if c.GitHubHost == "" {
@@ -1605,9 +1600,9 @@ func (c *Config) OverlapsDataDir(root string) bool {
 // the data directory, at the start and when a root is added.
 const DataDirOverlapWords = "the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; keep it outside allowedRoots (the default is ~/.conductor), or set dataDir or CONDUCTOR_DATA_DIR to a directory outside them"
 
-// desktopKeyForm reports whether k has the desktop key's form: 32 to 256
+// DesktopKeyForm reports whether k has the desktop key's form: 32 to 256
 // characters of A-Z, a-z, 0-9, _ and -.
-func desktopKeyForm(k string) bool {
+func DesktopKeyForm(k string) bool {
 	if len(k) < 32 || len(k) > 256 {
 		return false
 	}

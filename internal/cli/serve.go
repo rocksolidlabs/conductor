@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -100,15 +101,85 @@ var terminalOf = func(w io.Writer) io.Writer {
 }
 
 // serveConfig is the configuration serve runs with, and once it is read
-// CONDUCTOR_GITHUB_TOKEN and CONDUCTOR_DESKTOP_KEY are gone from the
-// server's own environment: a process the server starts with no
-// environment built for it inherits the server's (pty.BuildEnv drops
-// CONDUCTOR_* from the ones it builds).
+// CONDUCTOR_GITHUB_TOKEN is gone from the server's own environment: a
+// process the server starts with no environment built for it inherits the
+// server's (pty.BuildEnv drops CONDUCTOR_* from the ones it builds).
 func serveConfig(path string) (*config.Config, error) {
 	cfg, err := config.Load(path)
 	_ = os.Unsetenv("CONDUCTOR_GITHUB_TOKEN")
-	_ = os.Unsetenv("CONDUCTOR_DESKTOP_KEY")
 	return cfg, err
+}
+
+// maxSecretsLine bounds the line --secrets-stdin reads, its newline
+// included.
+const maxSecretsLine = 4096
+
+// secretsWait bounds the wait for that line: the app writes it as it
+// starts the server.
+var secretsWait = 60 * time.Second
+
+// stdinSecrets is the line the desktop app writes first on the server's
+// standard input (serve --secrets-stdin): the workbench token, and the key
+// with which the app alone may allow a folder while the server runs. Both
+// reach the server here alone, never through its environment or its
+// command line.
+type stdinSecrets struct {
+	WorkbenchToken string `json:"workbenchToken"`
+	DesktopKey     string `json:"desktopKey,omitempty"`
+}
+
+// readSecrets reads the first line of stdin, byte by byte so that what
+// follows stays for --exit-on-stdin-close, as one JSON object, unknown
+// fields refused. No error repeats a byte of the line.
+func readSecrets(ctx context.Context, stdin io.Reader) (stdinSecrets, error) {
+	type read struct {
+		line []byte
+		err  error
+	}
+	got := make(chan read, 1)
+	go func() {
+		var line []byte
+		b := make([]byte, 1)
+		for len(line) < maxSecretsLine {
+			n, err := stdin.Read(b)
+			if n == 1 {
+				if b[0] == '\n' {
+					got <- read{line: line}
+					return
+				}
+				line = append(line, b[0])
+			}
+			if err != nil {
+				got <- read{err: errors.New("--secrets-stdin: stdin ended before the line of secrets")}
+				return
+			}
+		}
+		got <- read{err: fmt.Errorf("--secrets-stdin: the line of secrets is longer than %d bytes", maxSecretsLine)}
+	}()
+	var r read
+	select {
+	case r = <-got:
+	case <-time.After(secretsWait):
+		return stdinSecrets{}, fmt.Errorf("--secrets-stdin: no line of secrets on stdin within %s", secretsWait)
+	case <-ctx.Done():
+		return stdinSecrets{}, ctx.Err()
+	}
+	if r.err != nil {
+		return stdinSecrets{}, r.err
+	}
+	var s stdinSecrets
+	dec := json.NewDecoder(bytes.NewReader(r.line))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&s); err != nil || dec.More() {
+		return stdinSecrets{}, errors.New("--secrets-stdin: the line of secrets is not one JSON object {workbenchToken, desktopKey?}")
+	}
+	if s.WorkbenchToken == "" {
+		return stdinSecrets{}, errors.New("--secrets-stdin: the line of secrets holds no workbench token")
+	}
+	if s.DesktopKey != "" && !config.DesktopKeyForm(s.DesktopKey) {
+		return stdinSecrets{}, errors.New("--secrets-stdin: the desktop key must be 32 to 256 characters of A-Z, a-z, 0-9, _ and -")
+	}
+	return s, nil
 }
 
 // envName is the form of an environment variable's name --token-env takes.
@@ -151,6 +222,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	printListen := fs.Bool("print-listen", false, "print one JSON line to stdout once listening: {listen, publicUrl, pid, version, workbenchToken?, tlsListen?} (for a parent process such as the desktop app)")
 	exitOnStdinClose := fs.Bool("exit-on-stdin-close", false, "shut down when stdin closes (a parent process that dies takes the server with it)")
 	switchyard := fs.Bool("switchyard", false, "coordinate hosted sessions and launch nothing: no sessions, crews, runs or catalog of its own (env CONDUCTOR_SWITCHYARD=1; conductor switchyard)")
+	secretsStdin := fs.Bool("secrets-stdin", false, "read the workbench token, and the desktop app's key, from the first line of stdin, one JSON object {workbenchToken, desktopKey?}, before anything else: they take the place of a configured token and of a generated one, and reach the server through no environment variable or argument (the desktop app starts its server so)")
 	tokenEnv := fs.String("token-env", "", "take the workbench token from the environment variable `NAME`: its value takes the place of a configured token (workbenchToken, CONDUCTOR_WORKBENCH_TOKEN) and of a generated one; a name that is no variable's name, or a variable unset or empty, stops the server, and the value is printed, logged and kept nowhere")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -164,13 +236,30 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	log := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 
+	// A --token-env given, whatever its value (the empty one included), is the token's one source: never the flag's absence.
+	tokenEnvGiven := false
+	fs.Visit(func(f *flag.Flag) { tokenEnvGiven = tokenEnvGiven || f.Name == "token-env" })
+	if tokenEnvGiven && *secretsStdin {
+		return 2, errors.New("--secrets-stdin and --token-env each name the workbench token's one source: give one")
+	}
+	// The secrets on stdin are read before anything else is read, written or bound.
+	var secrets stdinSecrets
+	if *secretsStdin {
+		s, err := readSecrets(ctx, stdin)
+		if err != nil {
+			return 2, err
+		}
+		secrets = s
+	}
 	cfg, err := serveConfig(*configPath)
 	if err != nil {
 		return 1, err
 	}
-	// A --token-env given, whatever its value (the empty one included), is the token's one source: never the flag's absence.
-	tokenEnvGiven := false
-	fs.Visit(func(f *flag.Flag) { tokenEnvGiven = tokenEnvGiven || f.Name == "token-env" })
+	if *secretsStdin {
+		cfg.WorkbenchToken, cfg.GeneratedWorkbenchToken, cfg.WorkbenchTokenRenamed = secrets.WorkbenchToken, false, false
+		cfg.DesktopKey = config.NewSecret(secrets.DesktopKey)
+		log.Info("the workbench token came on stdin", "desktopKey", cfg.DesktopKey)
+	}
 	if tokenEnvGiven {
 		tok, err := tokenFromEnv(*tokenEnv)
 		if err != nil {

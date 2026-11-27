@@ -146,26 +146,30 @@ describe('WebRTC from inside WSL', () => {
 
 describe('Allow this folder inside WSL', () => {
   const KEY = 'key-' + 'e'.repeat(60)
-  it('keeps a folder added in the roots, and the key crosses with the other CONDUCTOR_ variables', () => {
+  it('keeps a folder added in the roots', () => {
     const l = new WslLauncher({ source: 'C:\\x\\conductor-linux', distro: 'Ubuntu', version: 'v1', windowsHome: false, log: () => {}, run: async () => ({ ok: true, out: '' }) })
-    const env = l.linuxEnv({ CONDUCTOR_WORKBENCH_TOKEN: 't', CONDUCTOR_DESKTOP_KEY: KEY, CONDUCTOR_ALLOWED_ROOTS: '/home/me,/srv/added' }, false, '')
-    expect(env.CONDUCTOR_DESKTOP_KEY).toBe(KEY)
+    const env = l.linuxEnv({ CONDUCTOR_ALLOWED_ROOTS: '/home/me,/srv/added' }, false, '')
     expect(env.CONDUCTOR_ALLOWED_ROOTS).toBe('/home/me,/srv/added')
   })
-  it.skipIf(process.platform === 'win32')("hands the key to wsl.exe's environment by WSLENV, never to the app's own", async () => {
-    // A stand-in for wsl.exe that writes the environment it was given.
+  it.skipIf(process.platform === 'win32')("hands wsl.exe the first line on its stdin, and no secret in its environment", async () => {
+    // A stand-in for wsl.exe that writes the first line of its stdin and the environment it was given.
     const dir = mkdtempSync(join(tmpdir(), 'wslenv-'))
+    const line = join(dir, 'line.txt')
     const out = join(dir, 'env.txt')
     const exe = join(dir, 'wsl.sh')
-    writeFileSync(exe, `#!/bin/sh\nenv > '${out}'\n`)
+    writeFileSync(exe, `#!/bin/sh\nIFS= read -r first\nprintf '%s' "$first" > '${line}'\nenv > '${out}'\n`)
     chmodSync(exe, 0o755)
     const l = new WslLauncher({ source: 'C:\\x\\conductor-linux', distro: 'Ubuntu', version: 'v1', windowsHome: false, log: () => {}, run: async () => ({ ok: true, out: '' }), exe })
-    const child = l.spawn(['serve'], { CONDUCTOR_WORKBENCH_TOKEN: 't', CONDUCTOR_DESKTOP_KEY: KEY })
+    const child = l.spawn(['serve', '--secrets-stdin'], { CONDUCTOR_DATA_DIR: '/d' })
+    child.stdin?.write(`{"workbenchToken":"tok-${KEY}","desktopKey":"${KEY}"}\n`)
     await new Promise((r) => child.once('exit', r))
     await vi.waitFor(() => expect(existsSync(out)).toBe(true))
-    const lines = readFile(out, 'utf8').split('\n')
-    expect(lines).toContain(`CONDUCTOR_DESKTOP_KEY=${KEY}`)
-    expect(lines.find((x) => x.startsWith('WSLENV='))?.split('=')[1]?.split(':')).toContain('CONDUCTOR_DESKTOP_KEY')
-    expect(process.env.CONDUCTOR_DESKTOP_KEY).toBeUndefined()
+    expect(readFile(line, 'utf8')).toBe(`{"workbenchToken":"tok-${KEY}","desktopKey":"${KEY}"}`)
+    const env = readFile(out, 'utf8')
+    expect(env).not.toContain(KEY)
+    const names = env.split('\n').find((x) => x.startsWith('WSLENV='))?.split('=')[1]?.split(':') ?? []
+    expect(names).toContain('CONDUCTOR_DATA_DIR')
+    expect(names.filter((n) => n === 'CONDUCTOR_WORKBENCH_TOKEN' || n === 'CONDUCTOR_DESKTOP_KEY')).toEqual([])
   })
+
 })

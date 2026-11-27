@@ -33,7 +33,7 @@ import (
 // GET /api/roots/check says of one folder whether agents may use it and, if
 // not, why not, by trying what a launch tries (its open included). POST
 // /api/roots allows one more, for the desktop app alone: the workbench token
-// and the key the app gave the server it started (CONDUCTOR_DESKTOP_KEY),
+// and the key the app handed the server it started on its stdin,
 // both; nothing is written to disk (the app keeps the saved list).
 
 const (
@@ -44,7 +44,7 @@ const (
 	// maxRootBody bounds the body of POST /api/roots.
 	maxRootBody = 8 << 10
 	// desktopKeyHeader carries the key the desktop app gave the server it
-	// started (CONDUCTOR_DESKTOP_KEY).
+	// started (serve --secrets-stdin).
 	desktopKeyHeader = "X-Conductor-Desktop-Key"
 )
 

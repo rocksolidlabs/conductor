@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { serverEnv, SERVE_ARGS } from './env'
+import { secretsLine, serverEnv, SERVE_ARGS } from './env'
 import { ensureStableBinary, stableBinaryPath } from './install'
 import { registerIpc } from './ipc'
 import { allowOffered, FolderAllow } from './allow'
@@ -110,7 +110,7 @@ async function run() {
   let trayUpdate: ((version: string) => void) | null = null
   const token = randomBytes(32).toString('hex')
   // The second secret of the run: with it the app alone may allow a folder while the server runs (allow.ts). It is handed to the
-  // server's environment alone (serverEnv), never to the app's own, a page, a log line or a file.
+  // server on its stdin alone, with the token (secretsLine), never to an environment, a page, a log line or a file.
   const desktopKey = randomBytes(32).toString('hex')
   process.env.CONDUCTOR_DESKTOP_VERSION = app.getVersion()
 
@@ -175,12 +175,14 @@ async function run() {
     args: SERVE_ARGS,
     beforeStart,
     env: () => {
-      const env = serverEnv(process.env, settings, token, shellPath(), userData, desktopKey)
+      const env = serverEnv(process.env, settings, shellPath(), userData)
       // Inside a WSL distribution the paths are its own: the server's data
       // beside its binary, the Linux home as the root (and the Windows
       // profile under /mnt when asked).
       return wsl ? wsl.linuxEnv(env, settings.wslWindowsHome, process.env.USERPROFILE ?? '', ice.publicIp ? { port: ice.port, publicIp: ice.publicIp } : undefined) : env
     },
+    // The token and the key, on the server's stdin: in no environment the system shows of it, and in no argument.
+    firstLine: () => secretsLine(token, desktopKey),
     log,
   })
   /** After each start of the server inside WSL: the distribution's address of the moment, and the forwarder on it. */
