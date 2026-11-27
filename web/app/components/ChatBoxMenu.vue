@@ -46,9 +46,12 @@ defineExpose({ optionId })
           </span>
         </template>
         <template v-else>
-          <span class="flex-none font-mono" data-mono="command"><MarkedText :pieces="markHidden(`/${r.value}`).pieces" :breaks="false" /></span>
-          <span v-if="r.hint" class="flex-none font-mono text-muted" data-mono="command">{{ r.hint }}</span>
-          <span v-if="r.words" class="ml-auto min-w-0 truncate text-muted" :title="r.words" data-chat-menu-words>{{ r.words }}</span>
+          <!-- The name whole, wrapped where it is long, so that two that differ at their end are told apart; every part's marks drawn. -->
+          <span class="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+            <span class="min-w-0 font-mono break-all" data-mono="command" data-chat-menu-name><MarkedText :pieces="markHidden(`/${r.value}`).pieces" :breaks="false" /></span>
+            <span v-if="r.hint" class="min-w-0 font-mono break-all text-muted" data-mono="command"><MarkedText :pieces="markHidden(r.hint).pieces" :breaks="false" /></span>
+          </span>
+          <span v-if="r.words" class="ml-auto min-w-0 max-w-[50%] truncate text-muted" :title="r.words" data-chat-menu-words><MarkedText :pieces="markHidden(r.words).pieces" :breaks="false" /></span>
         </template>
       </li>
     </ul>

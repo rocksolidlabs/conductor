@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { commandAt, commandRows, fileRows, fromFolder, MENU_ROWS, mentionAt, mentionsIn, outsideMention, pickCommand, pickMention, safePath, startsWithSlash, wholeCommand } from './chatBoxMenu'
+import { commandAt, commandRows, fileRows, fromFolder, MENU_ROWS, mentionAt, mentionsIn, outsideMention, boxKey, offeredCommands, pickCommand, pickMention, safePath, startsWithSlash } from './chatBoxMenu'
 
 describe("the chat box's list for @", () => {
   it('triggerAtAWordsStart: an @ word at the start or after white space, the cursor in it or at its end', () => {
@@ -81,24 +81,60 @@ describe("the chat box's list for / (UX3 R11)", () => {
     expect(commandAt('see /fix', 8)).toBeNull()
     expect(commandAt('/fix', 0)).toBeNull()
   })
-  it('commandsByPrefixThenWithinThenAlias: names that start with it, then hold it, then an alias; at most eight', () => {
+  it('commandsByPrefixThenWithinThenAlias: names that start with it, then hold it, then an alias; every match, none cut off', () => {
     expect(commandRows(list, '').map((r) => r.value)).toEqual(['compact', 'clear', 'model', 'fix-issue'])
     expect(commandRows(list, 'c').map((r) => r.value)).toEqual(['compact', 'clear'])
     expect(commandRows(list, 'is').map((r) => r.value)).toEqual(['fix-issue'])
     expect(commandRows(list, 'res').map((r) => r.value)).toEqual(['clear'])
-    expect(commandRows(Array.from({ length: 20 }, (_, i) => ({ name: `c${i}` })), 'c')).toHaveLength(MENU_ROWS)
+    expect(commandRows(Array.from({ length: 20 }, (_, i) => ({ name: `c${i}` })), 'c')).toHaveLength(20)
     expect(commandRows(list, 'mod')[0]).toMatchObject({ value: 'model', hint: '<name>' })
   })
   it('unsafeCommandNamesAreDropped: a name of another shape is never offered', () => {
     expect(commandRows(list, '').map((r) => r.value)).not.toContain('bad name')
     expect(commandRows(list, 'x').map((r) => r.value)).toEqual(['fix-issue'])
   })
-  it('wholeNameSendsAtOnce, and a pick completes to /name and a space', () => {
-    expect(wholeCommand(list, 'compact')).toBe(true)
-    expect(wholeCommand(list, 'comp')).toBe(false)
-    expect(wholeCommand(list, '')).toBe(false)
+  it('aPickCompletes to /name and a space, the rest of the line kept', () => {
     expect(pickCommand('/fi', commandAt('/fi', 3)!, 'fix-issue')).toEqual({ text: '/fix-issue ', caret: 11 })
     expect(pickCommand('/fi 12', commandAt('/fi 12', 3)!, 'fix-issue')).toEqual({ text: '/fix-issue 12', caret: 11 })
+  })
+})
+
+const key = (key: string, o: Partial<{ shift: boolean; repeat: boolean; trusted: boolean; composing: boolean; phone: boolean }> = {}) => ({ key, shift: false, repeat: false, trusted: true, composing: false, phone: false, ...o })
+
+describe('boxKey (UX3 R11): a line is sent only by its own Enter with the list closed', () => {
+  it('fromAnOpenListEnterAndTabComplete: never send, whatever is typed', () => {
+    const open = { open: true, rows: 3 }
+    expect(boxKey(key('Enter'), open)).toBe('complete')
+    expect(boxKey(key('Tab'), open)).toBe('complete')
+    expect(boxKey(key('ArrowDown'), open)).toBe('move')
+    expect(boxKey(key('ArrowUp'), open)).toBe('move')
+    expect(boxKey(key('Escape'), open)).toBe('close')
+    // A held Enter, or one no person pressed, completes nothing and sends nothing.
+    expect(boxKey(key('Enter', { repeat: true }), open)).toBe('none')
+    expect(boxKey(key('Enter', { trusted: false }), open)).toBe('none')
+    // Open with no row (a file list still finding): Enter does nothing.
+    expect(boxKey(key('Enter'), { open: true, rows: 0 })).toBe('none')
+  })
+  it('sendsOnlyByAPersonsOwnEnterWithTheListClosed', () => {
+    const closed = { open: false, rows: 0 }
+    expect(boxKey(key('Enter'), closed)).toBe('send')
+    expect(boxKey(key('Enter', { repeat: true }), closed)).toBe('none')
+    expect(boxKey(key('Enter', { trusted: false }), closed)).toBe('none')
+    expect(boxKey(key('Enter', { shift: true }), closed)).toBe('pass')
+    expect(boxKey(key('Enter', { shift: true, phone: true }), closed)).toBe('send')
+    expect(boxKey(key('Enter', { composing: true }), closed)).toBe('pass')
+    expect(boxKey(key('a'), closed)).toBe('pass')
+  })
+})
+
+describe('offeredCommands (UX3 R11): the server\'s list, where the box may expand, never while it answers, none for an empty one', () => {
+  const list = [{ name: 'compact' }]
+  it('offersTheListOnlyWhereItMay', () => {
+    expect(offeredCommands({ canExpand: true, answering: false, list })).toEqual(list)
+    expect(offeredCommands({ canExpand: false, answering: false, list })).toBeNull()
+    expect(offeredCommands({ canExpand: true, answering: true, list })).toBeNull()
+    expect(offeredCommands({ canExpand: true, answering: false, list: [] })).toBeNull()
+    expect(offeredCommands({ canExpand: true, answering: false, list: null })).toBeNull()
   })
 })
 

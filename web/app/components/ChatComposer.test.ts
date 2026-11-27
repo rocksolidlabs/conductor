@@ -44,7 +44,7 @@ describe("the agent's box", () => {
   })
 
   it('Escape leaves the field, so that the page\'s keys work again', () => {
-    expect(src).toMatch(/if \(e\.key === 'Escape' && props\.agent\) \{\s*;\(e\.target as HTMLElement \| null\)\?\.blur\(\)/)
+    expect(src).toMatch(/\} else if \(e\.key === 'Escape' && props\.agent\) \{[^}]*?;\(e\.target as HTMLElement \| null\)\?\.blur\(\)/)
   })
 
   it('keeps its line by session in the app\'s store, and takes the cursor only when nothing else holds it', () => {
@@ -85,12 +85,12 @@ describe("the agent's box", () => {
     expect(src).toContain('const mention = computed<Mention | null>(() => (props.agent && props.files ? mentionAt(draft.value, caret.value) : null))')
     // Only where this box may expand a line: a picked file there is attached; elsewhere no list reads like it would be (UX3 R10).
     expect(view).toContain(':files="canExpand && conn.fileView.value ? files : undefined"')
-    // Enter and Tab pick while it is open and never send; nothing while an input method composes.
-    expect(src).toMatch(/function onKeydown\(e: KeyboardEvent\) \{\s*if \(menuKey\(e\)\) return/)
-    expect(src).toContain("if (!menuOpen.value || e.isComposing) return false")
-    expect(src).toMatch(/if \(e\.key === 'Enter' \|\| e\.key === 'Tab'\) \{[\s\S]*?e\.preventDefault\(\)\s*pick\(active\.value, e\.isTrusted\)\s*return true/)
-    // Escape closes the list and keeps the text: it is the list's, not the box's.
-    expect(src).toMatch(/if \(e\.key === 'Escape'\) \{\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)\s*dismissed\.value = openKey\.value\s*return true/)
+    // The box's keys are boxKey's (chatBoxMenu.test.ts proves them): the box acts on its answer alone.
+    expect(src).toContain('const act = boxKey(')
+    expect(src).toContain('{ key: e.key, shift: e.shiftKey, repeat: e.repeat, trusted: e.isTrusted, composing: e.isComposing, phone: props.phone }')
+    expect(src).toMatch(/\} else if \(act === 'complete'\) \{\s*e\.preventDefault\(\)\s*pick\(active\.value, true\)/)
+    expect(src).toMatch(/\} else if \(act === 'send'\) \{\s*e\.preventDefault\(\)\s*send\(scope\.value\)/)
+    expect(src.match(/send\(scope\.value\)/g)).toHaveLength(1)
     // Closed with Escape, it opens again for the next @ word, even one typed the same.
     expect(src).toMatch(/if \(!m\) \{[\s\S]*?dismissed\.value = ''/)
     // One read on its way at a time, and a late answer dropped.
@@ -152,16 +152,13 @@ describe("the agent's box", () => {
     // B3: a line begun before its question had an id takes the id as it comes.
     expect(src).toMatch(/if \(now && !was\) lines\.rebind\(lineKey\.value, ASKED, now\)/)
   })
-  it("offersTheAgentsCommands (UX3 R11): only where the server said expand and sent a list, on the operator's own connection", () => {
+  it("offersTheAgentsCommands (UX3 R11): the server's list for this connection, by offeredCommands, and only while the box has the cursor", () => {
     expect(view).toContain(':commands="canExpand && conn.commands.value ? conn.commands.value : null"')
-    expect(src).toContain('const command = computed<CommandWord | null>(() => (props.agent && props.commands ? commandAt(draft.value, caret.value) : null))')
-    // Enter on a whole listed name, or with none matching, sends; otherwise it completes.
-    expect(src).toContain("if (command.value && e.key === 'Enter' && (!n || wholeCommand(props.commands?.list ?? [], command.value.typed))) return false")
-    expect(src).toContain("if (!menuRows.value.length) return 'No command by that name. It is sent as you typed it.'")
-    // The rows kept by name when the list changes.
-    expect(src).toMatch(/watch\(menuRows, \(rows, before\) => \{\s*const name = before\?\.\[active\.value\]\?\.value/)
-    // The page keeps no list of its own: the connection's, cleared at a welcome and a move to the terminal.
-    const conn = readFileSync(new URL('../composables/useSessionConnection.ts', import.meta.url), 'utf8')
-    expect(conn).toContain("if (msg.t === 'commands' && (!commands.value || msg.rev > commands.value.rev))")
+    expect(src).toContain('offeredCommands({ canExpand: !!props.agent?.expand && !!props.commands, answering: answering.value || !!props.agent?.asked?.reply, list: props.commands?.list })')
+    // The list shows, and takes a press, only while the box is focused.
+    expect(src).toMatch(/const menuOpen = computed\(\s*\(\) =>\s*focused\.value &&/)
+    expect(src).not.toContain('wholeCommand')
+    expect(src).not.toContain('It is sent as you typed it')
+    expect(src).not.toContain('Type a name to see the rest')
   })
 })

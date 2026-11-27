@@ -5,7 +5,7 @@ import { MAX_SUBMIT } from '~/utils/protocol'
 import { giveFocusBack, type ReplyTaken } from '~/utils/reply'
 import { OwnLines, RowDrafts } from '~/utils/rowDrafts'
 import { expandsLine, freeHeld, markInput } from '~/utils/boxLine'
-import { commandAt, commandRows, fileRows, mentionAt, outsideMention, pickCommand, pickMention, wholeCommand, type CommandWord, type Mention, type MenuRow } from '~/utils/chatBoxMenu'
+import { boxKey, commandAt, commandRows, fileRows, mentionAt, offeredCommands, outsideMention, pickCommand, pickMention, type CommandWord, type Mention, type MenuRow } from '~/utils/chatBoxMenu'
 import type { AgentCommand } from '~/utils/protocol'
 
 /**
@@ -278,25 +278,27 @@ onBeforeUnmount(() => {
  * The list for `/` (UX3 R11): while the line begins with `/` and the cursor is in its first word, the agent's own commands that
  * match. Enter on a whole listed name sends at once, Enter with none matching sends as typed; Tab or Enter on a row completes it.
  */
-const command = computed<CommandWord | null>(() => (props.agent && props.commands ? commandAt(draft.value, caret.value) : null))
+/** The commands offered now: the server's, where this box may expand a line and is not answering a question (offeredCommands). */
+const commandList = computed(() => offeredCommands({ canExpand: !!props.agent?.expand && !!props.commands, answering: answering.value || !!props.agent?.asked?.reply, list: props.commands?.list }))
+const command = computed<CommandWord | null>(() => (props.agent && commandList.value ? commandAt(draft.value, caret.value) : null))
 const commandKey = computed(() => (command.value ? `/:${command.value.typed}` : ''))
 watch(commandKey, (k) => {
   if (!k) dismissed.value = ''
 })
 const fileShown = computed(() => (fileList.value && fileList.value.words === mention.value?.words ? fileList.value.rows : []))
 const menuKind = computed<'file' | 'command'>(() => (command.value ? 'command' : 'file'))
-const menuRows = computed(() => (command.value && props.commands ? commandRows(props.commands.list, command.value.typed) : fileShown.value))
-// A change of the rows (the list sent again, more typed) keeps the highlighted name where it is still there.
+const menuRows = computed(() => (command.value && commandList.value ? commandRows(commandList.value, command.value.typed) : fileShown.value))
+// A change of the commands' rows (the list sent again, more typed) keeps the highlighted name where it is still there; the file list
+// places its own highlight as each read comes.
 watch(menuRows, (rows, before) => {
+  if (!command.value) return
   const name = before?.[active.value]?.value
   const i = name ? rows.findIndex((r) => r.value === name) : -1
   active.value = i >= 0 ? i : Math.max(0, rows.findIndex((r) => r.pickable))
 })
 const menuFoot = computed(() => {
-  if (command.value) {
-    if (!menuRows.value.length) return 'No command by that name. It is sent as you typed it.'
-    return props.commands?.more ? 'Type a name to see the rest.' : ''
-  }
+  // The commands' list says nothing of its own: its rows are the agent's.
+  if (command.value) return ''
   const row = menuRows.value[active.value]
   if (row && !row.pickable) return 'Type this path yourself: its name has a space or a mark.'
   if (finding.value && !menuRows.value.length) return 'Finding…'
@@ -307,8 +309,12 @@ const menuFoot = computed(() => {
   return ''
 })
 const openKey = computed(() => commandKey.value || mentionKey.value)
-const menuOpen = computed(() =>
-  command.value ? dismissed.value !== commandKey.value : !!mention.value && dismissed.value !== mentionKey.value && (menuRows.value.length > 0 || !!menuFoot.value),
+/** Whether the box has the cursor: a list shows, and takes a press, only then. */
+const focused = ref(false)
+const menuOpen = computed(
+  () =>
+    focused.value &&
+    (command.value ? dismissed.value !== commandKey.value && menuRows.value.length > 0 : !!mention.value && dismissed.value !== mentionKey.value && (menuRows.value.length > 0 || !!menuFoot.value)),
 )
 const menuId = useId()
 const activeId = computed(() => (menuOpen.value && menuRows.value.length ? `${menuId}-${active.value}` : undefined))
@@ -332,48 +338,35 @@ function pick(i: number, trusted: boolean) {
   })
 }
 
-/** The list's keys, while it is open: the arrows move, Enter and Tab pick, Escape closes; true when the key was the list's. */
-function menuKey(e: KeyboardEvent): boolean {
-  if (!menuOpen.value || e.isComposing) return false
+/**
+ * The box's keys, by boxKey (utils/chatBoxMenu.ts): while the list is open the arrows move, Enter and Tab complete the highlighted
+ * row, Escape closes it; a line is sent only by the person's own Enter, not held down, with the list closed.
+ */
+function onKeydown(e: KeyboardEvent) {
+  const act = boxKey(
+    { key: e.key, shift: e.shiftKey, repeat: e.repeat, trusted: e.isTrusted, composing: e.isComposing, phone: props.phone },
+    { open: menuOpen.value, rows: menuRows.value.length },
+  )
   const n = menuRows.value.length
-  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    if (!n) return false
+  if (act === 'move') {
     e.preventDefault()
     active.value = (active.value + (e.key === 'ArrowDown' ? 1 : n - 1)) % n
-    return true
-  }
-  if (e.key === 'Enter' || e.key === 'Tab') {
-    if (e.shiftKey && e.key === 'Enter') return false
-    // A whole listed name, or none matching: Enter sends the line as it is.
-    if (command.value && e.key === 'Enter' && (!n || wholeCommand(props.commands?.list ?? [], command.value.typed))) return false
-    if (!n) {
-      e.preventDefault()
-      return true
-    }
+  } else if (act === 'complete') {
     e.preventDefault()
-    pick(active.value, e.isTrusted)
-    return true
-  }
-  if (e.key === 'Escape') {
+    pick(active.value, true)
+  } else if (act === 'close') {
     e.preventDefault()
     e.stopPropagation()
     dismissed.value = openKey.value
-    return true
-  }
-  return false
-}
-
-function onKeydown(e: KeyboardEvent) {
-  if (menuKey(e)) return
-  // Escape leaves the agent's box, so that the page's keys (a choice's number, S, X) work again.
-  if (e.key === 'Escape' && props.agent) {
+  } else if (act === 'none') {
+    e.preventDefault()
+  } else if (act === 'send') {
+    e.preventDefault()
+    send(scope.value)
+  } else if (e.key === 'Escape' && props.agent) {
+    // Escape leaves the agent's box, so that the page's keys (a choice's number, S, X) work again.
     ;(e.target as HTMLElement | null)?.blur()
-    return
   }
-  if (e.key !== 'Enter' || e.isComposing) return
-  if (e.shiftKey && !props.phone) return
-  e.preventDefault()
-  send(scope.value)
 }
 
 defineExpose({ focus })
@@ -408,6 +401,8 @@ function keepTyping(e: Event) {
         data-chat-input
         @keydown="onKeydown"
         @input="onInput"
+        @focus="focused = true"
+        @blur="focused = false"
         @keyup="noteCaret"
         @click="noteCaret"
         @select="noteCaret"

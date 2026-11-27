@@ -148,7 +148,7 @@ const NAME = /^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/
 
 /**
  * The rows of the list for `/`: the agent's own commands as the server sent them, names that start with what is typed, then names
- * that hold it, then those an alias of which matches; MENU_ROWS at most; a name of another shape dropped.
+ * that hold it, then those an alias of which matches; every match (the list scrolls); a name of another shape dropped.
  */
 export function commandRows(list: readonly { name: string; words?: string; hint?: string; aliases?: string[] }[], typed: string): MenuRow[] {
   const t = typed.toLowerCase()
@@ -156,12 +156,37 @@ export function commandRows(list: readonly { name: string; words?: string; hint?
   const starts = ok.filter((c) => c.name.toLowerCase().startsWith(t))
   const holds = ok.filter((c) => !starts.includes(c) && c.name.toLowerCase().includes(t))
   const alias = ok.filter((c) => !starts.includes(c) && !holds.includes(c) && (c.aliases ?? []).some((a) => NAME.test(a) && a.toLowerCase().includes(t)))
-  return [...starts, ...holds, ...alias].slice(0, MENU_ROWS).map((c) => ({ key: c.name, value: c.name, pickable: true, hint: c.hint, words: c.words }))
+  return [...starts, ...holds, ...alias].map((c) => ({ key: c.name, value: c.name, pickable: true, hint: c.hint, words: c.words }))
 }
 
-/** Whether what is typed after the slash is already one of the listed names, whole: Enter then sends at once. */
-export function wholeCommand(list: readonly { name: string }[], typed: string): boolean {
-  return !!typed && list.some((c) => c.name === typed && NAME.test(c.name))
+/**
+ * The agent's commands the box offers for `/` (UX3 R11): the server's list for this connection, only where the server said the box
+ * may expand a line, never while the box would answer a question (its line is an answer then), none for an empty list.
+ */
+export function offeredCommands<T>(o: { canExpand: boolean; answering: boolean; list: readonly T[] | null | undefined }): readonly T[] | null {
+  if (!o.canExpand || o.answering || !o.list?.length) return null
+  return o.list
+}
+
+/** What a key in the chat box does (UX3 R11): pass it on, move the list's highlight, complete its row, close it, send, or nothing. */
+export type BoxKeyAct = 'pass' | 'move' | 'complete' | 'close' | 'send' | 'none'
+
+/**
+ * The box's keys. While its list is open, Enter and Tab complete the highlighted row and never send; with the list open and no row,
+ * they do nothing. A line is sent only by an Enter the person pressed, held down for no repeat, with the list closed; Shift+Enter is
+ * a new line (a phone's Enter sends, as its keyboard's key says). Nothing while an input method composes.
+ */
+export function boxKey(k: { key: string; shift: boolean; repeat: boolean; trusted: boolean; composing: boolean; phone: boolean }, list: { open: boolean; rows: number }): BoxKeyAct {
+  if (k.composing) return 'pass'
+  if (list.open) {
+    if (k.key === 'Escape') return 'close'
+    if (k.key === 'ArrowDown' || k.key === 'ArrowUp') return list.rows ? 'move' : 'pass'
+    if (k.key === 'Tab' && !k.shift) return list.rows && !k.repeat && k.trusted ? 'complete' : list.rows ? 'none' : 'pass'
+    if (k.key === 'Enter' && !(k.shift && !k.phone)) return list.rows && !k.repeat && k.trusted ? 'complete' : 'none'
+  }
+  if (k.key !== 'Enter') return 'pass'
+  if (k.shift && !k.phone) return 'pass'
+  return k.repeat || !k.trusted ? 'none' : 'send'
 }
 
 /** The line with its first word completed to `/name ` and where the cursor goes: after the space. */

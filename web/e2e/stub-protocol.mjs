@@ -63,7 +63,8 @@
 //
 // Its initialize answer lists its own commands (STUB_COMMAND_LIST, a made-up set in this project's words), and each time
 // <conversation>.commands in $HOME/.stub-sessions changes it sends system/commands_changed with the list and one command more for
-// each of the file's lines (`name|words|hint`).
+// each of the file's lines (`name|words|hint`; a line that begins with `^` goes before the built-in ones, and a file of one `-`
+// lists none).
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
@@ -250,11 +251,19 @@ setInterval(() => {
   const text = readFileSync(file, 'utf8')
   if (text === listed) return
   listed = text
-  const more = text.split('\n').filter(Boolean).map((l) => {
-    const [name, description = '', argumentHint = ''] = l.split('|')
+  // A file of one "-" lists no command at all; a line that begins with "^" puts its command before the built-in ones.
+  if (text.trim() === '-') {
+    send({ type: 'system', subtype: 'commands_changed', commands: [], session_id: session, uuid: uuid() })
+    return
+  }
+  const lines = text.split('\n').filter(Boolean)
+  const parse = (l) => {
+    const [name, description = '', argumentHint = ''] = l.replace(/^\^/, '').split('|')
     return { name, description, argumentHint }
-  })
-  send({ type: 'system', subtype: 'commands_changed', commands: [...STUB_COMMAND_LIST, ...more], session_id: session, uuid: uuid() })
+  }
+  const first = lines.filter((l) => l.startsWith('^')).map(parse)
+  const more = lines.filter((l) => !l.startsWith('^')).map(parse)
+  send({ type: 'system', subtype: 'commands_changed', commands: [...first, ...STUB_COMMAND_LIST, ...more], session_id: session, uuid: uuid() })
 }, 50).unref()
 
 /** An unmarked message the stub's program answers itself (row 12): true when it was, and the turn is over. */
