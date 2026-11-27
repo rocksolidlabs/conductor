@@ -87,15 +87,15 @@ describe("the agent's box", () => {
     expect(src).toContain("if (!menuOpen.value || e.isComposing) return false")
     expect(src).toMatch(/if \(e\.key === 'Enter' \|\| e\.key === 'Tab'\) \{[\s\S]*?e\.preventDefault\(\)\s*pick\(active\.value, e\.isTrusted\)\s*return true/)
     // Escape closes the list and keeps the text: it is the list's, not the box's.
-    expect(src).toMatch(/if \(e\.key === 'Escape'\) \{\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)\s*dismissed\.value = mentionKey\.value\s*return true/)
+    expect(src).toMatch(/if \(e\.key === 'Escape'\) \{\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)\s*dismissed\.value = openKey\.value\s*return true/)
     // Closed with Escape, it opens again for the next @ word, even one typed the same.
     expect(src).toMatch(/if \(!m\) \{[\s\S]*?dismissed\.value = ''/)
     // One read on its way at a time, and a late answer dropped.
     expect(src).toContain('if (n !== asked || mention.value?.words !== words) return')
     expect(src).toMatch(/if \(inFlight\) \{\s*pending = words\s*return/)
     // A pick: only a row that may be picked, the @ word replaced by the path and a space.
-    expect(src).toContain('if (!m || !row?.pickable) return')
-    expect(src).toContain('const put = pickMention(draft.value, m, row.value)')
+    expect(src).toContain('if ((!c && !m) || !row?.pickable) return')
+    expect(src).toContain('const put = c ? pickCommand(draft.value, c, row.value) : pickMention(draft.value, m!, row.value)')
   })
   it("marksForExpandOnlyThePersonsOwnLine (UX3 R10): the person's typing or own pick, where the server said expand", () => {
     // The line is the person's only after a trusted input in the box or their own pick; code that sets it makes it the page's.
@@ -136,5 +136,17 @@ describe("the agent's box", () => {
     expect(src).toContain("'Its question was answered. Empty the box to write a message instead.'")
     // B3: a line begun before its question had an id takes the id as it comes.
     expect(src).toMatch(/if \(now && !was\) lines\.rebind\(lineKey\.value, ASKED, now\)/)
+  })
+  it("offersTheAgentsCommands (UX3 R11): only where the server said expand and sent a list, on the operator's own connection", () => {
+    expect(view).toContain(':commands="canExpand && conn.commands.value ? conn.commands.value : null"')
+    expect(src).toContain('const command = computed<CommandWord | null>(() => (props.agent && props.commands ? commandAt(draft.value, caret.value) : null))')
+    // Enter on a whole listed name, or with none matching, sends; otherwise it completes.
+    expect(src).toContain("if (command.value && e.key === 'Enter' && (!n || wholeCommand(props.commands?.list ?? [], command.value.typed))) return false")
+    expect(src).toContain("if (!menuRows.value.length) return 'No command by that name. It is sent as you typed it.'")
+    // The rows kept by name when the list changes.
+    expect(src).toMatch(/watch\(menuRows, \(rows, before\) => \{\s*const name = before\?\.\[active\.value\]\?\.value/)
+    // The page keeps no list of its own: the connection's, cleared at a welcome and a move to the terminal.
+    const conn = readFileSync(new URL('../composables/useSessionConnection.ts', import.meta.url), 'utf8')
+    expect(conn).toContain("if (msg.t === 'commands' && (!commands.value || msg.rev > commands.value.rev))")
   })
 })

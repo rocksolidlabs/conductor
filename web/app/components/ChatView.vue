@@ -343,6 +343,7 @@ watch(
         v-if="controls"
         ref="composer"
         :files="conn.fileView.value ? files : undefined"
+        :commands="canExpand && conn.commands.value ? conn.commands.value : null"
         :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said, name: agentName, draftKey, asked, expand: canExpand, folder: conn.welcome.value?.cwd }"
         data-chat-box
         @send="(text, _to, how) => send(text, how)"

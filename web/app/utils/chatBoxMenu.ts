@@ -98,3 +98,46 @@ export function outsideMention(text: string): string {
   }
   return ''
 }
+
+/** The `/` word a line begins with, when the cursor is in it (UX3 R11): what is typed after the slash, and where the word ends. */
+export interface CommandWord {
+  end: number
+  typed: string
+}
+
+/** The first word of a line that begins with `/`, the cursor inside it or at its end; null anywhere else. */
+export function commandAt(text: string, caret: number): CommandWord | null {
+  if (!text.startsWith('/')) return null
+  const m = /^\/\S*/.exec(text)!
+  const end = m[0].length
+  if (caret < 1 || caret > end) return null
+  return { end, typed: text.slice(1, caret) }
+}
+
+/** A name the list may offer: the shape of a command's name (proto.CommandNameShape), checked again on the page. */
+const NAME = /^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/
+
+/**
+ * The rows of the list for `/`: the agent's own commands as the server sent them, names that start with what is typed, then names
+ * that hold it, then those an alias of which matches; MENU_ROWS at most; a name of another shape dropped.
+ */
+export function commandRows(list: readonly { name: string; words?: string; hint?: string; aliases?: string[] }[], typed: string): MenuRow[] {
+  const t = typed.toLowerCase()
+  const ok = list.filter((c) => NAME.test(c.name))
+  const starts = ok.filter((c) => c.name.toLowerCase().startsWith(t))
+  const holds = ok.filter((c) => !starts.includes(c) && c.name.toLowerCase().includes(t))
+  const alias = ok.filter((c) => !starts.includes(c) && !holds.includes(c) && (c.aliases ?? []).some((a) => NAME.test(a) && a.toLowerCase().includes(t)))
+  return [...starts, ...holds, ...alias].slice(0, MENU_ROWS).map((c) => ({ key: c.name, value: c.name, pickable: true, hint: c.hint, words: c.words }))
+}
+
+/** Whether what is typed after the slash is already one of the listed names, whole: Enter then sends at once. */
+export function wholeCommand(list: readonly { name: string }[], typed: string): boolean {
+  return !!typed && list.some((c) => c.name === typed && NAME.test(c.name))
+}
+
+/** The line with its first word completed to `/name ` and where the cursor goes: after the space. */
+export function pickCommand(text: string, w: CommandWord, name: string): { text: string; caret: number } {
+  const put = `/${name} `
+  const rest = text.slice(w.end).replace(/^\s/, '')
+  return { text: put + rest, caret: put.length }
+}
