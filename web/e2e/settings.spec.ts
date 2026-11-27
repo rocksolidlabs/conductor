@@ -1018,6 +1018,9 @@ async function layoutOf(page: Page) {
 }
 /** Waits for what the page renders once the bridge, the catalog and Brakeman answered. */
 async function settled(page: Page, platform: Platform) {
+  // The app booted and drew the page first (on a loaded machine that alone can take most of an expect's bound), then what its
+  // reads bring: each step its own wait.
+  await expect(page.locator('[data-desktop-settings]')).toBeVisible()
   await expect(page.locator('[data-agent]').first()).toBeVisible()
   await expect(page.locator('[data-brakeman-enabled]')).toBeVisible()
   if (platform === 'win32') await expect(page.locator('[data-ice-status]')).toBeVisible()
