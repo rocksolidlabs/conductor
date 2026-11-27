@@ -564,7 +564,30 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			log.Warn("http shutdown", "err", err)
 		}
 	}
-	if *printListen {
+	// stdin's end is watched before the handshake is printed, and no
+	// handshake is printed once it has ended: a parent that told the server
+	// to stop while it started is never handed its address.
+	stdinEnded := make(chan struct{})
+	if *exitOnStdinClose {
+		go func() {
+			_, _ = io.Copy(io.Discard, stdin)
+			log.Info("stdin closed; shutting down")
+			close(stdinEnded)
+			stdinCancel()
+		}()
+	}
+	if beforeHandshake != nil {
+		beforeHandshake(stdinEnded)
+	}
+	ended := false
+	select {
+	case <-stdinEnded:
+		ended = true
+	default:
+	}
+	if *printListen && ended {
+		log.Info("stdin ended before the handshake; it is not printed")
+	} else if *printListen {
 		if err := printHandshake(stdout, cfg, ln, tlsLn); err != nil {
 			if cfg.GeneratedWorkbenchToken && !tokenKept {
 				// The handshake was the one place of this server's token:
@@ -575,14 +598,6 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			log.Warn("print-listen", "err", err)
 		}
 	}
-	if *exitOnStdinClose {
-		go func() {
-			_, _ = io.Copy(io.Discard, stdin)
-			log.Info("stdin closed; shutting down")
-			stdinCancel()
-		}()
-	}
-
 	select {
 	case <-ctx.Done():
 		log.Info("shutting down")
@@ -651,6 +666,11 @@ func (p uplinkPublisher) OpenDesk(ctx context.Context, run proto.DeskRun) (api.D
 // Server is the switchyard as a reply shows it (the links' fallback): its
 // scheme, host and path (config.ShownURL).
 func (p uplinkPublisher) Server() string { return config.ShownURL(p.u.ServerURL) }
+
+// beforeHandshake, when a test sets it before runServe, runs just before
+// the handshake would be printed, with the channel closed once stdin has
+// ended.
+var beforeHandshake func(stdinEnded <-chan struct{})
 
 // handshake is the JSON line --print-listen writes once the listeners are
 // bound: what a parent process needs to open the workbench and sign in.
