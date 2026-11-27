@@ -12,13 +12,14 @@ import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { RUN_LAYOUTS, RUN_LAYOUT_LOOK, type RunLayout, type RunWallTile } from '~/utils/wall'
-import { choiceFor, choose, crewOfRun, largeOf, readRunTiles, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
+import { choiceFor, choose, crewOfRun, largeOf, readRunTiles, takeLast, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 import { previewPath } from '~/utils/capture'
 import type { BrakemanRequest } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
+import { RUN_SHORTCUTS } from '~/composables/useShortcuts'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
@@ -221,8 +222,8 @@ const viewItems = computed(() => [
 /** The view shown: Tasks is a managed run's alone, so a legacy run asked for it gets the grid. */
 const shownView = computed(() => (view.value === 'tasks' && !run.value?.managed ? 'grid' : view.value))
 
-// How the Members view draws the crew's tiles (runTiles): their layout, the member One large draws large, and whether Activity shows
-// beside them. Kept for the crew in this app's storage; a crew opened for the first time takes the last choice made for any crew.
+// How the Members view draws the crew's tiles (runTiles): their layout, the member One large draws large, the sizes its gaps were
+// dragged to, and whether Activity shows beside them. Kept for the crew in this app's storage; a crew opened for the first time takes the last choice made for any crew.
 function pageStorage(): Storage | null {
   try {
     return localStorage
@@ -236,7 +237,23 @@ const tilesChoice = computed(() => choiceFor(tilesRecord.value, crew.value))
 function chooseTiles(change: Partial<RunTilesChoice>) {
   tilesRecord.value = choose(tilesRecord.value, crew.value, change)
   writeRunTiles(pageStorage(), tilesRecord.value)
+  // The last choice is the layout document's too (R88): the desktop app's server starts on a fresh address, whose page storage is
+  // empty, and the server's copy brings the choice back.
+  const last = tilesRecord.value.last
+  ui.setLayout({ runTiles: { layout: last.layout, activity: last.activity } })
 }
+// The server's copy, taken up when it arrives: a crew with a choice of its own keeps it.
+watch(
+  () => ui.layout.value.runTiles,
+  (kept) => {
+    const next = takeLast(tilesRecord.value, kept)
+    if (next !== tilesRecord.value) {
+      tilesRecord.value = next
+      writeRunTiles(pageStorage(), next)
+    }
+  },
+  { immediate: true },
+)
 function setActivity(on: boolean) {
   chooseTiles({ activity: on })
 }
@@ -389,6 +406,7 @@ watch(() => admin.token.value, () => {
 // This page's group in the command palette (#302): the header's buttons, the view, the chat, then the members as rows, the one
 // asking first. The broadcast takes its line in the row and says who gets it and who is skipped, as the bar does.
 const palette = usePalette()
+useShortcutsModal().registerPage(RUN_SHORTCUTS)
 const header = useTemplateRef<{ openAdd: () => void; share: () => void; stopNow: () => Promise<void>; resume: () => Promise<void>; togglePause: () => Promise<void>; isEnded: () => boolean }>('header')
 const identity = useIdentity()
 async function paletteBroadcast(text: string) {
@@ -588,7 +606,8 @@ palette.registerPage(() => {
       <PageEmpty v-if="gone" state="missing" :words="`No run has the id ${runId}. The server forgets runs when it restarts.`" :actions="[{ label: 'Crews', icon: 'i-lucide-arrow-left', to: '/crews' }]" data-run-missing />
 
       <template v-else>
-        <div class="flex flex-none items-center gap-2 px-3 pt-3">
+        <!-- The views, then the layouts and Activity at the right; on a narrow window that group wraps under the views, its words kept. -->
+        <div class="flex flex-none flex-wrap items-center gap-2 px-3 pt-3">
           <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-run-view />
           <div v-if="shownView === 'grid'" class="ml-auto flex items-center gap-2">
             <RunLayoutSwitch v-if="!wallStacked" v-model="tilesLayout" />
@@ -654,7 +673,10 @@ palette.registerPage(() => {
           :activity="tilesChoice.activity"
           :layout="tilesLayout"
           :large="largeMember"
+          :sizes="tilesChoice.sizes?.[tilesLayout]"
+          @resize="(axis, shares) => chooseTiles(withShares(tilesChoice, tilesLayout, axis, shares))"
           @show-large="chooseTiles({ large: $event })"
+          @decision="decisionModal.open($event)"
           @open="router.push(`/sessions/${$event}`)"
           @start="startMember"
         />

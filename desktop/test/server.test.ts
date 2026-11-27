@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Launcher } from '../src/launcher'
-import { ServerSupervisor, StartStopped } from '../src/server'
+import { loopbackOrigin, ServerSupervisor, StartStopped, trustedOrigin } from '../src/server'
 
 /** A fake server: a node script that prints the handshake (after optional noise), serves /api/health, and exits when stdin closes. */
 function fakeServer(opts: { noise?: boolean; crashAfterMs?: number; silent?: boolean }): string {
@@ -78,6 +78,148 @@ describe('server supervisor', () => {
     await s.stop()
     expect(s.status.state).toBe('stopped')
     await expect(fetch(h.publicUrl + '/api/health')).rejects.toThrow()
+  })
+  it('writes the first line on the server\'s stdin before anything else, and its secrets go in no environment', async () => {
+    // A server that reads one line of stdin before it listens, and writes down what it read and what its environment held.
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const seen = join(dir, 'seen.json')
+    const file = join(dir, 'server.js')
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+const fs = require('fs')
+let buf = ''
+const onData = (c) => {
+  buf += c
+  const i = buf.indexOf('\\n')
+  if (i < 0) return
+  process.stdin.off('data', onData)
+  fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ line: buf.slice(0, i), env: Object.keys(process.env).filter((k) => k.startsWith('CONDUCTOR_')) }))
+  const srv = http.createServer((req, res) => res.end('{}'))
+  srv.listen(0, '127.0.0.1', () => {
+    const port = srv.address().port
+    process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + port, publicUrl: 'http://localhost:' + port, pid: process.pid, version: 'fake' }) + '\\n')
+  })
+  process.stdin.on('end', () => process.exit(0))
+}
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', onData)
+`,
+    )
+    const s = new ServerSupervisor({
+      launcher: new ScriptLauncher(file),
+      args: [],
+      env: () => ({ PATH: process.env.PATH ?? '', CONDUCTOR_DATA_DIR: '/d' }),
+      firstLine: () => '{"workbenchToken":"tok","desktopKey":"key"}\n',
+      log: quiet,
+    })
+    const h = await s.start()
+    // The app's origin is the address the server bound, never the name in its publicUrl.
+    expect(h.publicUrl).toMatch(/^http:\/\/localhost:/)
+    expect(s.status.origin).toBe('http://' + h.listen)
+    expect(trustedOrigin(s.status)).toBe('http://' + h.listen)
+    const got = JSON.parse(readFileSync(seen, 'utf8')) as { line: string; env: string[] }
+    expect(got.line).toBe('{"workbenchToken":"tok","desktopKey":"key"}')
+    expect(got.env).toEqual(['CONDUCTOR_DATA_DIR'])
+    await s.stop()
+    // A server that runs no more is trusted no more.
+    expect(trustedOrigin(s.status)).toBe('')
+  })
+  it('trusts the server no more from the moment its stop begins, before the server has exited', async () => {
+    // A server that, told to stop, exits only once the test lets it.
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const gate = join(dir, 'gate')
+    const file = join(dir, 'server.js')
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+const fs = require('fs')
+const srv = http.createServer((req, res) => res.end('{}'))
+srv.listen(0, '127.0.0.1', () => {
+  process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + srv.address().port, publicUrl: 'http://localhost:' + srv.address().port, pid: process.pid, version: 'fake' }) + '\\n')
+})
+process.stdin.on('end', () => {
+  srv.close()
+  const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(gate)})) { clearInterval(t); process.exit(0) } }, 10)
+})
+process.stdin.resume()
+`,
+    )
+    const s = new ServerSupervisor({ launcher: new ScriptLauncher(file), args: [], env: () => ({ PATH: process.env.PATH ?? '' }), stopGraceMs: 60_000, log: quiet })
+    const h = await s.start()
+    expect(trustedOrigin(s.status)).toBe('http://' + h.listen)
+    const states: string[] = []
+    s.on('state', (st) => states.push(st.state))
+    const stopping = s.stop()
+    // The stop is under way and the server has not exited: trusted no more all the same.
+    expect(trustedOrigin(s.status)).toBe('')
+    expect(states[0]).toBe('stopped')
+    writeFileSync(gate, '')
+    await stopping
+    expect(trustedOrigin(s.status)).toBe('')
+  })
+  it('writes a fresh first line at every start, and a server answers only its own token', async () => {
+    // A server that takes its token from its first line and answers 401 to any other.
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
+    const file = join(dir, 'server.js')
+    writeFileSync(
+      file,
+      `
+const http = require('http')
+let buf = ''
+const onData = (c) => {
+  buf += c
+  const i = buf.indexOf('\\n')
+  if (i < 0) return
+  process.stdin.off('data', onData)
+  const token = JSON.parse(buf.slice(0, i)).workbenchToken
+  const srv = http.createServer((req, res) => {
+    res.statusCode = req.headers.authorization === 'Bearer ' + token ? 200 : 401
+    res.end('{}')
+  })
+  srv.listen(0, '127.0.0.1', () => {
+    process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + srv.address().port, publicUrl: 'http://localhost:' + srv.address().port, pid: process.pid, version: 'fake' }) + '\\n')
+  })
+  process.stdin.on('end', () => process.exit(0))
+}
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', onData)
+`,
+    )
+    let n = 0
+    const tokens: string[] = []
+    const s = new ServerSupervisor({
+      launcher: new ScriptLauncher(file),
+      args: [],
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+      firstLine: () => {
+        const t = `token-${++n}`
+        tokens.push(t)
+        return JSON.stringify({ workbenchToken: t }) + '\n'
+      },
+      log: quiet,
+    })
+    await s.start()
+    const first = await s.restart()
+    void first
+    expect(tokens).toEqual(['token-1', 'token-2'])
+    const origin = trustedOrigin(s.status)
+    const ask = (t: string) => fetch(origin + '/api/health', { headers: { authorization: 'Bearer ' + t } }).then((r) => r.status)
+    expect(await ask('token-2')).toBe(200)
+    expect(await ask('token-1')).toBe(401)
+    await s.stop()
+  })
+  it('takes for its origin a loopback address written as one, and nothing else', () => {
+    expect(loopbackOrigin('127.0.0.1:4312')).toBe('http://127.0.0.1:4312')
+    expect(loopbackOrigin('127.1.2.3:1')).toBe('http://127.1.2.3:1')
+    expect(loopbackOrigin('[::1]:4312')).toBe('http://[::1]:4312')
+    for (const x of ['localhost:4312', '0.0.0.0:4312', '10.0.0.1:4312', '127.0.0.1', '127.0.0.1:0', '127.0.0.1:70000', '127.0.0.300:1', '[::]:4312', 'evil.example:80', '127.0.0.1:1@evil.example', '']) {
+      expect(loopbackOrigin(x), x).toBe('')
+    }
+    for (const state of ['stopped', 'starting', 'failed'] as const) expect(trustedOrigin({ state, url: 'http://localhost:1', origin: 'http://127.0.0.1:1', failures: 0 })).toBe('')
+    expect(trustedOrigin({ state: 'running', url: 'http://localhost:1', failures: 0 })).toBe('')
   })
   it("a stop during the start's preparation spawns nothing (#363, Codex's review)", async () => {
     const launcher = new ScriptLauncher(fakeServer({}))

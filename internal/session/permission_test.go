@@ -1010,6 +1010,13 @@ func TestAnACPCallIsFlooredByEveryPlaceItNames(t *testing.T) {
 		{"a path in its raw input", "other", j(map[string]any{"kind": "other", "title": "x", "rawInput": map[string]any{"path": secret}}), true},
 		{"a location", "read", j(map[string]any{"kind": "read", "title": "x", "locations": []any{map[string]any{"path": secret}}}), true},
 		{"a diff's path", "edit", j(map[string]any{"kind": "edit", "title": "x", "content": []any{map[string]any{"type": "diff", "path": secret, "newText": "x"}}}), true},
+		{"a relative line from the folder its raw input names", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "cwd": filepath.Dir(data)}}), true},
+		{"a folder under another key", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "directory": filepath.Dir(data)}}), true},
+		{"a folder that is a link", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "workdir": linkTo(t, filepath.Dir(data))}}), true},
+		{"a move's destination under a key of its own", "move", j(map[string]any{"kind": "move", "title": "x", "rawInput": map[string]any{"source": "notes.txt", "destination": filepath.Join(data, "x")}}), true},
+		{"a list of paths", "read", j(map[string]any{"kind": "read", "title": "x", "rawInput": map[string]any{"paths": []any{"notes.txt", secret}}}), true},
+		{"a path inside a patch's text", "edit", j(map[string]any{"kind": "edit", "title": "x", "rawInput": map[string]any{"patchText": "*** Update File: " + secret + "\n+x"}}), true},
+		{"a file link in its content", "read", j(map[string]any{"kind": "read", "title": "x", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "resource_link", "uri": "file://" + secret}}}}), true},
 		{"nothing of the list", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "make test"}}), false},
 	} {
 		call := fmt.Sprintf("c-%d", i)
@@ -1022,5 +1029,102 @@ func TestAnACPCallIsFlooredByEveryPlaceItNames(t *testing.T) {
 			continue
 		}
 		deniedWith(t, s, e, v, FloorWords)
+	}
+}
+
+// linkTo is a link in a folder of the test's own to target.
+func linkTo(t *testing.T, target string) string {
+	t.Helper()
+	l := filepath.Join(t.TempDir(), "l")
+	if err := os.Symlink(target, l); err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// The floor follows a path's links before its "..": a path through a link
+// and then ".." into a denied place is the denied place's, for a request to
+// the prompt tool (Claude Code's) and for an in-stream one; and a command's
+// folder that is a link is judged by where it leads.
+func TestTheFloorFollowsAPathsLinksBeforeItsDotDot(t *testing.T) {
+	base := realDir(t, t.TempDir())
+	data := filepath.Join(base, "conductor")
+	sibling := filepath.Join(base, "applications")
+	for _, d := range []string{data, sibling} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(data, "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, f, _ := permissionSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	l := linkTo(t, sibling)
+	through := l + "/../conductor/config.json"
+	// The prompt tool's request.
+	announce(f, "c-read", "Read", `{"file_path":"`+through+`"}`)
+	if v := ask(s, "c-read", "Read", `{"file_path":"`+through+`"}`).returned(t); v.Allow || v.Message != FloorWords {
+		t.Fatalf("a read through a link and ..: %+v", v)
+	}
+	// An in-stream one.
+	in := `{"changes":[{"path":"` + through + `","kind":{"type":"update"},"diff":""}]}`
+	f.ToolStarted(ToolStep{Ref: "c-change", Name: "fileChange", Input: []byte(in)})
+	e, v := inStreamAsked(t, s, f, "req-change", "c-change", "fileChange", in)
+	deniedWith(t, s, e, v, FloorWords)
+	// A command run in a folder that is a link above the denied place.
+	cmd := `{"command":"cat conductor/config.json","cwd":"` + linkTo(t, base) + `"}`
+	f.ToolStarted(ToolStep{Ref: "c-cmd", Name: "commandExecution", Input: []byte(cmd)})
+	e, v = inStreamAsked(t, s, f, "req-cmd", "c-cmd", "commandExecution", cmd)
+	deniedWith(t, s, e, v, FloorWords)
+}
+
+// The walk of a call's strings is for calls that come in an agent's
+// stream: a request to the prompt tool (Claude Code's) to write a file whose
+// text names a denied place is asked, as any write outside the list is; the
+// same text in an in-stream call's content is floored.
+func TestTheWalkOfACallsStringsIsForCallsThatComeInAStream(t *testing.T) {
+	data := realDir(t, t.TempDir())
+	text := "Its state lives in " + filepath.Join(data, "secrets.json") + "\n"
+	s, f, _ := permissionSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	write := j(map[string]any{"file_path": "docs/x.md", "content": text})
+	announce(f, "c-write", "Write", write)
+	h := ask(s, "c-write", "Write", write)
+	if e := openRequest(t, s, "c-write"); e.Tool != "Write" || !h.held() {
+		t.Fatalf("a write whose text names the list: %+v, held %v", e, h.held())
+	}
+	in := j(map[string]any{"kind": "edit", "title": "x", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": text}}}})
+	f.ToolStarted(ToolStep{Ref: "c-acp", Name: "edit", Input: []byte(in)})
+	e, v := inStreamAsked(t, s, f, "req-acp", "c-acp", "edit", in)
+	deniedWith(t, s, e, v, FloorWords)
+}
+
+// The walk is bounded: a call with more strings than the walk judges, and a
+// folder with more parts than a path's walk takes, are floored, never
+// passed unjudged.
+func TestTheWalkOfACallsStringsIsBounded(t *testing.T) {
+	data := realDir(t, t.TempDir())
+	s, _, f := protocolSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	f.TurnStarted("")
+	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	many := make([]any, maxWalkStrings+1)
+	for i := range many {
+		many[i] = "x"
+	}
+	long := "/" + strings.Repeat("a/", maxLinkSteps+1)
+	for i, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"more strings than the walk judges", j(map[string]any{"kind": "other", "title": "x", "content": many})},
+		{"a folder longer than its walk", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "ls", "cwd": long}})},
+	} {
+		call := fmt.Sprintf("c-%d", i)
+		f.ToolStarted(ToolStep{Ref: call, Name: "other", Input: []byte(tc.input)})
+		e, v := inStreamAsked(t, s, f, "req-"+call, call, "other", tc.input)
+		deniedWith(t, s, e, v, FloorWords)
+	}
+	if _, ok := linksFirst(long); ok {
+		t.Fatal("linksFirst walked past its bound")
 	}
 }
