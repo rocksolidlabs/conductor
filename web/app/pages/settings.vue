@@ -666,10 +666,10 @@ usePalette().registerPage(() => {
         </template>
         <template v-else>
           <span class="min-w-0 flex-1 text-xs" aria-live="polite">
-            <span v-if="error" class="text-error" role="alert" data-settings-error>{{ error }}</span>
-            <span v-else-if="blocked" class="text-error" data-settings-blocked>{{ changed ? `${changed} ` : '' }}Fix the marked field to save.</span>
-            <span v-else-if="restarts && dirty" class="text-muted" data-settings-changed>{{ changed }} Saving restarts the server.</span>
-            <span v-else-if="dirty" class="text-muted" data-settings-changed>{{ changed }}</span>
+            <span v-if="error" class="block text-error" role="alert" data-settings-error>{{ error }}</span>
+            <span v-else-if="blocked" class="block text-error" data-settings-blocked>{{ changed ? `${changed} ` : '' }}Fix the marked field to save.</span>
+            <span v-else-if="restarts && dirty" class="block text-muted" data-settings-changed>{{ changed }} Saving restarts the server.</span>
+            <span v-else-if="dirty" class="block text-muted" data-settings-changed>{{ changed }}</span>
           </span>
           <UButton v-if="dirty" class="shrink-0" label="Discard" color="neutral" variant="ghost" :disabled="saving" data-settings-discard @click="discard" />
           <UButton class="shrink-0" :label="restarts ? 'Save and restart' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty || blocked" data-save-settings @click="pressSave" />
