@@ -62,6 +62,10 @@ const (
 	// ACPDeclinedWords is the notice of a request about more than the
 	// client can show: declined.
 	ACPDeclinedWords = "The agent asked about something a chat cannot show here; Conductor declined it."
+	// ACPSkippedWords is the notice of a line the client does not read
+	// strictly (a key twice, text that is not UTF-8): skipped, every open
+	// question closed.
+	ACPSkippedWords = "The agent sent a line Conductor could not read; it was skipped."
 )
 
 var (
@@ -486,15 +490,8 @@ func (c *ACP) Read(ctx context.Context, e session.ProtocolEvents) error {
 			return l.err
 		}
 		if l.cut {
-			// A line the client could not read may have changed any call:
-			// every open call is changed, and every open request about one
-			// is withdrawn.
 			e.Notice(NoticeTooLarge, TooLargeWords)
-			for id, t := range c.r.tools {
-				t.changed = true
-				c.r.tools[id] = t
-				c.withdrawAbout(id, e)
-			}
+			c.unreadLine(e)
 			continue
 		}
 		if len(bytes.TrimSpace(l.b)) == 0 {
@@ -506,6 +503,17 @@ func (c *ACP) Read(ctx context.Context, e session.ProtocolEvents) error {
 	}
 }
 
+// unreadLine is a line the client could not read, which may have changed
+// any call: every open call is changed, and every open request is
+// withdrawn, the agent answered cancelled.
+func (c *ACP) unreadLine(e session.ProtocolEvents) {
+	for id, t := range c.r.tools {
+		t.changed = true
+		c.r.tools[id] = t
+	}
+	c.withdrawAbout("", e)
+}
+
 func (c *ACP) handle(b []byte, e session.ProtocolEvents) error {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(b, &m); err != nil || m == nil {
@@ -513,6 +521,14 @@ func (c *ACP) handle(b []byte, e session.ProtocolEvents) error {
 			err = errors.New("not an object")
 		}
 		return fmt.Errorf("%w (%v)", ErrACPUnreadable, err)
+	}
+	if _, strict := session.StrictCanonical(b); !strict {
+		// A line is read strictly: a key twice at any level, text that is
+		// not UTF-8, a lone surrogate. Read loosely its last copy would
+		// stand for what the agent sent.
+		e.Notice(NoticeDeclined, ACPSkippedWords)
+		c.unreadLine(e)
+		return nil
 	}
 	var method string
 	field(m, "method", &method)
@@ -749,14 +765,15 @@ func (c *ACP) changeOf(id string, t acpTool, u map[string]json.RawMessage, e ses
 	}
 }
 
-// withdrawAbout withdraws every open request about the call id: the agent
-// is answered cancelled, and the person's card closes.
+// withdrawAbout withdraws every open request about the call id (every
+// open request for ""): the agent is answered cancelled, and the person's
+// card closes.
 func (c *ACP) withdrawAbout(id string, e session.ProtocolEvents) {
 	c.mu.Lock()
 	var gone []string
 	var ids []json.RawMessage
 	for ref, r := range c.requests {
-		if r.call == id {
+		if id == "" || r.call == id {
 			gone = append(gone, ref)
 			ids = append(ids, r.id)
 			delete(c.requests, ref)
@@ -785,15 +802,13 @@ func acpChanges(was, u map[string]json.RawMessage) bool {
 	return false
 }
 
-// jsonEqual says a and b are the same JSON value.
+// jsonEqual says a and b are the same JSON value: their canonical bytes
+// (numbers as written, keys sorted) are the same, and both read strictly.
+// A number written another way is another value.
 func jsonEqual(a, b json.RawMessage) bool {
-	var x, y any
-	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
-		return false
-	}
-	ab, _ := json.Marshal(x)
-	bb, _ := json.Marshal(y)
-	return bytes.Equal(ab, bb)
+	x, okA := session.StrictCanonical(a)
+	y, okB := session.StrictCanonical(b)
+	return okA && okB && bytes.Equal(x, y)
 }
 
 // acpStep is a tool call's step: its name (the agent's name for the tool,

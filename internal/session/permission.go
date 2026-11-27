@@ -599,6 +599,10 @@ func strictCanonical(input []byte) ([]byte, bool) {
 	return bytes.TrimSuffix(b.Bytes(), []byte{'\n'}), true
 }
 
+// StrictCanonical is strictCanonical, for a driver that judges a line or a
+// value as the session does: false for what does not decode cleanly.
+func StrictCanonical(input []byte) ([]byte, bool) { return strictCanonical(input) }
+
 // maxInputDepth bounds the nesting of a request's input.
 const maxInputDepth = 256
 
