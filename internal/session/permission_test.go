@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
@@ -855,6 +856,21 @@ func TestAnInStreamRequestForACallOfAnEarlierTurnIsDenied(t *testing.T) {
 	deniedWith(t, s, e, v, NotACallWords)
 }
 
+// An in-stream request names its call: one that names none is denied
+// "Not a call this session is making." whatever open call it would match.
+func TestAnInStreamRequestNamingNoCallIsDenied(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"ls","cwd":"/w"}`)})
+	e, v := inStreamAsked(t, s, f, "req-1", "", "commandExecution", `{"command":"ls","cwd":"/w"}`)
+	deniedWith(t, s, e, v, NotACallWords)
+	// The call itself is still open to its own request.
+	e, v = inStreamAsked(t, s, f, "req-2", "c1", "commandExecution", `{"command":"ls","cwd":"/w"}`)
+	if v != nil || e.State != PermissionOpen {
+		t.Fatalf("the call's own request %+v, replied %+v", e, v)
+	}
+}
+
 // The floor holds on the in-stream path: a call announced and asked about
 // in the stream is denied before any question when its command line names
 // a denied place, when one of its changes' paths or the place a change
@@ -898,3 +914,80 @@ func TestAnInStreamRequestIsFloored(t *testing.T) {
 	}
 }
 
+// A stop answers every open request itself: an in-stream request read
+// while it is under way is denied as the session ended, never taken, and
+// an operator's answer that arrives then reaches no request.
+func TestAnInStreamRequestDuringAStopIsDenied(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"ls"}`)})
+	open, v := inStreamAsked(t, s, f, "req-1", "c1", "commandExecution", `{"command":"ls"}`)
+	if v != nil || open.State != PermissionOpen {
+		t.Fatalf("the open request %+v", open)
+	}
+	f.ToolStarted(ToolStep{Ref: "c2", Name: "commandExecution", Input: []byte(`{"command":"pwd"}`)})
+	// The stop's first step, as stopProtocol takes it.
+	s.mu.Lock()
+	s.way.Load().stopping = true
+	s.mu.Unlock()
+	e, v := inStreamAsked(t, s, f, "req-2", "c2", "commandExecution", `{"command":"pwd"}`)
+	deniedWith(t, s, e, v, EndedBeforeAnswerWords)
+	owner, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Ada", Owner: true}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.AnswerPermission(context.Background(), owner, proto.PermissionAnswer{T: proto.CtlPermissionAnswer, ReqID: "a1", Question: open.Question, Call: open.Call, Sha256: open.InputSha256, Choice: proto.PermissionAllowOnce})
+	if !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("an answer during the stop: %v", err)
+	}
+	for _, r := range f.Replies() {
+		if r.Ref == "req-1" && r.Verdict.Allow {
+			t.Fatalf("an answer during the stop allowed: %+v", r)
+		}
+	}
+}
+
+// A call the stream announced, ended, and announced again under the same
+// id is no open call: a request about it is denied.
+func TestAnInStreamRequestForACallAnnouncedAgainAfterItsResultIsDenied(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"ls"}`)})
+	f.ToolEnded("c1", ToolResult{Status: ToolOK})
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"ls"}`)})
+	e, v := inStreamAsked(t, s, f, "req-1", "c1", "commandExecution", `{"command":"ls"}`)
+	deniedWith(t, s, e, v, NotACallWords)
+}
+
+// While the session moves between its ways, and while its child is started
+// again, an in-stream request is no call this session is making.
+func TestAnInStreamRequestDuringAMoveOrARestartIsDenied(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*Local, *protocolWay)
+	}{
+		{"a move", func(s *Local, _ *protocolWay) { s.beginMoveLocked() }},
+		{"a restart", func(_ *Local, p *protocolWay) { p.restarting = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, f := protocolSession(t, Options{})
+			f.TurnStarted("")
+			f.ToolStarted(ToolStep{Ref: "c1", Name: "commandExecution", Input: []byte(`{"command":"ls"}`)})
+			s.mu.Lock()
+			p := s.way.Load()
+			tc.set(s, p)
+			s.mu.Unlock()
+			t.Cleanup(func() {
+				s.mu.Lock()
+				if s.moveDone != nil {
+					close(s.moveDone)
+					s.moveDone = nil
+				}
+				p.restarting = false
+				s.mu.Unlock()
+			})
+			e, v := inStreamAsked(t, s, f, "req-1", "c1", "commandExecution", `{"command":"ls"}`)
+			deniedWith(t, s, e, v, NotACallWords)
+		})
+	}
+}
