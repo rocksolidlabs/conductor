@@ -22,6 +22,7 @@ import type { SessionConnection } from '~/composables/useSessionConnection'
 import { ENDS_TERMINAL_WORK, firstReplyOf, refusalStands, switchState, type Refusal, type RefusalBasis, type SwitchFacts } from '~/utils/switchState'
 import { joinTop } from '~/utils/changes'
 import { ApiError } from '~/composables/useApi'
+import { stripRunOf } from '~/utils/memberStrip'
 
 const route = useRoute()
 // The question bar's Answer on a durable decision's question opens its card (Program item DR1).
@@ -185,6 +186,13 @@ const status = computed(() => {
   return s ? sessionStatus(s, clock.value) : undefined
 })
 const ended = computed(() => !!current.value && (current.value.status === 'exited' || current.value.status === 'stopped'))
+// A crew member carries its crew (UX3 R12): the strip above the header, from the moment the session says it is a member, until the
+// run turns out gone (no longer held by the server, or a Brakeman turn's).
+const stripGone = ref('')
+const memberRun = computed(() => {
+  const r = stripRunOf(current.value)
+  return r && r !== stripGone.value ? r : ''
+})
 /** A hosted session whose machine is away: its files cannot be read until it returns (design 4f). */
 const hostAway = computed(() => (current.value?.kind === 'hosted' && current.value.status === 'host_disconnected' ? current.value.hostName || 'The host' : undefined))
 const copy = useCopy()
@@ -729,9 +737,11 @@ palette.registerPage(() => {
 <template>
   <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
     <template #header>
+      <MemberStrip v-if="memberRun && !gone" :run-id="memberRun" @gone="stripGone = memberRun" />
       <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }" data-session-bar>
         <template #leading>
-          <IconButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+          <!-- A member's way back is its strip's, above (UX3 R12). -->
+          <IconButton v-if="!memberRun" icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
         </template>
         <template #title>
           <div v-if="gone" class="flex min-w-0 items-center gap-2" data-session-gone-head>
