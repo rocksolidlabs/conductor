@@ -165,13 +165,15 @@ export function writeSidebarSize(storage: KeyValueStore, size: number, bounds: S
 }
 
 /** Whether `path` is the page of session `id`: its sidebar entry is marked as the current page. */
-export function sessionOpen(path: string, id: string): boolean {
-  return path === `/sessions/${id}`
+export function sessionOpen(path: string, id: string, query: Record<string, unknown> = {}): boolean {
+  // A crew's member is open at its place inside its crew (UX3 R72) as at its own address.
+  return path === `/sessions/${id}` || (path.startsWith('/runs/') && query.session === id)
 }
 
 /** Whether `path` is the run page of run `runId`. */
-export function runOpen(path: string, runId: string): boolean {
-  return path === `/runs/${runId}`
+export function runOpen(path: string, runId: string, query: Record<string, unknown> = {}): boolean {
+  // With a member open in its place, the member's row is the page, not the run's (UX3 R72).
+  return path === `/runs/${runId}` && typeof query.session !== 'string'
 }
 
 /** The amber dot on a session needing input follows the Alerts rules' Badge route for needs_input; the group and its text stay. */

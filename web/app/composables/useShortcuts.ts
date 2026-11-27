@@ -1,3 +1,4 @@
+import { dropEntry, pushEntry, topEntry } from '~/utils/pageStack'
 import { detectSystem, rowsFor, systemNotes, type Chord, type System } from '../utils/chords'
 
 export interface ShortcutRow {
@@ -199,16 +200,19 @@ export function usePageAltCodes() {
  */
 export function useShortcutsModal() {
   const open = useState<boolean>('shortcutsOpen', () => false)
-  const pageGroup = useState<ShortcutGroup | null>('shortcutsPageGroup', () => null)
+  // The pages' groups as registered, the last one the page's (pageStack): a member's view inside its run registers over the run's.
+  const pageGroups = useState<ShortcutGroup[]>('shortcutsPageGroups', () => [])
+  const pageGroup = computed(() => topEntry(pageGroups.value))
   // The system the page runs on (#312): the rows show its chords, and the modal says what it takes.
   const system = useState<System>('shortcutsSystem', () => (import.meta.client ? detectSystem(navigator.userAgent, navigator.platform) : 'linux'))
   const desktop = useDesktop()
   const notes = computed(() => systemNotes(system.value, desktop.isDesktop.value ? 'app' : 'browser'))
 
   function registerPage(group: ShortcutGroup | null) {
-    pageGroup.value = group
+    if (!group) return
+    pageGroups.value = pushEntry(pageGroups.value, group)
     onBeforeUnmount(() => {
-      if (pageGroup.value === group) pageGroup.value = null
+      pageGroups.value = dropEntry(pageGroups.value, group)
     })
   }
 

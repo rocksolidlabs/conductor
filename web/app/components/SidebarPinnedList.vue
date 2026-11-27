@@ -31,8 +31,8 @@ const others = computed(() => props.others ?? [])
         v-if="!r.gone"
         :to="`/sessions/${r.pin.session}`"
         class="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2.5 py-1.5 transition-colors"
-        :class="[sessionOpen(route.path, r.pin.session) ? 'bg-default border-default shadow-xs' : 'border-transparent hover:bg-canvas-hover', !hovers && 'pr-10']"
-        :aria-current="sessionOpen(route.path, r.pin.session) ? 'page' : undefined"
+        :class="[sessionOpen(route.path, r.pin.session, route.query) ? 'bg-default border-default shadow-xs' : 'border-transparent hover:bg-canvas-hover', !hovers && 'pr-10']"
+        :aria-current="sessionOpen(route.path, r.pin.session, route.query) ? 'page' : undefined"
       >
         <UBadge :label="agentInitials(r.session!.agentId)" color="neutral" variant="soft" size="sm" class="flex-none" />
         <span class="truncate text-sm font-medium text-highlighted" data-pinned-name>{{ r.session!.name }}</span>

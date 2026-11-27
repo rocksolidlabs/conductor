@@ -12,7 +12,9 @@ import { ownServer, type OwnServer } from './own-server'
 // there reaches the shell while the page stays; on a phone the strip is in view and `Back to the list` is not drawn. The session's name
 // is whole and nothing in the header overlaps, measured at rest, at 2000 x 810, 1440 x 900 and 390 x 844. Members are found by the
 // run's id and their names, never by a count. A member's Terminal | Chat (UX3 R13, #1171) draws both sides as on any agent, the
-// Chat side dimmed with why, and a press of it sends nothing.
+// Chat side dimmed with why, and a press of it sends nothing. A member opens inside its crew (UX3 R72, #1170): its old address lands
+// on its run's page with `?session=` by replace, before any socket to it opens; Back to the crew shows the run's own page; a session
+// that is not the run's, asked for there, goes to its own page; a tile opens its member in place; the sidebar marks the member's row.
 test.describe.configure({ mode: 'serial' })
 
 const STEP_MS = 15_000
@@ -65,11 +67,19 @@ test.afterAll(async () => {
 })
 
 const idOf = (name: string) => member(run, name).sessionId!
+const runPath = () => `/runs/${encodeURIComponent(run.id)}`
+/** The page's address and its `session`, as one string to compare. */
+const where = (page: Page) => {
+  const u = new URL(page.url())
+  return `${u.pathname}${u.searchParams.has('session') ? `?session=${u.searchParams.get('session')}` : ''}`
+}
+const placeOf = (name: string) => `${runPath()}?session=${idOf(name)}`
 
-/** A member's page, its terminal drawn and its strip holding the run's title. */
+/** A member opened at its old address: it lands inside its crew, its terminal drawn and its strip holding the run's title. */
 async function memberPage(page: Page, name: string): Promise<void> {
   budget(STEP_MS + LONG_MS)
   await page.goto(`/sessions/${encodeURIComponent(idOf(name))}`)
+  await expect.poll(() => where(page)).toBe(placeOf(name))
   await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: LONG_MS })
   await expect(page.locator(`[data-member-strip][data-run="${run.id}"] [data-member-strip-title]`)).toHaveText(CREW)
 }
@@ -105,7 +115,7 @@ for (const size of [
     const page = await dayPage(browser, { server: own.started, ...size })
     try {
       await memberPage(page, 'lead')
-      const back = page.getByRole('link', { name: 'Back to the crew' })
+      const back = page.getByRole('button', { name: 'Back to the crew' })
       await expect(back).toBeVisible()
       await expect(back).toHaveText('Back to the crew')
       await expect(page.locator('[data-back-to-list]')).toHaveCount(0)
@@ -115,7 +125,10 @@ for (const size of [
       // reka keeps the role on a copy of the words, hidden from the tree, for the button's description (tooltips.spec.ts).
       await expect(page.getByRole('tooltip', { includeHidden: true })).toContainText(`Back to ${CREW}`)
       await back.click()
-      await expect.poll(() => pagePath(page)).toBe(`/runs/${encodeURIComponent(run.id)}`)
+      await expect.poll(() => where(page)).toBe(runPath())
+      // The run's own page again, its views drawn, no member's view left.
+      await expect(page.locator('[data-run-view]')).toBeVisible()
+      await expect(page.locator('[data-member-strip]')).toHaveCount(0)
     } finally {
       await page.context().close()
     }
@@ -138,7 +151,7 @@ test("a member's tab opens that member in this page's place: one Back leaves the
     await expect(lead.locator('[data-status-mark]')).toBeVisible()
     await expect(core.locator('[data-status-mark]')).toBeVisible()
     await core.click()
-    await expect.poll(() => pagePath(page)).toBe(`/sessions/${encodeURIComponent(idOf('core'))}`)
+    await expect.poll(() => where(page)).toBe(placeOf('core'))
     await expect(strip.locator('[data-member-tab="core"]')).toHaveAttribute('aria-current', 'page')
     await expect(strip.locator('[data-member-tab="lead"]')).not.toHaveAttribute('aria-current', 'page')
     await headerWhole(page)
@@ -188,7 +201,7 @@ test('Alt+Q in the terminal goes back to the crew; Escape there is the agent\'s'
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
   try {
     await memberPage(page, 'core')
-    const path = pagePath(page)
+    const path = where(page)
     const out = join(cwd, 'escape.txt')
     // The shell copies what it is typed, Escape shown as ^[ (cat -v), into a file: Escape reached it, and the page stayed.
     await page.locator('.terminal-host .xterm-screen').first().click()
@@ -199,12 +212,12 @@ test('Alt+Q in the terminal goes back to the crew; Escape there is the agent\'s'
     await page.keyboard.press('Enter')
     await page.keyboard.press('Control+D')
     await expect.poll(() => readFileSync(out, 'utf8'), { timeout: STEP_MS, message: 'the shell read Escape' }).toContain('^[')
-    expect(pagePath(page)).toBe(path)
+    expect(where(page)).toBe(path)
     await expect(page.locator('[data-member-strip]')).toBeVisible()
     // Alt+Q, the terminal still holding the keys, goes back to the crew.
     await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused()
     await page.keyboard.press('Alt+KeyQ')
-    await expect.poll(() => pagePath(page)).toBe(`/runs/${encodeURIComponent(run.id)}`)
+    await expect.poll(() => where(page)).toBe(runPath())
   } finally {
     await page.context().close()
   }
@@ -214,13 +227,13 @@ test("on a phone the strip is a member's way back, in view; Back to the list is 
   const page = await dayPage(browser, { server: own.started, width: 390, height: 844, touch: true })
   try {
     await memberPage(page, 'lead')
-    const back = page.getByRole('link', { name: 'Back to the crew' })
+    const back = page.getByRole('button', { name: 'Back to the crew' })
     await expect(back).toBeInViewport()
     await expect(back).toHaveText('Back to the crew')
     await expect(page.locator('[data-back-to-list]')).toHaveCount(0)
     await headerWhole(page)
     await back.tap()
-    await expect.poll(() => pagePath(page)).toBe(`/runs/${encodeURIComponent(run.id)}`)
+    await expect.poll(() => where(page)).toBe(runPath())
     // Below sm the way is More's two items: Chat says why and cannot be pressed (UX3 R13).
     await memberPage(page, 'review')
     await page.locator('[data-more-button]').tap()
@@ -271,5 +284,52 @@ test('on a very wide window the strip is in the header row and the terminal as t
     await api.stopSession(alone.id)
     if (big) await api.stopRun(big.id)
     if (bigCrew) await api.call('DELETE', `/api/crews/${encodeURIComponent(bigCrew)}`)
+  }
+})
+
+test("a member's old address lands inside its crew before any socket to it opens; one Back leaves; the sidebar marks its row", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: '/crews' })
+  try {
+    const lead = idOf('lead')
+    // Every socket to the member, with the address the page had as it opened.
+    const sockets: string[] = []
+    page.on('websocket', (ws) => {
+      if (new URL(ws.url()).pathname.endsWith(`/ws/sessions/${lead}`)) sockets.push(new URL(page.url()).pathname)
+    })
+    await memberPage(page, 'lead')
+    await expect(page.locator('[data-transport-state="open"]')).toHaveCount(1, { timeout: LONG_MS })
+    expect(sockets.length, 'the view connected').toBeGreaterThan(0)
+    expect(sockets.filter((p) => p !== runPath()), 'no socket opened on the old address').toEqual([])
+    // Its row in the sidebar is the page; the run's header row is not.
+    await expect(page.locator(`[data-sidebar-row="s:${lead}"] [aria-current="page"]`)).toHaveCount(1)
+    // The old address was replaced: one Back leaves for where the person was, never to it.
+    await page.goBack()
+    await expect.poll(() => pagePath(page)).toBe('/crews')
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("from the run's page a tile opens its member in place; Back to the crew returns to the run; another session is not drawn there", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900, path: runPath() })
+  const own_ = await own.api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'e2e not a member', cwd })
+  try {
+    await page.locator('[data-member="core"] [data-tile-open]').click()
+    await expect.poll(() => where(page)).toBe(placeOf('core'))
+    await expect(page.locator('[data-run-grid]')).toHaveCount(0)
+    await expect(page.locator(`[data-member-strip] [data-member-tab="core"]`)).toHaveAttribute('aria-current', 'page')
+    // Back to the crew is the browser's Back here: the run's page, and one more Back leaves it.
+    await page.getByRole('button', { name: 'Back to the crew' }).click()
+    await expect.poll(() => where(page)).toBe(runPath())
+    await expect(page.locator('[data-member="core"] [data-tile-open]')).toBeVisible({ timeout: LONG_MS })
+    // A session that is not the run's member, asked for in the run's place, goes to its own page.
+    budget(STEP_MS + LONG_MS)
+    await page.goto(`${runPath()}?session=${encodeURIComponent(own_.id)}`)
+    await expect.poll(() => pagePath(page)).toBe(`/sessions/${encodeURIComponent(own_.id)}`)
+    await expect(page.locator('[data-session-bar]')).toBeVisible({ timeout: LONG_MS })
+    await expect(page.locator('[data-member-strip]')).toHaveCount(0)
+  } finally {
+    await page.context().close()
+    await own.api.stopSession(own_.id)
   }
 })

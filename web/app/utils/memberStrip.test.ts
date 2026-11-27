@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { Attention } from './protocol'
-import { backTitle, BACK_TO_CREW, memberTabs, stripRunOf, stripsRun } from './memberStrip'
+import { backByHistory, backTitle, BACK_TO_CREW, carriedQuery, memberOfRun, memberPlace, memberTabs, stripRunOf, stripsRun } from './memberStrip'
 
 const NOW = Date.parse('2026-11-26T12:00:00Z')
 const MIN = 60_000
@@ -51,6 +51,33 @@ describe('stripRunOf and stripsRun: which pages carry the strip', () => {
     expect(stripRunOf(sess('s-turn', undefined, { crew: { runId: 'brakeman-1', crewId: 'brakeman', member: 'brakeman', brakeman: { request: 'r1', quiet: false } } }))).toBe('')
     expect(stripsRun(THREE)).toBe(true)
     expect(stripsRun(run([], { class: 'brakeman' }))).toBe(false)
+  })
+})
+
+describe('memberPlace and memberOfRun: a member opens inside its crew (UX3 R72)', () => {
+  const TURN = sess('s-turn', undefined, { crew: { runId: 'brakeman-1', crewId: 'brakeman', member: 'brakeman', brakeman: { request: 'r1', quiet: false } } })
+  it("is a member's run page with its session, its tab, open and line carried; none for a session of its own or a Brakeman turn", () => {
+    expect(memberPlace(LEAD)).toBe(`/runs/${RUN}?session=s-lead`)
+    expect(memberPlace(LEAD, { tab: 'changes', open: 'a b.go', line: '12', view: 'graph' })).toBe(`/runs/${RUN}?session=s-lead&tab=changes&open=a+b.go&line=12`)
+    expect(memberPlace(sess('s-own'))).toBe('')
+    expect(memberPlace(TURN)).toBe('')
+    expect(carriedQuery({ tab: ['a', 'b'], open: '' })).toBe('')
+    expect(carriedQuery({ open: 'x.go' })).toBe('?open=x.go')
+  })
+  it("draws a session in a run's place only when it is that run's member", () => {
+    expect(memberOfRun(LEAD, RUN)).toBe(true)
+    expect(memberOfRun(LEAD, 'other-run')).toBe(false)
+    expect(memberOfRun(LEAD, '')).toBe(false)
+    expect(memberOfRun(sess('s-own'), RUN)).toBe(false)
+    expect(memberOfRun(TURN, 'brakeman-1')).toBe(false)
+  })
+  it('goes Back by the history only to the run page with no member open', () => {
+    const path = `/runs/${RUN}`
+    expect(backByHistory(path, path)).toBe(true)
+    expect(backByHistory(`${path}?view=graph`, path)).toBe(true)
+    expect(backByHistory(`${path}?session=s-core`, path)).toBe(false)
+    expect(backByHistory('/crews', path)).toBe(false)
+    expect(backByHistory(null, path)).toBe(false)
   })
 })
 

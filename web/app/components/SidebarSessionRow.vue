@@ -37,7 +37,7 @@ const router = useRouter()
 
 const s = computed(() => props.row.session)
 const status = computed(() => sessionStatus(s.value, props.now))
-const current = computed(() => sessionOpen(route.path, s.value.id))
+const current = computed(() => sessionOpen(route.path, s.value.id, route.query))
 const meta = computed(() => rowMeta(s.value, props.member, props.now))
 /** The meta line after the machine (which carries the laptop), the parts joined by middle dots as text, so it reads and copies as one line. */
 const metaText = computed(() => (props.row.machine ? meta.value.slice(1).map((p) => ` · ${p}`).join('') : meta.value.join(' · ')))
