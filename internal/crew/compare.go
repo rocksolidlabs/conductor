@@ -96,7 +96,7 @@ var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAcc
 // refused unless the person repeats the count (the API's ticket launch).
 // prepare, which every launch and continuation calls, refuses it before a
 // run exists for every caller that holds no package.
-var errComparisonNoTicket = invalidf("a comparison is launched from a ticket's approved plan revision")
+var errComparisonNoTicket = invalidf("an agent trial starts from a ticket's approved plan revision")
 
 // clone returns a copy of cmp that shares no slice with it.
 func (cmp Compare) clone() Compare {

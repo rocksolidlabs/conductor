@@ -51,7 +51,7 @@ export function compareStatement(part: PlanCompare, agents: readonly string[], m
   const out: StatementPart[] = [
     {
       key: 'candidates',
-      words: `This comparison starts ${plural(n, 'candidate')}${agents.length ? ` (${agents.join(', ')})` : ''}: ${plural(n, 'agent session')}, once the plan's decisions and the project's prerequisites let the work start`,
+      words: `This trial starts ${plural(n, 'candidate')}${agents.length ? ` (${agents.join(', ')})` : ''}: ${plural(n, 'agent session')}, once the plan's decisions and the project's prerequisites let the work start`,
     },
   ]
   if (part.reviews > 0)
@@ -69,7 +69,7 @@ export function compareStatement(part: PlanCompare, agents: readonly string[], m
       ? `the checks on each submitted candidate attempt are not known: ${part.checksUnread} (a candidate that changes the manifest runs its own)`
       : `${checksEachWords(part.checksAtBase)} (${CHECKS_FROM[manifest]})`,
   })
-  out.push({ key: 'brakeman', words: part.brakemanTurn ? '1 Brakeman turn on your Brakeman account, when all candidates are done' : 'no Brakeman turn: this comparison asks no draft' })
+  out.push({ key: 'brakeman', words: part.brakemanTurn ? '1 Brakeman turn on your Brakeman account, when all candidates are done' : 'no Brakeman turn: this trial asks no summary' })
   out.push({ key: 'usage', words: 'Usage per account: shown below' })
   return out
 }
@@ -102,7 +102,7 @@ export function compareLaunch(revision: Pick<PlanSummary, 'n' | 'compare'>, body
   const part = revision.compare
   const block = body.crew.compare
   if (!part && !block) return { kind: 'ordinary' }
-  if (!part) return { kind: 'unstated', words: `Revision ${revision.n} is a comparison, and the server did not say what it starts: read the ticket again before launching it` }
+  if (!part) return { kind: 'unstated', words: `Revision ${revision.n} is a trial, and the server did not say what it starts: read the ticket again before launching it` }
   const agents = block ? candidateAgents(body, catalog) : null
   if (!block || !agents || agents.length !== part.candidates || !Number.isInteger(part.candidates) || part.candidates < 1)
     return { kind: 'unstated', words: `Revision ${revision.n}'s statement and its crew disagree on its candidates: read the ticket again before launching it` }

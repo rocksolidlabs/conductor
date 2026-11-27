@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentFlag } from '../composables/useSessions'
-import { argContext, argRows, argWords, flagLabel, holdsYolo, listShows, replaceWord, typedAt } from './argComplete'
+import { argContext, argRows, argWords, flagLabel, folderPrefix, folderRows, holdsYolo, listShows, replaceWord, typedAt } from './argComplete'
 
 // The flags of a made-up agent, as GET /api/catalog/{id}/flags answers them: the help's order.
 const flags: AgentFlag[] = [
@@ -143,5 +143,35 @@ describe('replaceWord', () => {
   it('replaces the span and adds one space', () => {
     expect(replaceWord('a b', 2, 3, 'c')).toEqual({ text: 'a c ', cursor: 4 })
     expect(replaceWord('a b d', 2, 3, 'c')).toEqual({ text: 'a c d', cursor: 4 })
+  })
+})
+
+describe('a folder flag\'s value', () => {
+  const at = (line: string) => argContext(line, line.length, flags)
+  it('lists what an absolute path holds, the folders beside the session\'s with nothing typed, and nothing for a relative path', () => {
+    expect(folderPrefix(at('--add-dir '), '/r/repo')).toBe('/r/')
+    expect(folderPrefix(at('--add-dir '), '/r/repo/')).toBe('/r/')
+    expect(folderPrefix(at('--add-dir '), '')).toBeNull()
+    expect(folderPrefix(at('--add-dir /r/sh'), '/r/repo')).toBe('/r/sh')
+    expect(folderPrefix(at('--add-dir="/r/two w'), '/r/repo')).toBeNull()
+    expect(folderPrefix(at('--add-dir "/r/two w'), '/r/repo')).toBe('/r/two w')
+    expect(folderPrefix(at('--add-dir ../shared'), '/r/repo')).toBeNull()
+    // A value of another kind lists no folders.
+    expect(folderPrefix(at('--effort '), '/r/repo')).toBeNull()
+    expect(folderPrefix(at('--add-dir=/r/'), '/r/repo')).toBe('/r/')
+  })
+
+  it('puts the path in place of the word, in quotes when it holds a space, with no space after it', () => {
+    const line = '--add-dir /r/s --verbose'
+    const ctx = argContext(line, 14, flags)
+    expect(folderRows(line, ctx, [{ path: '/r/shared', name: 'shared' }])).toEqual([{ key: '/r/shared', label: 'shared', text: '--add-dir /r/shared --verbose', cursor: 19 }])
+    const open = '--add-dir "/r/two'
+    expect(folderRows(open, argContext(open, open.length, flags), [{ path: '/r/two words', name: 'two words' }])[0]).toMatchObject({ text: '--add-dir "/r/two words"', cursor: 24 })
+    expect(folderRows(line, argContext(line, 3, flags), [{ path: '/x', name: 'x' }])).toEqual([])
+  })
+
+  it('reads a closed quote at the cursor without its closing quote', () => {
+    const line = '--add-dir "/r/two words"'
+    expect(argContext(line, line.length, flags)).toMatchObject({ kind: 'value', typed: '/r/two words' })
   })
 })

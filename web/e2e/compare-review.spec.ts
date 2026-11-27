@@ -99,7 +99,7 @@ test('Review the selected candidate opens RV1’s view on it; a Request changes 
         await expect(page.locator('[data-review-draft]'), at).toHaveAttribute('data-review-draft-notes', '0')
         await expect(page.locator('[data-review-hold]')).toContainText('approach-a was not selected', { timeout: VIEW_MS })
         // The candidate's name as it is written, never capitalised.
-        await expect(page.locator('[data-review-hold-words]')).toHaveText(`approach-a was not selected in ${sel.decision}: launch a new comparison to try it again.`)
+        await expect(page.locator('[data-review-hold-words]')).toHaveText(`approach-a was not selected in ${sel.decision}: run a new trial to try it again.`)
         await expect(page.getByRole('radio', { name: /^Request changes/ })).toBeDisabled()
         await expect(page.getByRole('radio', { name: /^Request changes/ })).not.toBeChecked()
         await expect(page.getByRole('radio', { name: /^Comment/ })).toBeChecked()
@@ -135,7 +135,7 @@ test('Review the selected candidate opens RV1’s view on it; a Request changes 
       via: 'web',
       findings: [{ kind: 'general', intent: 'change', severity: 'major', message: 'Handle the empty locale.' }],
     })
-    expect([past.status, past.body.error]).toEqual([409, { code: 'not_selected', message: `approach-a was not selected in ${sel.decision}: launch a new comparison to try it again` }])
+    expect([past.status, past.body.error]).toEqual([409, { code: 'not_selected', message: `approach-a was not selected in ${sel.decision}: run a new trial to try it again` }])
     expect((await s.api.ok<{ reviews: unknown[] }>('GET', `/api/dispatch/tickets/${c.ticket}/reviews`)).reviews).toEqual([])
     await page.evaluate((k) => localStorage.removeItem(k), `conductor.reviewDraft:${c.ticket}:${aRef}`)
 

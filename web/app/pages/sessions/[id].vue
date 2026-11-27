@@ -193,6 +193,26 @@ const memberRun = computed(() => {
   const r = stripRunOf(current.value)
   return r && r !== stripGone.value ? r : ''
 })
+// On a very wide header the strip sits in the name line's row, left of the name (UX3 R12b): a member's terminal keeps the room a
+// strip above would take. Judged by the header's own width, never the window's; narrower, the strip stays above.
+const STRIP_INLINE_MIN = 1500
+const head = useTemplateRef<HTMLElement>('head')
+const headWidth = ref(0)
+watch(
+  head,
+  (el, _prev, onCleanup) => {
+    if (!el) return
+    headWidth.value = el.getBoundingClientRect().width
+    const observer = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect
+      if (r) headWidth.value = r.width
+    })
+    observer.observe(el)
+    onCleanup(() => observer.disconnect())
+  },
+  { immediate: true },
+)
+const stripInline = computed(() => headWidth.value >= STRIP_INLINE_MIN)
 /** A hosted session whose machine is away: its files cannot be read until it returns (design 4f). */
 const hostAway = computed(() => (current.value?.kind === 'hosted' && current.value.status === 'host_disconnected' ? current.value.hostName || 'The host' : undefined))
 const copy = useCopy()
@@ -783,10 +803,12 @@ palette.registerPage(() => {
 <template>
   <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
     <template #header>
-      <MemberStrip v-if="memberRun && !gone" :run-id="memberRun" :session-id="id" @gone="stripGone = memberRun" />
+      <div ref="head" class="flex min-w-0 flex-none flex-col">
+      <MemberStrip v-if="memberRun && !gone && !stripInline" :run-id="memberRun" :session-id="id" @gone="stripGone = memberRun" />
       <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }" data-session-bar>
         <template #leading>
-          <!-- A member's way back is its strip's, above (UX3 R12). -->
+          <!-- A member's way back is its strip's: above (UX3 R12), or here on a very wide header (UX3 R12b). -->
+          <MemberStrip v-if="memberRun && !gone && stripInline" inline :run-id="memberRun" :session-id="id" @gone="stripGone = memberRun" />
           <IconButton v-if="!memberRun" icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
         </template>
         <template #title>
@@ -816,7 +838,6 @@ palette.registerPage(() => {
         </template>
         <template #right>
           <template v-if="!gone">
-            <ResumeButton v-if="ended && current" :session="current" />
             <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" compact class="hidden md:inline-flex" />
             <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
             <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. Below sm Files, Share and
@@ -836,6 +857,7 @@ palette.registerPage(() => {
           <div class="hidden sm:flex"><FullscreenButton /></div>
         </template>
       </UDashboardNavbar>
+      </div>
     </template>
 
     <template #body>
@@ -900,8 +922,13 @@ palette.registerPage(() => {
           </div>
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
+            <!-- An ended session says so at its foot, with its way on (UX3 R16): Resume, or Relaunch when there is nothing to resume. -->
+            <div v-if="ended && current" class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-default bg-elevated/50 px-3 py-2 text-sm text-default" role="status" data-session-ended>
+              <span class="min-w-0">This session ended.</span>
+              <ResumeButton :session="current" class="ml-auto flex-none" />
+            </div>
             <!-- A chat's permission question is answered in the chat, which shows it: no bar repeats it (only for a terminal's question). -->
-            <QuickReplyBar v-if="!askInChat && !(way === 'protocol' && answersInChat(attention))" :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <QuickReplyBar v-else-if="!askInChat && !(way === 'protocol' && answersInChat(attention))" :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <!-- The inspector (design 4h): its rail stays at xl, the panel beside it open or collapsed. -->
