@@ -2933,10 +2933,19 @@ false and no built-in names `codex-app-server` until the look below.
   ("This session's arguments hold …, which a chat cannot take; it stays in
   its terminal."), `--add-dir` in the added folder's words.
 - Approvals: a command's and a file change's, of the session's thread, are
-  the session's question, their input the step as `item/started` announced it
-  (`{command, cwd}`, the request's own command and folder where it names
-  them; a file change's `changes`, with its `grantRoot` beside them), the
-  request's `cwd` shown. Allow answers `accept`; a deny and every withdrawal
+  handed to the session with the item's id as the call, the tool name the
+  item was announced under (`commandExecution`, `fileChange`) and an input
+  built as the item's was (`{command, cwd}`, the request's own command and
+  folder where it names them; a file change's `changes`, with its
+  `grantRoot` beside them), the request's `cwd` shown. The session takes an
+  in-stream request only for a call the stream announced (design 7, rule 1,
+  shared with the prompt tool's requests: `bindLocked`), judged at once: a
+  call of the current turn, with that id, the same name and canonical
+  input's digest, no result yet; one request per call ("Already asked.").
+  So a command's approval that names a line or a folder other than its
+  item's, a file change's that asks for a root to write under, and one for
+  an item never announced are denied "Not a call this session is making.",
+  and Codex is told `decline`. Allow answers `accept`; a deny and every withdrawal
   the session makes answer `decline`, never `cancel`, which also interrupts
   the turn (design 7's "the protocol's own cancel" is row 10's "accept or
   decline only"). A file change never announced, another thread's request,
