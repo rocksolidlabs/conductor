@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, CREW_NAME_MAX, crewNameProblem, memberSaveProblem, moreOptionsLine, permissionItems, SETUP_WORDS, viewLinkHoursWords, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, messageToast, MESSAGE_ALL_TIP, recipientState, togglePick, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
+import { argsFrom, CREW_NAME_MAX, crewNameProblem, memberSaveProblem, moreOptionsLine, permissionItems, SETUP_WORDS, viewLinkHoursWords, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, messageCount, messageToast, MESSAGE_ALL_TIP, recipientState, sendOutcome, sentWords, togglePick, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
 import { changedFields, startSentence, startWords } from './crewWords'
 
@@ -655,6 +655,25 @@ describe('recipientState', () => {
   it('reads a session the run has not listed yet by its own status', () => {
     expect(recipientState(undefined, session('running'))).toBe('ready')
     expect(recipientState(undefined, session('starting'))).toBe('starting')
+  })
+})
+
+describe('sendOutcome', () => {
+  it('says the bar alone when everyone named got the line, and toasts when some or nobody did', () => {
+    expect(sendOutcome({ sent: ['lead', 'core'], skipped: [] }, ['lead', 'core'])).toBe('all')
+    expect(sendOutcome({ sent: ['lead'], skipped: [{ member: 'core', reason: 'needs_input' }] }, ['lead', 'core'])).toBe('some')
+    // A name the server left out of both lists is not a full send.
+    expect(sendOutcome({ sent: ['lead'], skipped: [] }, ['lead', 'core'])).toBe('some')
+    expect(sendOutcome({ sent: [], skipped: [{ member: 'core', reason: 'not_running' }] }, ['core'])).toBe('none')
+    expect(sentWords(['lead', 'core'])).toBe('Sent to lead and core.')
+    expect(sentWords(['a', 'b', 'c', 'd', 'e'])).toBe('Sent to 5 members.')
+  })
+
+  it('counts the bytes from 3,072, against the bound of 4,096', () => {
+    expect(messageCount(3071)).toBe('')
+    expect(messageCount(3072)).toBe('3,072 / 4,096')
+    expect(messageCount(3100)).toBe('3,100 / 4,096')
+    expect(messageCount(5000)).toBe('5,000 / 4,096')
   })
 })
 

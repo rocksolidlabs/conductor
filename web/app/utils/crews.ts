@@ -1403,6 +1403,29 @@ export function togglePick(members: readonly BroadcastMember[], pick: RecipientP
   return ready.every((n) => next.includes(n)) ? null : next
 }
 
+/** The line's bound on the server, in bytes, and the length from which the bar shows its count. */
+export const MESSAGE_MAX = 4096
+export const MESSAGE_COUNT_FROM = 3072
+
+/** The bar's count of a line's bytes, from MESSAGE_COUNT_FROM (`3,100 / 4,096`), else empty. */
+export function messageCount(bytes: number): string {
+  return bytes >= MESSAGE_COUNT_FROM ? `${bytes.toLocaleString('en-US')} / ${MESSAGE_MAX.toLocaleString('en-US')}` : ''
+}
+
+/**
+ * What became of a line from the bar: `all` when every member it named got it, `some` when only some did, `none` when nobody did. Only
+ * `all` is said in the bar alone (sentWords); the others are toasts (messageToast).
+ */
+export function sendOutcome(r: BroadcastResult, asked: readonly string[]): 'all' | 'some' | 'none' {
+  if (!r.sent.length) return 'none'
+  return !r.skipped.length && asked.every((n) => r.sent.includes(n)) ? 'all' : 'some'
+}
+
+/** The bar's words after a line every member it named got: `Sent to lead and core.` */
+export function sentWords(names: readonly string[]): string {
+  return `Sent to ${receiversWords(names)}.`
+}
+
 /**
  * The toast after a line from the bar: broadcastSummary's, but `Not sent` when nobody got the line (the line then stays in the field).
  */
