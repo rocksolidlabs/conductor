@@ -464,7 +464,7 @@ async function submit() {
               :hint="selected?.allowArgs ? 'appended to the command' : 'this agent takes no extra arguments now'"
               :help="selected?.allowArgs ? undefined : 'Recorded at its launch: the server refuses a clone with them; clear them to clone without'"
             >
-              <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" data-launch-args />
+              <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" :cwd="state.cwd" data-launch-args />
             </UFormField>
           </MoreOptions>
         </template>

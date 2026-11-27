@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { argRows, holdsYolo, listShows, typedAt, type ArgRow } from '~/utils/argComplete'
+import type { PathEntry } from '~/composables/useSessions'
+import { argContext, argRows, folderPrefix, folderRows, holdsYolo, listShows, typedAt, type ArgRow } from '~/utils/argComplete'
+import { DIR_DEBOUNCE_MS, matchingEntries } from '~/utils/dirInput'
 
 /**
  * An agent's arguments as one line, which offers the agent's own flags as the person types (GET /api/catalog/{id}/flags, read
@@ -16,6 +18,8 @@ const props = defineProps<{
   agent?: { id: string; name: string; version?: string } | null
   /** The form has a Model field for this agent: the model flag is left to it. */
   modelField?: boolean
+  /** The session's folder, '' for the server's default: a folder flag's value with nothing typed lists the folders beside it. */
+  cwd?: string
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
   /** More classes for the input itself (a table's smaller text and touch height). */
   baseClass?: string
@@ -38,7 +42,55 @@ const browse = ref(false)
 // The line a pick just left: the list's own close as it picks does not close it on that flag's values.
 let picked: string | undefined
 
-const rows = computed<ArgRow[]>(() => argRows(model.value, cursor.value, flags.value, { modelField: props.modelField }, browse.value))
+// A folder flag's value lists folders as the Folder field does (GET /api/paths, under the allowed folders), asked a pause after the
+// text changes, only the answer to the latest text counting. Until it comes, only the folders under what is typed stay.
+const api = useSessions()
+const ctx = computed(() => argContext(model.value, cursor.value, flags.value, browse.value))
+const home = ref('')
+const prefix = computed(() => folderPrefix(ctx.value, props.cwd?.trim() || home.value))
+const folders = ref<PathEntry[]>([])
+let folderSeq = 0
+let folderTimer: ReturnType<typeof setTimeout> | undefined
+const folderEmpty = computed(() => ctx.value.kind === 'value' && ctx.value.flag.kind === 'folder' && ctx.value.typed === '')
+watch(
+  [prefix, folderEmpty],
+  ([q, empty]) => {
+    clearTimeout(folderTimer)
+    const n = ++folderSeq
+    if (q === null) {
+      folders.value = []
+      // Nothing typed and no folder of the session's: the server's default folder is read first, from its listing.
+      if (empty && !props.cwd?.trim() && !home.value) {
+        api
+          .listPaths('', 1)
+          .then((r) => {
+            if (n === folderSeq) home.value = r.dir
+          })
+          .catch(() => {})
+      }
+      return
+    }
+    folders.value = matchingEntries(folders.value, q)
+    folderTimer = setTimeout(() => {
+      api.listPaths(q, 50).then(
+        (r) => {
+          if (n === folderSeq) folders.value = r.entries
+        },
+        () => {
+          if (n === folderSeq) folders.value = []
+        },
+      )
+    }, DIR_DEBOUNCE_MS)
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => clearTimeout(folderTimer))
+
+const rows = computed<ArgRow[]>(() =>
+  ctx.value.kind === 'value' && ctx.value.flag.kind === 'folder'
+    ? folderRows(model.value, ctx.value, folders.value)
+    : argRows(model.value, cursor.value, flags.value, { modelField: props.modelField }, browse.value),
+)
 const typed = computed(() => typedAt(model.value, cursor.value, flags.value, browse.value))
 const waiting = computed(() => reading.value && typed.value.startsWith('-'))
 const open = computed(() => focused.value && engaged.value && !dismissed.value && (listShows(rows.value, typed.value) || waiting.value))
