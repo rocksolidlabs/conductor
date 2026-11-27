@@ -402,6 +402,9 @@ test("More's Stop session… asks first: Cancel keeps the session, Stop ends it;
   await expect(ask).toContainText('Its terminal closes. Resume brings the conversation back from Exited.')
   await ask.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(ask).toHaveCount(0)
+  // The palette stays on its row, as after X: Escape goes to its search, and Escape there closes it.
+  await page.keyboard.press('Escape')
+  await expect(palette.locator('input[data-palette-input]')).toBeFocused()
   await page.keyboard.press('Escape')
   await expect(palette).toBeHidden()
   expect((await api.session(s.id)).status).toBe('running')
