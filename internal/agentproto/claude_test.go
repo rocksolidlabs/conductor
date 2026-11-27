@@ -289,7 +289,7 @@ func TestClaudeReplayNamesTheRef(t *testing.T) {
 // edit with its counts, background work, a result with usage.
 func TestClaudeFixturesReplay(t *testing.T) {
 	names, _ := filepath.Glob(fixture("*.jsonl"))
-	if len(names) != 6 {
+	if len(names) != 7 {
 		t.Fatalf("%d fixtures", len(names))
 	}
 	got := map[string]*recorder{}
@@ -966,6 +966,161 @@ func TestClaudeArgsRefuseShortFlags(t *testing.T) {
 	} {
 		if err := launch(good...); err != nil {
 			t.Errorf("%q refused: %v", good, err)
+		}
+	}
+}
+
+// I19, row 12: a message the session marked Expand (the operator's own
+// typed line) goes without client_composed, its text unchanged; every
+// other message, before and after it, still carries the mark.
+func TestClaudeExpandLeavesTheMarkOff(t *testing.T) {
+	in := &discard{}
+	c := NewClaude(in, strings.NewReader(""), ClaudeOptions{})
+	msgs := []session.Message{
+		{Ref: "r0", Text: "/compact"},
+		{Ref: "r1", Text: "What is in @notes.txt?", Expand: true},
+		{Ref: "r2", Text: "@/home/someone/.conductor/x"},
+	}
+	for _, m := range msgs {
+		if err := c.Send(context.Background(), m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines := written(t, in)
+	if len(lines) != len(msgs) {
+		t.Fatalf("%d lines for %d messages", len(lines), len(msgs))
+	}
+	for i, l := range lines {
+		cc, has := l["client_composed"]
+		if msgs[i].Expand {
+			if has {
+				t.Fatalf("the expanded message kept the mark: %v", l)
+			}
+		} else if !has || cc != true {
+			t.Fatalf("message %d lost the mark: %v", i, l)
+		}
+		body, _ := l["message"].(map[string]any)
+		if l["type"] != "user" || body["content"] != msgs[i].Text || !uuidShape.MatchString(l["uuid"].(string)) {
+			t.Fatalf("message %d: %v", i, l)
+		}
+		if _, ok := l["parent_tool_use_id"]; !ok {
+			t.Fatalf("message %d without parent_tool_use_id: %v", i, l)
+		}
+	}
+}
+
+// A result that names a message written and not replayed accepts it (a
+// command the agent's program answers itself, with no replay); a result
+// naming a message the driver did not write, or none, accepts nothing, and
+// never the oldest written in its place.
+func TestClaudeAcceptsByTheResult(t *testing.T) {
+	pr, pw := io.Pipe()
+	c := NewClaude(&discard{}, pr, ClaudeOptions{})
+	c.sends = []pendingSend{{uuid: "u-1", ref: "m1"}, {uuid: "u-2", ref: "m2"}}
+	rec := &recorder{}
+	done := make(chan error, 1)
+	go func() { done <- c.Read(context.Background(), rec) }()
+	for _, l := range []string{
+		`{"type":"result","subtype":"success","num_turns":0,"user_message_uuid":"u-9","user_message_uuids":["u-8"]}`,
+		`{"type":"result","subtype":"success","num_turns":0,"user_message_uuid":""}`,
+		`{"type":"result","subtype":"success","num_turns":0,"user_message_uuid":7}`,
+		`{"type":"result","subtype":"success","num_turns":0,"user_message_uuids":["u-2"]}`,
+	} {
+		if _, err := pw.Write([]byte(l + "\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pw.Close()
+	if err := <-done; !errors.Is(err, io.EOF) {
+		t.Fatalf("Read ended %v", err)
+	}
+	acc := rec.kinds("accepted")
+	if len(acc) != 1 || acc[0].ref != "m2" {
+		t.Fatalf("accepted %+v", acc)
+	}
+	if ends := rec.kinds("turn_ended"); len(ends) != 4 {
+		t.Fatalf("%d turns ended", len(ends))
+	}
+	if r := rec.render(); !strings.Contains(r, "accepted m2\nturn_started\nturn_ended") {
+		t.Fatalf("the order:\n%s", r)
+	}
+	c.mu.Lock()
+	left := slices.Clone(c.sends)
+	c.mu.Unlock()
+	if len(left) != 1 || left[0].ref != "m1" {
+		t.Fatalf("still waiting: %+v", left)
+	}
+}
+
+// A replay line that is only a command's own output, under an id the
+// driver did not write (how /compact says "Compacted"), is the agent's
+// words; any other replay naming no message written is nothing, and one
+// naming a message written is its acknowledgement alone.
+func TestClaudeLocalCommandIsTheAgentsWords(t *testing.T) {
+	pr, pw := io.Pipe()
+	c := NewClaude(&discard{}, pr, ClaudeOptions{})
+	c.sends = []pendingSend{{uuid: "u-1", ref: "m1"}}
+	rec := &recorder{}
+	done := make(chan error, 1)
+	go func() { done <- c.Read(context.Background(), rec) }()
+	line := func(uuid, content string, replay bool) string {
+		b, _ := json.Marshal(map[string]any{"type": "user", "uuid": uuid, "isReplay": replay, "message": map[string]any{"role": "user", "content": content}})
+		return string(b)
+	}
+	for _, l := range []string{
+		line("a-1", "<local-command-stdout>Compacted </local-command-stdout>", true),
+		line("a-2", "<local-command-stdout></local-command-stdout>", true),
+		line("a-3", "<local-command-stdout>one</local-command-stdout><local-command-stdout>two</local-command-stdout>", true),
+		line("a-4", "Compacted", true),
+		line("a-5", "<local-command-stdout>not a replay</local-command-stdout>", false),
+		line(strings.Repeat("x", 65), "<local-command-stdout>a long id</local-command-stdout>", true),
+		line("u-1", "<local-command-stdout>mine</local-command-stdout>", true),
+		line("", "<local-command-stdout>no id</local-command-stdout>", true),
+	} {
+		if _, err := pw.Write([]byte(l + "\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pw.Close()
+	if err := <-done; !errors.Is(err, io.EOF) {
+		t.Fatalf("Read ended %v", err)
+	}
+	texts := rec.kinds("text")
+	if len(texts) != 1 || texts[0].ref != "local:a-1" || texts[0].text != "Compacted" || !texts[0].fin {
+		t.Fatalf("texts %+v", texts)
+	}
+	if acc := rec.kinds("accepted"); len(acc) != 1 || acc[0].ref != "m1" {
+		t.Fatalf("accepted %+v", acc)
+	}
+}
+
+// The hand-built fixture of row 12, from a recorded run's shapes: an
+// unmarked @file answered by the model, /compact answered by the program
+// itself, and a command the session cannot run, answered with no replay:
+// each message accepted, none left to go unconfirmed.
+func TestClaudeExpandFixtureReplays(t *testing.T) {
+	rec, c, err := replay(t, bytes.NewReader(readFixture(t, "hand-built-expand.jsonl")))
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("Read ended %v", err)
+	}
+	var acc []string
+	for _, e := range rec.kinds("accepted") {
+		acc = append(acc, e.ref)
+	}
+	if !slices.Equal(acc, []string{"m301", "m302", "m303"}) {
+		t.Fatalf("accepted %q", acc)
+	}
+	r := rec.render()
+	for _, want := range []string{`"Compacted"`, `"/paint isn't available in this environment."`, `"one"`} {
+		if !strings.Contains(r, want) {
+			t.Errorf("no %s in\n%s", want, r)
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.sends {
+		if strings.HasPrefix(s.ref, "m30") {
+			t.Fatalf("%s still waits for its acknowledgement", s.ref)
 		}
 	}
 }

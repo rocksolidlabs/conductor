@@ -179,7 +179,7 @@ func (d *discard) String() string {
 // gave them, under refs the tests name m<N>.
 var fixtureSends = func() []pendingSend {
 	var out []pendingSend
-	for _, n := range []int{1, 2, 3, 7, 4, 5, 6, 101, 201} {
+	for _, n := range []int{1, 2, 3, 7, 4, 5, 6, 101, 201, 301, 302, 303} {
 		out = append(out, pendingSend{uuid: fmt.Sprintf("c0ffee00-0000-4000-8000-%012d", n), ref: "m" + strconv.Itoa(n)})
 	}
 	return out

@@ -199,3 +199,89 @@ func TestStubCodexSpeaksTheDriver(t *testing.T) {
 		}
 	}
 }
+
+// Row 12: the stub takes a message without client_composed as the real
+// agent does (the shapes of hand-built-expand.jsonl), and a marked one as
+// it always did; each message's mark is kept beside its conversation, so
+// that a spec reads how each line went. Every message is accepted, none
+// left to go unconfirmed.
+func TestStubProtocolExpands(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("no node to run the stub agent: ", err)
+	}
+	stub, err := filepath.Abs(filepath.Join("..", "..", "web", "e2e", "stub-protocol.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, dir := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".stub-sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conv := "11111111-2222-4333-8444-555555555555"
+	cmd := exec.Command("node", stub, "-p", "--input-format", "stream-json", "--resume", conv)
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	cmd.Dir = dir
+	stdin, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Wait() })
+	c := NewClaude(stdin, stdout, ClaudeOptions{})
+	rec := &recorder{}
+	ended := make(chan event, 8)
+	rec.after = func(e event) {
+		if e.kind == "turn_ended" {
+			ended <- e
+		}
+	}
+	read := make(chan error, 1)
+	go func() { read <- c.Read(context.Background(), rec) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.Begin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	msgs := []session.Message{
+		{Ref: "r1", Text: "/compact"},
+		{Ref: "r2", Text: "/compact", Expand: true},
+		{Ref: "r3", Text: "/paint", Expand: true},
+		{Ref: "r4", Text: "/fix-issue 12", Expand: true},
+		{Ref: "r5", Text: "What is in @notes.txt and @../outside.txt?", Expand: true},
+		{Ref: "r6", Text: "What is in @notes.txt?"},
+	}
+	for _, m := range msgs {
+		if err := c.Send(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ended:
+		case <-ctx.Done():
+			t.Fatalf("%s: no turn's end", m.Ref)
+		}
+	}
+	var acc []string
+	for _, e := range rec.kinds("accepted") {
+		acc = append(acc, e.ref)
+	}
+	if strings.Join(acc, " ") != "r1 r2 r3 r4 r5 r6" {
+		t.Fatalf("accepted %q\n%s", acc, rec.render())
+	}
+	r := rec.render()
+	for _, want := range []string{`"stub chat: /compact"`, `"Compacted"`, `"/paint isn't available in this environment."`, `"stub ran: /fix-issue 12"`, `"stub attached: notes.txt"`, `"stub chat: What is in @notes.txt?"`} {
+		if !strings.Contains(r, want) {
+			t.Fatalf("no %s in\n%s", want, r)
+		}
+	}
+	marks, err := os.ReadFile(filepath.Join(home, ".stub-sessions", conv+".marks"))
+	if err != nil || string(marks) != "marked\nunmarked\nunmarked\nunmarked\nunmarked\nmarked\n" {
+		t.Fatalf("the marks: %q %v", marks, err)
+	}
+	_ = c.CloseInput()
+	if err := <-read; !errors.Is(err, io.EOF) {
+		t.Fatalf("Read: %v", err)
+	}
+}
