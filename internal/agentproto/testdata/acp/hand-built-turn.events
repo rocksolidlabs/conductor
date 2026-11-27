@@ -1,0 +1,15 @@
+accepted m1
+turn_started
+tool_started call_1 parent="" execute summary="wc -l notes.txt" input={"command":"wc -l notes.txt"}
+tool_ended call_1 ok exit=none cut=false output="2 notes.txt"
+tool_started call_2 parent="" edit summary="Edit notes.txt" input={"path":"/work/notes.txt"}
+tool_ended call_2 ok exit=none cut=false output=""
+file_changed tool=call_2 /work/notes.txt edit +1 -1 diff="-two\n+2\n"
+tool_started call_3 parent="" edit summary="Write new.txt" input={"path":"/work/new.txt"}
+tool_ended call_3 ok exit=none cut=false output=""
+file_changed tool=call_3 /work/new.txt create +2 -0 diff="+hello\n+world\n"
+tool_started call_4 parent="" execute summary="false" input={"command":"false"}
+tool_ended call_4 error exit=none cut=false output="exit 1"
+text msg_1 3 call(s) final=true "notes.txt has 2 lines."
+turn_ended done in=0 out=0 cost=0.00000000
+--- written
