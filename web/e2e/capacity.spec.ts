@@ -180,10 +180,10 @@ test('an account added in Settings and made the default launches a session that 
   // Nothing the tool printed for people, and nothing of its login, reaches the page.
   await expect(panel).not.toContainText('E2E-PEOPLE-TEXT')
   await expect(panel).not.toContainText('e2e-person@example.invalid')
-  await expect(dialog.getByRole('button', { name: 'Launch' })).toBeEnabled()
+  await expect(dialog.getByRole('button', { name: 'Launch', exact: true })).toBeEnabled()
 
   const created = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
-  await dialog.getByRole('button', { name: 'Launch' }).click()
+  await dialog.getByRole('button', { name: 'Launch', exact: true }).click()
   const answer = await created
   const first = answer.ok() ? ((await answer.json()) as Session) : null
   if (first) made.sessions.push(first.id)
@@ -266,7 +266,7 @@ test('each state the stub answers shows its words, and an agent no reader knows 
     if (c.fresh) await expect(panel.locator('[data-capacity-fresh]'), c.what).toHaveText(c.fresh)
     // A window the provider did not report is never drawn, as empty or at all.
     await expect(panel.locator('[data-capacity-window]'), c.what).toHaveCount(0)
-    await expect(dialog.getByRole('button', { name: 'Launch' })).toBeEnabled()
+    await expect(dialog.getByRole('button', { name: 'Launch', exact: true })).toBeEnabled()
   }
   // A Claude Code version the reader was not checked on offers the admin's check, in those words.
   await expect(panel.locator('[data-capacity-check]')).toHaveText('Check this version')
@@ -310,7 +310,7 @@ test('each state the stub answers shows its words, and an agent no reader knows 
   // Nothing to read: no usage beside an account, and no account to choose.
   await expect(plain.locator('[data-launch-usage]')).toHaveCount(0)
   await expect(plain.locator('[data-launch-account]')).toHaveCount(0)
-  await expect(plain.getByRole('button', { name: 'Launch' })).toBeEnabled()
+  await expect(plain.getByRole('button', { name: 'Launch', exact: true })).toBeEnabled()
 })
 
 test('a version not yet checked: the dialog opened on it offers the check at once, and the reading shows once it is pressed', async ({ page, api, state }) => {
@@ -390,7 +390,7 @@ const isLaunch = (r: Response) => r.request().method() === 'POST' && new URL(r.u
 /** Launches what the dialog holds and answers the reply, the session it made ended after the test. */
 async function launch(page: Page, dialog: Locator): Promise<{ status: number; sent: Record<string, unknown>; session: Session | null }> {
   const answered = page.waitForResponse(isLaunch)
-  await dialog.getByRole('button', { name: 'Launch' }).click()
+  await dialog.getByRole('button', { name: 'Launch', exact: true }).click()
   const answer = await answered
   const session = answer.status() === 201 ? ((await answer.json()) as Session) : null
   if (session) made.sessions.push(session.id)
