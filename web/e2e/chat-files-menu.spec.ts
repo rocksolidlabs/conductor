@@ -100,6 +100,8 @@ test('the list stays open through a turn that ends while it shows; a control lin
     await box(page).click()
     await page.keyboard.type('@no')
     await expect(row(page, 'notes.txt')).toBeVisible({ timeout: LONG_MS })
+    // The link's box's own judgement of its line and cursor: no list for it.
+    await expect(box(c.g)).toHaveAttribute('data-chat-list-for', '3:3:none')
     await expect(c.g.locator('[data-chat-menu]')).toHaveCount(0)
   } finally {
     await page.context().close()

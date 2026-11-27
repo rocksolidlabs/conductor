@@ -243,6 +243,8 @@ test("a line the page put in the box opens no list, and goes as written", async 
     await box(page).click()
     await box(page).press('End')
     await expect(box(page)).toHaveValue('@no')
+    // The box's own judgement of this line and this cursor (three characters, the cursor after them): no list for it.
+    await expect(box(page)).toHaveAttribute('data-chat-list-for', '3:3:none')
     await expect(page.locator('[data-chat-view] [data-chat-menu]')).toHaveCount(0)
     const n = marks(conv)
     await box(page).press('Enter')

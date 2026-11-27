@@ -404,6 +404,7 @@ function keepTyping(e: Event) {
         :aria-controls="menuOpen && menuRows.length ? menuId : undefined"
         :aria-activedescendant="activeId"
         :aria-autocomplete="files || commands ? 'list' : undefined"
+        :data-chat-list-for="`${draft.length}:${caret}:${mention || command ? 'open' : 'none'}`"
         data-chat-input
         @keydown="onKeydown"
         @input="onInput"
