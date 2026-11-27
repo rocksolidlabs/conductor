@@ -3273,7 +3273,10 @@ this plan wait on them and are added only once observed:
   `/model`, `/context`, `/usage`, `/mcp` and a settings command (the
   child still loads Conductor's tool server alone and keeps its
   permission mode, else those names are sent with the mark and this row
-  says so); a path with a space; a message of several lines that begins
+  says so); the agent's interactive commands (`/permissions`, `/add-dir`,
+  `/config`, `/login`): what each does when it arrives unmarked in this
+  mode; a leading `!` and a leading `#` on an unmarked line; a path with
+  a space; a message of several lines that begins
   with `/name`; the `result` naming its message and the local-command
   lines at the recorded version; whether leaving `client_composed` out
   is the same as `false`, and whether `ClaudeMinVersion` behaves as the
