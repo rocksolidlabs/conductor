@@ -11,10 +11,12 @@ import {
   trialFolderLine,
   inMore,
   optionsLine,
+  rowKey,
   type DraftComparison,
   type TrialField,
 } from '~/utils/compareTemplate'
 import { ApiError } from '~/composables/useApi'
+import { checkFor, readTrialMemory, rememberTrial, rememberedAgents, type TrialMemory } from '~/utils/trialMemory'
 import { effectiveYolo } from '~/utils/yolo'
 
 /**
@@ -71,6 +73,40 @@ async function focusWhenDrawn(selector: string) {
   }
 }
 
+/** The viewer's store, where the last trial's agents, folder and checks are kept (utils/trialMemory.ts); null where there is none. */
+function viewerStore(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+/** What was kept of the last trial, read as a new draft starts. */
+let memory: TrialMemory | null = null
+/** Whether the person typed in Check in this draft: until then it follows the folder, as it was last used there. */
+let checkTyped = false
+/** A new draft, from what was kept of the last trial: its agents still installed, its folder and that folder's check. */
+function fromMemory(): DraftComparison {
+  const d = draftOnOpen(null, props.agents)
+  memory = readTrialMemory(viewerStore())
+  checkTyped = false
+  const agents = rememberedAgents(memory, props.agents)
+  if (agents) d.agents = agents.map((agentId, i) => ({ ...(d.agents[i] ?? { key: rowKey(), args: '', approach: '' }), agentId, args: '', approach: '' }))
+  if (memory?.folder) d.folder = memory.folder
+  d.check = checkFor(memory, d.folder)
+  return d
+}
+watch(
+  () => draft.value.folder,
+  (folder) => {
+    if (!checkTyped && memory) patch({ check: checkFor(memory, folder) })
+  },
+)
+function typeCheck(text: string) {
+  checkTyped = true
+  patch({ check: text })
+}
+
 /** Whether `draft` is one being made, kept across a close; false once Cancel or a save ended it. */
 let kept = false
 watch(open, (o) => {
@@ -79,7 +115,7 @@ watch(open, (o) => {
     pressed.value = false
     moreOpen.value = false
   }
-  draft.value = draftOnOpen(kept ? draft.value : null, props.agents)
+  draft.value = kept ? draftOnOpen(draft.value, props.agents) : fromMemory()
   kept = true
   error.value = ''
   void pinTop()
@@ -167,9 +203,11 @@ async function press() {
   creating.value = true
   error.value = ''
   try {
-    const crew = await api.createCompareCrew(compareSpec(draft.value, yoloShown.value))
+    const spec = compareSpec(draft.value, yoloShown.value)
+    const crew = await api.createCompareCrew(spec)
     kept = false
     open.value = false
+    rememberTrial(viewerStore(), { agents: spec.candidates.map((c) => c.agentId), folder: spec.cwd, check: draft.value.check })
     emit('created', crew)
   } catch (e) {
     error.value = notSavedWords((e as Error).message)
@@ -218,7 +256,7 @@ function onKey(e: KeyboardEvent) {
 
           <div class="grid gap-4 sm:grid-cols-2">
             <UFormField label="Check" name="check" :error="marked('check')" :help="note || undefined">
-              <UInput :model-value="draft.check" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" data-compare-check @update:model-value="patch({ check: String($event ?? '') })" />
+              <UInput :model-value="draft.check" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" data-compare-check @update:model-value="typeCheck(String($event ?? ''))" />
             </UFormField>
             <UFormField label="Folder" name="folder" :error="folderLine || marked('folder')">
               <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" data-compare-cwd @update:model-value="patch({ folder: $event })" />

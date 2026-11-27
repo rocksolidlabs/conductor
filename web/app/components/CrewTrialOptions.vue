@@ -48,7 +48,7 @@ function setReviews(on: boolean) {
           <UInput :model-value="a.approach" :maxlength="COMPARE_LIMITS.approach" placeholder="Optional: a way to try it" :aria-label="`Approach of agent ${agentLetter(i)}`" class="w-full" :data-compare-agent-approach="i" @update:model-value="setAgent(i, { approach: String($event ?? '') })" />
         </UFormField>
         <UFormField :error="marked(`args-${i}`)">
-          <UInput v-if="takesArgs(a.agentId)" :model-value="a.args" placeholder="Flags, as typed in a terminal" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono placeholder:font-sans' }" :aria-label="`Arguments of agent ${agentLetter(i)}`" class="w-full" :data-compare-agent-args="i" @update:model-value="setAgent(i, { args: String($event ?? '') })" />
+          <UInput v-if="takesArgs(a.agentId)" :model-value="a.args" placeholder="Flags, as in a terminal" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono placeholder:font-sans' }" :aria-label="`Arguments of agent ${agentLetter(i)}`" class="w-full" :data-compare-agent-args="i" @update:model-value="setAgent(i, { args: String($event ?? '') })" />
           <span v-else class="flex min-h-8 items-center text-xs text-muted" :data-compare-agent-no-args="i">Takes no arguments.</span>
         </UFormField>
       </div>

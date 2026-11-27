@@ -217,7 +217,7 @@ test('More options opens downward in five groups, the button staying where it wa
       const fit = await placeholderFits(input)
       expect(fit.text, `${sel}'s placeholder is ${fit.text} px in ${fit.room} px (${at})`).toBeLessThanOrEqual(fit.room)
     }
-    await expect(more.locator('[data-compare-agent-args="0"]')).toHaveAttribute('placeholder', 'Flags, as typed in a terminal')
+    await expect(more.locator('[data-compare-agent-args="0"]')).toHaveAttribute('placeholder', 'Flags, as in a terminal')
     await expect(more.locator('[data-compare-agent-approach="0"]')).toHaveAttribute('placeholder', 'Optional: a way to try it')
     await expect(more.locator('[data-compare-criterion="0"]')).toHaveValue('Does what the task asks')
     await expect(more.locator('[data-compare-instructions]')).toHaveAttribute('placeholder', 'Extra instructions, the same for each')
@@ -331,4 +331,44 @@ test('a press holds the form while its save is out, sends once, and a save the s
   await expect(save).not.toHaveAttribute('aria-busy', 'true')
   expect(seen).toHaveLength(1)
   await dialog.locator('[data-compare-cancel]').click()
+})
+
+test("New agent trial comes back as the last saved trial left it: its agents, folder and that folder's check, never its arguments, across a reload too", async ({ page, state }) => {
+  test.setTimeout(120_000)
+  await page.setViewportSize(DESK)
+  await page.goto('/crews')
+  let { dialog, form } = await openForm(page)
+  // Agent B moved to another agent than the form picked, so what comes back is the person's, not the form's own start.
+  await form.locator('[data-trial-agent="1"]').click()
+  const items = page.getByRole('menuitemcheckbox')
+  await expect(items.nth(2)).toBeVisible()
+  await items.nth(2).click()
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  const agents = await form.locator('[data-trial-agent]').evaluateAll((els) => els.map((e) => e.getAttribute('data-agent-id')))
+  await form.locator('[data-compare-goal]').fill('Remembered trial')
+  await form.locator('[data-compare-check]').fill('true')
+  const folder = form.locator('[data-compare-cwd]').getByRole('combobox')
+  await folder.fill(state.repo)
+  await folder.press('Tab')
+  const more = await openMore(form)
+  await more.locator('[data-compare-agent-args="0"]').fill('--model e2e')
+  await dialog.locator('[data-compare-create]').click()
+  await expect(dialog).toHaveCount(0, { timeout: 30_000 })
+  await expect(page).toHaveURL(/\/crews\/(?!new)[^/?]+/, { timeout: 30_000 })
+  made.push(decodeURIComponent(new URL(page.url()).pathname.split('/')[2]!))
+
+  // The page wrote what it keeps before anything reloads it.
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('conductor-trial'))).toContain(state.repo)
+  for (const step of ['again', 'after a reload'] as const) {
+    if (step === 'after a reload') await page.reload()
+    await page.goto('/crews')
+    ;({ dialog, form } = await openForm(page))
+    expect(await form.locator('[data-trial-agent]').evaluateAll((els) => els.map((e) => e.getAttribute('data-agent-id'))), step).toEqual(agents)
+    await expect(form.locator('[data-compare-cwd]').getByRole('combobox'), step).toHaveValue(state.repo)
+    await expect(form.locator('[data-compare-check]'), step).toHaveValue('true')
+    await expect(form.locator('[data-compare-goal]'), step).toHaveValue('')
+    await expect(form.locator('[data-trial-agent-args]'), step).toHaveCount(0)
+    await dialog.locator('[data-compare-cancel]').click()
+    await expect(dialog).toHaveCount(0)
+  }
 })
