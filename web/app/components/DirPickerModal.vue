@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { PathEntry } from '~/composables/useSessions'
 import { crumbs, parentDir, underRoots } from '~/utils/dirPicker'
-import { DIR_DEBOUNCE_MS, dirQuery, gitMark, moreNote } from '~/utils/dirInput'
+import { DIR_DEBOUNCE_MS, dirQuery, gitMark, listingProblem, moreNote } from '~/utils/dirInput'
+import { ApiError } from '~/composables/useApi'
 
 /**
  * A folder picker that browses the server's own folders (GET /api/paths):
@@ -54,7 +55,7 @@ async function list(path: string) {
     problem.value = ''
     typed.value = r.dir
   } catch (e) {
-    if (n === seq) problem.value = (e as Error).message
+    if (n === seq) problem.value = listingProblem(e instanceof ApiError ? e.code : '', (e as Error).message)
   } finally {
     if (n === seq) loading.value = false
   }

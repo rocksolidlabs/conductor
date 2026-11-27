@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, gitCheckLine, gitMark, homeExpanded, matchingEntries, moreNote, movesHighlight } from './dirInput'
+import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, gitCheckLine, gitMark, homeExpanded, listingProblem, matchingEntries, moreNote, movesHighlight } from './dirInput'
 
 describe('dirInput', () => {
   it('a chosen folder leaves the field focused, the caret at the end and the field scrolled to its end (#167)', () => {
@@ -133,3 +133,19 @@ describe('a leading ~/ typed', () => {
     expect(homeExpanded('/srv/~/x', '/home/ada')).toBe('/srv/~/x')
   })
 })
+
+describe("the picker's words for a listing refused", () => {
+  it('says the folders agents may use in plain words, never the route\'s own', () => {
+    expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots: /home/ada/code')).toBe('Agents can use only the folders inside /home/ada/code. Pick one there.')
+    expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots: /a, /b')).toBe('Agents can use only the folders inside /a, /b. Pick one there.')
+    expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots')).toBe("Agents can't use a folder here. Pick another.")
+    expect(listingProblem('network', 'Cannot reach the server')).toBe('Conductor did not answer. Type on to try again.')
+    expect(listingProblem('http_error', 'Internal Server Error: /x')).toBe("This place can't be listed. Pick another.")
+  })
+  it('names at most three folders agents may use, and counts the rest', () => {
+    const roots = ['/a', '/b', '/c', '/d', '/e'].join(', ')
+    expect(listingProblem('invalid_cwd', `no directory in the prefix is under the allowed roots: ${roots}`)).toBe('Agents can use only the folders inside /a, /b, /c and 2 more. Pick one there.')
+    expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots: /a, /b, /c')).toBe('Agents can use only the folders inside /a, /b, /c. Pick one there.')
+  })
+})
+
