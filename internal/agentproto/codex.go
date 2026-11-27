@@ -378,10 +378,15 @@ func (c *Codex) Send(_ context.Context, m session.Message) error {
 		return errors.New("agentproto: no thread is resumed")
 	}
 	params := map[string]any{"threadId": thread, "input": []map[string]any{{"type": "text", "text": m.Text}}}
+	// A turn is under way from before the write: its answer, and its end,
+	// may come before the write returns.
+	c.mu.Lock()
+	c.turning = true
+	c.mu.Unlock()
 	_, _, err := c.request("turn/start", params, m.Ref)
-	if err == nil {
+	if err != nil {
 		c.mu.Lock()
-		c.turning = true
+		c.turning = c.turn != ""
 		c.mu.Unlock()
 	}
 	return err

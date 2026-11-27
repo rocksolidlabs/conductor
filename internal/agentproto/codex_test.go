@@ -228,6 +228,9 @@ type codexServer struct {
 	resume   string
 	noAnswer bool
 	turns    int
+	// wmu holds a write against the cleanup, closed says the test ended.
+	wmu    sync.Mutex
+	closed bool
 }
 
 // newCodexServer is a driver on a fake app server, its Read running into
@@ -247,13 +250,25 @@ func newCodexServer(t *testing.T, rec *recorder, opts CodexOptions) (*Codex, *co
 	go func() { read <- c.Read(context.Background(), rec) }()
 	t.Cleanup(func() {
 		_ = c.CloseInput()
+		s.wmu.Lock()
+		s.closed = true
 		_ = outW.Close()
+		s.wmu.Unlock()
 		<-read
 	})
 	return c, s, read
 }
 
+// write writes v as one line, unless the test has ended: its writes are
+// held against the cleanup's close by wmu, so that an answer the fake was
+// still giving as the test ended is dropped, never written to a closed
+// pipe.
 func (s *codexServer) write(v string) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	if s.closed {
+		return
+	}
 	if _, err := io.WriteString(s.out, v+"\n"); err != nil {
 		s.t.Errorf("the fake server's write: %v", err)
 	}
@@ -368,7 +383,10 @@ func TestCodexStableSurfaceOnly(t *testing.T) {
 	c, s, _ := newCodexServer(t, rec, CodexOptions{Resume: CodexResume{Thread: fixtureThread, Model: "gpt-test", ApprovalPolicy: "never", Sandbox: "danger-full-access", Cwd: "/work"}})
 	rec.after = func(e event) {
 		if e.kind == "permission" {
-			_ = c.Reply(context.Background(), e.ref, session.Verdict{Allow: e.perm.Call == "call-1"})
+			// On a goroutine of its own, as the session replies: a reply
+			// written from Read's own goroutine waits for the fake to read
+			// it while the fake waits for Read to take what it writes.
+			go func() { _ = c.Reply(context.Background(), e.ref, session.Verdict{Allow: e.perm.Call == "call-1"}) }()
 		}
 	}
 	ctx := context.Background()
