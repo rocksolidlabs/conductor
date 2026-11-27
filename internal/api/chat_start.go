@@ -87,6 +87,25 @@ func (s *Server) keepChatLaunch(id string, l chatLaunch) {
 	if l.agent.Protocol.Off() || agentproto.Check(l.agent.Protocol) != nil {
 		return
 	}
+	if l.yolo && l.agent.Yolo != nil && len(l.agent.Yolo.Env) > 0 {
+		// A chat's child takes none of a yolo launch's variables: they
+		// stay with the terminal.
+		l.env = slices.DeleteFunc(l.env, func(kv string) bool {
+			k, _, _ := strings.Cut(kv, "=")
+			_, yolo := l.agent.Yolo.Env[k]
+			return yolo
+		})
+	}
+	if name := l.agent.Protocol.Name; name != agentproto.ClaudeStreamJSON {
+		// Only Claude Code's program calls Conductor's permission tool:
+		// another protocol's child is marked by its protocol's name, which
+		// silences the terminal way's hooks and lists no permission tool.
+		for i, kv := range l.env {
+			if kv == "CONDUCTOR_PROTOCOL=1" {
+				l.env[i] = "CONDUCTOR_PROTOCOL=" + name
+			}
+		}
+	}
 	l.gate = &chatGate{}
 	s.chatLaunches.Store(id, &l)
 }
@@ -165,7 +184,10 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 		if name == agentproto.ACPv1 {
 			// The terminal's session taken up through the protocol, in the
 			// session's folder.
-			return session.PipesChild(pipes), agentproto.NewACP(pipes.Stdin(), pipes.Stdout(), agentproto.ACPOptions{Session: conversation, Cwd: l.folder.Path(), InitWait: initWait}), nil
+			return session.PipesChild(pipes), agentproto.NewACP(pipes.Stdin(), pipes.Stdout(), agentproto.ACPOptions{
+				Session: conversation, Cwd: l.folder.Path(), InitWait: initWait,
+				RawInputKeys: agentproto.ACPRawInputKeys(l.agent.Adapter), YoloLeft: l.yolo,
+			}), nil
 		}
 		driver := agentproto.NewClaude(pipes.Stdin(), pipes.Stdout(), agentproto.ClaudeOptions{
 			Restart:  func() { _ = local.RestartProtocol("restarted", restartedInputWords) },

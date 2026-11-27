@@ -30,10 +30,19 @@ import (
 // agent's live look. The stub's own folder is under the server's HOME.
 func newACPChatEnv(t *testing.T, env map[string]string) (*chatEnvT, string) {
 	t.Helper()
+	return newACPChatEnvWith(t, env, nil)
+}
+
+// newACPChatEnvWith is newACPChatEnv with the agent's entry changed by edit.
+func newACPChatEnvWith(t *testing.T, env map[string]string, edit func(*catalog.Agent)) (*chatEnvT, string) {
+	t.Helper()
 	stub := stubProtocol(t)
 	a, _ := catalog.Default().Get("claude")
 	a = a.Copy()
 	a.Command, a.Env, a.Protocol = []string{stub}, env, &catalog.ProtocolRecipe{Name: agentproto.ACPv1, Args: []string{"acp"}}
+	if edit != nil {
+		edit(&a)
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := os.Mkdir(filepath.Join(home, ".stub-sessions"), 0o700); err != nil {
@@ -52,7 +61,8 @@ func newACPChatEnv(t *testing.T, env map[string]string) (*chatEnvT, string) {
 
 // An ACP agent's chat's child starts through the session's Runtime's
 // StartPipes, in the terminal's folder, as the agent's own start of its ACP
-// server and nothing else, with CONDUCTOR_PROTOCOL=1 and no TERM; the
+// server and nothing else, with CONDUCTOR_PROTOCOL set to its protocol's
+// name (which lists no permission tool) and no TERM; the
 // terminal's session is taken up through the protocol in the session's
 // folder with no MCP server; Info says acp-v1 and that its messages are not
 // claimed as written; a message is a turn of the agent's.
@@ -67,8 +77,8 @@ func TestACPChatChildThroughPipes(t *testing.T) {
 	if len(specs) != 1 || !slices.Equal(specs[0].Argv, []string{stubProtocol(t), "acp"}) || specs[0].Dir != info.Cwd {
 		t.Fatalf("started %+v", specs)
 	}
-	if v, ok := envValue(specs[0].Env, "CONDUCTOR_PROTOCOL"); !ok || v != "1" {
-		t.Fatal("no CONDUCTOR_PROTOCOL=1")
+	if v, ok := envValue(specs[0].Env, "CONDUCTOR_PROTOCOL"); !ok || v != agentproto.ACPv1 {
+		t.Fatalf("CONDUCTOR_PROTOCOL=%q, want its protocol's name", v)
 	}
 	if _, ok := envValue(specs[0].Env, "TERM"); ok {
 		t.Fatal("TERM in a chat's environment")
@@ -95,43 +105,17 @@ func TestACPChatChildThroughPipes(t *testing.T) {
 	})
 }
 
-// An ACP agent's permission request is the session's question, bound to
-// the call the stream announced; the operator's Allow once selects the
-// agent's allow_once option by its own id (OpenCode's "once"), never an
-// always option.
-func TestACPChatAsksThroughThePermissionPath(t *testing.T) {
+// An ACP agent's call whose raw input holds a key the client was not
+// taught for that agent (none is taught before the agent's own look) is
+// declined, never put to the operator: the agent is answered by its
+// reject_once option and no question opens.
+func TestACPChatDeclinesACallWhoseInputItWasNotTaught(t *testing.T) {
 	c, kept := newACPChatEnv(t, map[string]string{"STUB_ACP_OPTIONS": "opencode"})
 	l := c.launch(t)
 	if err := c.enter(t, l); err != nil {
 		t.Fatal(err)
 	}
-	sub, err := l.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "Ada", Owner: true}, quietSink{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err := l.Submit(context.Background(), session.Submission{Text: "ask"}); err != nil && !errors.Is(err, session.ErrSubmitPending) {
-		t.Fatal(err)
-	}
-	var r session.TranscriptEntry
-	es := entriesWhen(t, l, "the request", func(es []session.TranscriptEntry) bool {
-		for _, e := range es {
-			if e.Kind == session.EntryPermission && e.State == session.PermissionOpen {
-				r = e
-				return true
-			}
-		}
-		return false
-	})
-	var step session.TranscriptEntry
-	for _, e := range es {
-		if e.Kind == session.EntryTool && e.Ref == r.Call {
-			step = e
-		}
-	}
-	if r.Call == "" || r.Tool != "execute" || r.InputSha256 != step.InputSha256 {
-		t.Fatalf("the request %+v, its step %+v", r, step)
-	}
-	if err := l.AnswerPermission(context.Background(), sub, proto.PermissionAnswer{T: proto.CtlPermissionAnswer, ReqID: "a1", Question: r.Question, Call: r.Call, Sha256: r.InputSha256, Choice: proto.PermissionAllowOnce}); err != nil {
 		t.Fatal(err)
 	}
 	conv := l.Info().AgentSession.ID
@@ -139,8 +123,69 @@ func TestACPChatAsksThroughThePermissionPath(t *testing.T) {
 		b, _ := os.ReadFile(filepath.Join(kept, conv+".outcome"))
 		return len(b) > 0
 	})
-	if b, _ := os.ReadFile(filepath.Join(kept, conv+".outcome")); strings.TrimSpace(string(b)) != `{"optionId":"once","outcome":"selected"}` {
-		t.Fatalf("the stub was told %s", b)
+	if b, _ := os.ReadFile(filepath.Join(kept, conv+".outcome")); strings.TrimSpace(string(b)) != `{"optionId":"reject","outcome":"selected"}` {
+		t.Fatalf("the stub was told %s, want its reject_once option", b)
+	}
+	es := entriesWhen(t, l, "the turn", func(es []session.TranscriptEntry) bool {
+		return hasEntry(es, func(e session.TranscriptEntry) bool { return e.Kind == session.EntryTurn && e.Phase == "end" })
+	})
+	if hasEntry(es, func(e session.TranscriptEntry) bool { return e.Kind == session.EntryPermission }) {
+		t.Fatal("a declined call reached the session")
+	}
+}
+
+// A chat's child takes none of a yolo launch's variables, and the chat says
+// it asks; the terminal had them.
+func TestACPChatTakesNoneOfAYoloLaunchsVariables(t *testing.T) {
+	c, _ := newACPChatEnvWith(t, nil, func(a *catalog.Agent) { a.Yolo = &catalog.Yolo{Env: map[string]string{"STUB_ALLOW_ALL": "true"}} })
+	resp, out := c.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "claude", "yolo": true})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %v", resp.StatusCode, out)
+	}
+	id, _ := out["id"].(string)
+	l, ok := c.srv.lookupLocal(id)
+	if !ok {
+		t.Fatal("no session")
+	}
+	t.Cleanup(func() { _ = l.Stop(context.Background()) })
+	terms := c.rt.Asked("StartTerminal")
+	if len(terms) != 1 {
+		t.Fatalf("%d terminals", len(terms))
+	}
+	if v, ok := envValue(terms[0].Spec.(ext.TerminalSpec).Env, "STUB_ALLOW_ALL"); !ok || v != "true" {
+		t.Fatal("the yolo launch's terminal lacks its variable")
+	}
+	if err := c.enter(t, l); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := envValue(c.pipeSpecs()[0].Env, "STUB_ALLOW_ALL"); ok {
+		t.Fatal("a chat's child took a yolo launch's variable")
+	}
+	entriesWhen(t, l, "the notice", func(es []session.TranscriptEntry) bool {
+		return hasEntry(es, func(e session.TranscriptEntry) bool {
+			return e.Kind == session.EntryNotice && e.Words == agentproto.ACPYoloLeftWords
+		})
+	})
+}
+
+// The permission route takes requests of Claude Code's chat alone: one for
+// an ACP agent's chat, with the session's own agent token, is denied as no
+// call the session is making, and no question opens.
+func TestThePermissionRouteTakesOnlyClaudeCodesChat(t *testing.T) {
+	c, _ := newACPChatEnv(t, nil)
+	l := c.launch(t)
+	if err := c.enter(t, l); err != nil {
+		t.Fatal(err)
+	}
+	id := l.Info().ID
+	tok := c.agentToken(id)
+	h := postPermission(c.testEnv, id, tok, []byte(`{"call":"c1","tool":"execute","input":{"command":"ls"}}`))
+	<-h.done
+	if h.status != http.StatusOK || h.body["behavior"] != "deny" || h.body["message"] != session.NotACallWords {
+		t.Fatalf("answered %d %v", h.status, h.body)
+	}
+	if att := l.Info().Attention; att.Kind == session.KindPermission {
+		t.Fatalf("a question opened: %+v", att)
 	}
 }
 

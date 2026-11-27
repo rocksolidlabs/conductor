@@ -294,6 +294,8 @@ func chatCode(err error) (code, words string) {
 		return proto.ErrCodeTooManyRequests, TooManyQueuedWords
 	case errors.Is(err, ErrPermissionCard):
 		return proto.ErrCodePermission, PermissionCardWords
+	case errors.Is(err, ErrNoExpand):
+		return proto.ErrCodeNotSent, NoExpandWords
 	case errors.Is(err, ErrNotAnswerer):
 		return proto.ErrCodeNotAnswerer, NotAnswererWords
 	case errors.Is(err, ErrStaleRequest):

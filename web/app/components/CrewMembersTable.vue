@@ -176,6 +176,17 @@ function move(key: number, delta: number) {
   members.value = next
 }
 
+// The agent a member's Extra arguments and Model offer the flags and names of (GET /api/catalog/{id}/flags); none for an agent the
+// catalog does not list.
+function flagsAgent(m: DraftMember): { id: string; name: string; version?: string } | null {
+  const a = agentOf(m.agentId)
+  return a ? { id: a.id, name: a.name, version: a.identity?.version } : null
+}
+// The member's Model field shows: its flag is then the field's, and its Extra arguments leave it out.
+function modelShown(m: DraftMember): boolean {
+  return !unread.value && accountItems(m).length > 0
+}
+
 // The extra arguments line shows for a member that has some, or once asked for from the row's menu.
 const argsShown = ref(new Set<number>())
 function showsArgs(m: DraftMember): boolean {
@@ -314,17 +325,16 @@ const focusedPrompt = ref<number | null>(null)
         </div>
         <div class="flex w-full min-w-0 flex-col gap-1 sm:w-64">
           <span class="text-xs font-medium text-muted" aria-hidden="true">Model</span>
-          <UInput
+          <ModelField
             :model-value="m.model ?? ''"
+            :agent="flagsAgent(m)"
             placeholder="The agent's choice"
             maxlength="100"
-            autocapitalize="off"
-            spellcheck="false"
             size="sm"
             :color="modelProblem(m.model ?? '') ? 'error' : undefined"
             :highlight="!!modelProblem(m.model ?? '')"
             :aria-label="`Model for ${who(m, i)}`"
-            :ui="{ base: `font-mono text-xs ${touch}` }"
+            :base-class="`text-xs ${touch}`"
             data-member-model
             @update:model-value="update(m.key, { model: String($event) || undefined })"
           />
@@ -335,10 +345,24 @@ const focusedPrompt = ref<number | null>(null)
       <!-- Under its label, as the Account and the Model are; 44 px to press on a phone, as its neighbours. -->
       <div v-if="showsArgs(m)" class="flex flex-col gap-1 pl-0 @min-[56rem]:pl-[9.625rem]" data-member-args-field>
         <span class="text-xs font-medium text-muted" aria-hidden="true">Extra arguments</span>
-        <UInput
+        <AgentArgsField
+          v-if="agentOf(m.agentId)?.allowArgs !== false"
           :model-value="m.argsText"
-          :placeholder="agentOf(m.agentId)?.allowArgs === false ? 'this agent takes no extra arguments' : 'extra arguments, as on the command line'"
-          :disabled="agentOf(m.agentId)?.allowArgs === false"
+          :agent="flagsAgent(m)"
+          :model-field="modelShown(m)"
+          icon="i-lucide-terminal"
+          size="sm"
+          :aria-label="`Extra arguments for ${who(m, i)}`"
+          :base-class="`text-xs ${touch}`"
+          class="w-full max-w-xl"
+          data-member-args
+          @update:model-value="setArgs(m.key, String($event))"
+        />
+        <UInput
+          v-else
+          :model-value="m.argsText"
+          placeholder="this agent takes no extra arguments"
+          disabled
           autocapitalize="off"
           spellcheck="false"
           icon="i-lucide-terminal"

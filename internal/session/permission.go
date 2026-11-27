@@ -737,17 +737,8 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 		// Its line's relative words are judged from that folder too (made
 		// absolute against the session's when it is relative).
 		text := commandText(fields)
-		if cwd, ok := fields["cwd"].(string); ok && cwd != "" {
-			if s.pathDenied(cwd, deny) {
-				return true
-			}
-			from := filepath.Clean(cwd)
-			if !filepath.IsAbs(from) && s.info.Cwd != "" {
-				from = filepath.Join(s.info.Cwd, from)
-			}
-			if filepath.IsAbs(from) && commandNamesDenied(text, deny, from) {
-				return true
-			}
+		if cwd, ok := fields["cwd"].(string); ok && cwd != "" && s.runsInDenied(text, cwd, deny) {
+			return true
 		}
 		return commandNamesDenied(text, deny, s.info.Cwd)
 	case "file", "read":
@@ -783,33 +774,149 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 	return false
 }
 
-// nestedDenied says a call whose input holds its raw input, its locations
-// and its content beside each other (an ACP agent's tool call: rawInput,
-// locations, content's diffs) names a place of the deny list in any of
-// them, whatever the call's kind: the raw input judged as a command's and a
-// file tool's input are, each location's and each diff's path. The caller
-// holds s.mu.
-func (s *Local) nestedDenied(fields map[string]any, deny []string) bool {
-	if raw, ok := fields["rawInput"].(map[string]any); ok {
-		if commandNamesDenied(commandText(raw), deny, s.info.Cwd) {
-			return true
-		}
-		for _, k := range []string{"file_path", "filePath", "notebook_path", "path", "abs_path", "cwd"} {
-			if v, ok := raw[k].(string); ok && v != "" && s.pathDenied(v, deny) {
-				return true
-			}
-		}
+// runsInDenied says a command run in the folder cwd reaches the deny list:
+// the folder is under it, or the command line's relative words name a place
+// of it from that folder (made absolute against the session's when it is
+// relative), as the folder is spelled and as its links lead. One judgement
+// for every driver whose call names the folder it runs in. The caller holds
+// s.mu.
+func (s *Local) runsInDenied(text, cwd string, deny []string) bool {
+	if s.pathDenied(cwd, deny) {
+		return true
 	}
-	for _, key := range []string{"locations", "content"} {
-		list, _ := fields[key].([]any)
-		for _, item := range list {
-			m, _ := item.(map[string]any)
-			if v, ok := m["path"].(string); ok && v != "" && s.pathDenied(v, deny) {
-				return true
-			}
+	from := filepath.Clean(cwd)
+	if !filepath.IsAbs(from) {
+		if s.info.Cwd == "" {
+			return false
 		}
+		from = filepath.Join(s.info.Cwd, from)
+	}
+	if commandNamesDenied(text, deny, from) {
+		return true
+	}
+	if real, err := evalExisting(linksFirst(from)); err == nil && real != from && commandNamesDenied(text, deny, real) {
+		return true
 	}
 	return false
+}
+
+// callFolderKeys are the names under which an agent's call names the folder
+// it runs in.
+var callFolderKeys = []string{"cwd", "workdir", "directory", "dir", "working_directory", "workingDirectory", "working_dir"}
+
+// nestedDenied says a call whose input holds its raw input, its locations
+// and its content beside each other (an ACP agent's tool call: rawInput,
+// locations, content's diffs) names a place of the deny list anywhere in
+// them, whatever the call's kind: every string they hold is judged as a
+// command line's words (from the session's folder, and from each folder the
+// raw input says the call runs in, as runsInDenied judges it) and, where it
+// looks like a path, as a path; a file URI as its path. The caller holds
+// s.mu.
+func (s *Local) nestedDenied(fields map[string]any, deny []string) bool {
+	_, hasRaw := fields["rawInput"]
+	_, hasLoc := fields["locations"]
+	_, hasContent := fields["content"]
+	if !hasRaw && !hasLoc && !hasContent {
+		return false
+	}
+	var folders []string
+	if raw, ok := fields["rawInput"].(map[string]any); ok {
+		for _, k := range callFolderKeys {
+			if v, ok := raw[k].(string); ok && v != "" {
+				folders = append(folders, v)
+			}
+		}
+	}
+	denied := false
+	var walk func(v any)
+	walk = func(v any) {
+		if denied {
+			return
+		}
+		switch t := v.(type) {
+		case string:
+			if t == "" {
+				return
+			}
+			if commandNamesDenied(t, deny, s.info.Cwd) {
+				denied = true
+				return
+			}
+			for _, f := range folders {
+				if s.runsInDenied(t, f, deny) {
+					denied = true
+					return
+				}
+			}
+			if p, ok := strings.CutPrefix(t, "file://"); ok {
+				t = p
+			}
+			if looksLikePath(t) && s.pathDenied(t, deny) {
+				denied = true
+			}
+		case []any:
+			for _, x := range t {
+				walk(x)
+			}
+		case map[string]any:
+			for _, x := range t {
+				walk(x)
+			}
+		}
+	}
+	for _, k := range []string{"rawInput", "locations", "content", "title"} {
+		walk(fields[k])
+	}
+	return denied
+}
+
+// looksLikePath says a string may name a place: one line, with a slash, or
+// starting with ~.
+func looksLikePath(v string) bool {
+	return !strings.ContainsAny(v, "\n\x00") && (strings.Contains(v, "/") || strings.HasPrefix(v, "~"))
+}
+
+// linksFirst is an absolute path with its links followed one part at a time
+// before any ".." after them is applied, so that "link/../x" is the place
+// the link's ".." reaches; parts that do not exist are kept as written. At
+// most 40 links are followed.
+func linksFirst(p string) string {
+	if !filepath.IsAbs(p) {
+		return p
+	}
+	parts := strings.Split(p, string(filepath.Separator))
+	cur := string(filepath.Separator)
+	hops := 0
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, part)
+		fi, err := os.Lstat(next)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 || hops >= 40 {
+			cur = next
+			continue
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			cur = next
+			continue
+		}
+		hops++
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(cur, target)
+		}
+		// The link's target, its own parts walked the same way, then the
+		// rest.
+		rest := append(strings.Split(target, string(filepath.Separator)), parts[i+1:]...)
+		parts, i, cur = rest, -1, string(filepath.Separator)
+	}
+	return cur
 }
 
 // changesDenied says a file change's input names a path denied says is
@@ -874,6 +981,16 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 			return false
 		}
 		path = filepath.Join(s.info.Cwd, path)
+	}
+	// Its links followed before its "..", as the system follows them, and
+	// as its letters read.
+	if linked := linksFirst(path); linked != filepath.Clean(path) {
+		if insideAny(linked, deny) {
+			return true
+		}
+		if real, err := evalExisting(linked); err == nil && insideAny(real, deny) {
+			return true
+		}
 	}
 	path = filepath.Clean(path)
 	if real, err := evalExisting(path); err == nil && insideAny(real, deny) {

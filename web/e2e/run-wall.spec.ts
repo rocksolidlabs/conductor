@@ -235,6 +235,39 @@ test('at 390 x 844 no layout switch is drawn: the tiles stack', async ({ page })
   await expect(page.locator('[data-activity-toggle]')).toBeVisible()
 })
 
+// The last layout and Activity are the layout document's too (UX3 R88): the desktop app's server starts on a fresh address at each
+// start, and what a page stores belongs to one address, so the server's copy brings them back.
+const TILE_KEYS = ['conductor.runTiles', 'conductor.runTilesLast', 'conductor.ui.unsent']
+
+test("the last layout and Activity come back from the server when the page's storage has lost them", async ({ page, api }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const { grid, toggle } = await open(page, second, 2)
+  await page.locator('[data-run-layout-choice="large"]').click()
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(grid).toHaveAttribute('data-run-layout', 'large')
+  await expect.poll(async () => (await api.ok<{ runTiles?: unknown }>('GET', '/api/ui/layout')).runTiles, { timeout: 15_000, message: 'the server keeps the choice' }).toEqual({ layout: 'large', activity: true })
+  // The page's storage as a fresh address has it: no tiles record, no last choice.
+  await page.evaluate((keys) => keys.forEach((k) => localStorage.removeItem(k)), TILE_KEYS)
+  const read = page.waitForResponse((r) => r.url().endsWith('/api/ui/layout') && r.request().method() === 'GET')
+  await page.reload()
+  await read
+  await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'large')
+  await expect(page.locator('[data-activity-toggle]')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('[data-crew-feed]')).toBeVisible()
+})
+
+test('a phone-width window keeps its Activity to itself and writes no layout for the server', async ({ page, api }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const { toggle } = await open(page, second, 2)
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  // A desk's window marks a change for the server as it makes it (useUiState's setLayout); a phone's never does.
+  expect(await page.evaluate(() => localStorage.getItem('conductor.ui.unsent') ?? '')).not.toContain('layout')
+  expect(await page.evaluate(() => localStorage.getItem('conductor.runTilesLast'))).toContain('"activity":true')
+  expect((await api.ok<{ runTiles?: unknown }>('GET', '/api/ui/layout')).runTiles).toBeUndefined()
+})
+
 /** A question of 300 characters with two choices, asked by a member of the six once its first turn is done. */
 const LONG = `Ship the refund split as one pull request, or two: the API first, then the storefront? The API change moves the rounding of the last cent to the first payment, and the storefront shows each payment's share on the order page, ${'so a reviewer reads both at once. '.repeat(3)}`.slice(0, 300)
 

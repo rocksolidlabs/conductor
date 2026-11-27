@@ -1010,6 +1010,13 @@ func TestAnACPCallIsFlooredByEveryPlaceItNames(t *testing.T) {
 		{"a path in its raw input", "other", j(map[string]any{"kind": "other", "title": "x", "rawInput": map[string]any{"path": secret}}), true},
 		{"a location", "read", j(map[string]any{"kind": "read", "title": "x", "locations": []any{map[string]any{"path": secret}}}), true},
 		{"a diff's path", "edit", j(map[string]any{"kind": "edit", "title": "x", "content": []any{map[string]any{"type": "diff", "path": secret, "newText": "x"}}}), true},
+		{"a relative line from the folder its raw input names", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "cwd": filepath.Dir(data)}}), true},
+		{"a folder under another key", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "directory": filepath.Dir(data)}}), true},
+		{"a folder that is a link", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "workdir": linkTo(t, filepath.Dir(data))}}), true},
+		{"a move's destination under a key of its own", "move", j(map[string]any{"kind": "move", "title": "x", "rawInput": map[string]any{"source": "notes.txt", "destination": filepath.Join(data, "x")}}), true},
+		{"a list of paths", "read", j(map[string]any{"kind": "read", "title": "x", "rawInput": map[string]any{"paths": []any{"notes.txt", secret}}}), true},
+		{"a path inside a patch's text", "edit", j(map[string]any{"kind": "edit", "title": "x", "rawInput": map[string]any{"patchText": "*** Update File: " + secret + "\n+x"}}), true},
+		{"a file link in its content", "read", j(map[string]any{"kind": "read", "title": "x", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "resource_link", "uri": "file://" + secret}}}}), true},
 		{"nothing of the list", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "make test"}}), false},
 	} {
 		call := fmt.Sprintf("c-%d", i)
@@ -1023,4 +1030,50 @@ func TestAnACPCallIsFlooredByEveryPlaceItNames(t *testing.T) {
 		}
 		deniedWith(t, s, e, v, FloorWords)
 	}
+}
+
+// linkTo is a link in a folder of the test's own to target.
+func linkTo(t *testing.T, target string) string {
+	t.Helper()
+	l := filepath.Join(t.TempDir(), "l")
+	if err := os.Symlink(target, l); err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// The floor follows a path's links before its "..": a path through a link
+// and then ".." into a denied place is the denied place's, for a request to
+// the prompt tool (Claude Code's) and for an in-stream one; and a command's
+// folder that is a link is judged by where it leads.
+func TestTheFloorFollowsAPathsLinksBeforeItsDotDot(t *testing.T) {
+	base := realDir(t, t.TempDir())
+	data := filepath.Join(base, "conductor")
+	sibling := filepath.Join(base, "applications")
+	for _, d := range []string{data, sibling} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(data, "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, f, _ := permissionSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	l := linkTo(t, sibling)
+	through := l + "/../conductor/config.json"
+	// The prompt tool's request.
+	announce(f, "c-read", "Read", `{"file_path":"`+through+`"}`)
+	if v := ask(s, "c-read", "Read", `{"file_path":"`+through+`"}`).returned(t); v.Allow || v.Message != FloorWords {
+		t.Fatalf("a read through a link and ..: %+v", v)
+	}
+	// An in-stream one.
+	in := `{"changes":[{"path":"` + through + `","kind":{"type":"update"},"diff":""}]}`
+	f.ToolStarted(ToolStep{Ref: "c-change", Name: "fileChange", Input: []byte(in)})
+	e, v := inStreamAsked(t, s, f, "req-change", "c-change", "fileChange", in)
+	deniedWith(t, s, e, v, FloorWords)
+	// A command run in a folder that is a link above the denied place.
+	cmd := `{"command":"cat conductor/config.json","cwd":"` + linkTo(t, base) + `"}`
+	f.ToolStarted(ToolStep{Ref: "c-cmd", Name: "commandExecution", Input: []byte(cmd)})
+	e, v = inStreamAsked(t, s, f, "req-cmd", "c-cmd", "commandExecution", cmd)
+	deniedWith(t, s, e, v, FloorWords)
 }
