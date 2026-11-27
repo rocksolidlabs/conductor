@@ -48,7 +48,7 @@ function selection(over: Partial<Decision> = {}): Decision {
       subject: { kind: 'comparison', run: RUN, base: 'c'.repeat(40), digest: 'd'.repeat(64) },
       // A recommendation the server never writes (it is always -1): the card still marks none.
       recommendation: 1,
-      authorizes: 'Continuing the selected candidate into review and repair, and delivering it. Final: the candidates not selected are kept and cannot be continued; a new comparison tries them again.',
+      authorizes: 'Continuing the selected candidate into review and repair, and delivering it. Final: the candidates not selected are kept and cannot be continued; a new trial tries them again.',
     },
     policy: { revision: 'local/1', approver: 'operator' },
     state: 'open',
@@ -82,8 +82,8 @@ describe("a selection's options", () => {
   })
 
   it("say the record's own subject, the comparison, at its base", () => {
-    expect(subjectWords(selection().request.subject, { ticket: 'CND-12' })).toEqual({ text: 'the comparison at base ccccccc, digest dddddddddddd', to: `/dispatch/CND/12?view=compare&run=${RUN}` })
-    expect(subjectWords(selection().request.subject)).toEqual({ text: 'the comparison at base ccccccc, digest dddddddddddd', to: `/runs/${RUN}?view=tasks` })
+    expect(subjectWords(selection().request.subject, { ticket: 'CND-12' })).toEqual({ text: 'the trial at base ccccccc, digest dddddddddddd', to: `/dispatch/CND/12?view=compare&run=${RUN}` })
+    expect(subjectWords(selection().request.subject)).toEqual({ text: 'the trial at base ccccccc, digest dddddddddddd', to: `/runs/${RUN}?view=tasks` })
   })
 
   it('mark none recommended, whatever the record says', () => {
@@ -108,7 +108,7 @@ describe("a selection's answer", () => {
   it("names the candidate and says final on its confirm, and says before it that the others cannot be continued", () => {
     const d = selection()
     expect(answerAsk(d, 1, 'why')).toMatchObject({ confirm: 'Select approach-b (final)', final: SELECTION_FINAL })
-    expect(SELECTION_FINAL).toBe('Final: the candidates not selected cannot be continued; a new comparison tries them again.')
+    expect(SELECTION_FINAL).toBe('Final: the candidates not selected cannot be continued; a new trial tries them again.')
     expect(answerAsk(d, 2, 'why')).toMatchObject({ confirm: 'Answer None of these (final)', final: SELECTION_FINAL_NONE })
     // Nothing picked: nothing to say final of.
     expect(answerAsk(d, undefined, '').final).toBe('')
@@ -116,8 +116,8 @@ describe("a selection's answer", () => {
 
   it("is asked of the comparison, never of an agent, with Details open and the server's authorizes as the selection's", () => {
     const d = selection()
-    expect(askedWhere(d)).toBe('the comparison')
-    expect(askForMore(d)).toEqual({ enabled: false, why: "dr-9 is the comparison's: no agent asked it, comment instead" })
+    expect(askedWhere(d)).toBe('the trial')
+    expect(askForMore(d)).toEqual({ enabled: false, why: "dr-9 is the trial's: no agent asked it, comment instead" })
     expect(detailsOpen(d)).toBe(true)
     expect(authorizesLine(d)).toEqual({ lead: 'A selection authorizes: ', words: d.request.authorizes })
     // The confirm says final in the selection's own words, not the approval's line a second time.

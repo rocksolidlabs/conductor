@@ -18,6 +18,8 @@ const installed = computed(() => props.agents.filter((a) => a.id !== 'shell' && 
 const agentItems = computed(() => installed.value.map((a) => ({ label: a.name, value: a.id })))
 const takesArgs = (id: string) => props.agents.find((a) => a.id === id)?.allowArgs !== false
 const nameOf = (id: string) => props.agents.find((a) => a.id === id)?.name ?? id
+// The agent a row's Arguments offers the flags of (the form has no Model field: its model flag and names are offered too).
+const flagsAgent = (id: string) => (id ? { id, name: nameOf(id) } : null)
 
 function patch(p: Partial<DraftComparison>) {
   draft.value = { ...draft.value, ...p }
@@ -48,7 +50,7 @@ function setReviews(on: boolean) {
           <UInput :model-value="a.approach" :maxlength="COMPARE_LIMITS.approach" placeholder="Optional: a way to try it" :aria-label="`Approach of agent ${agentLetter(i)}`" class="w-full" :data-compare-agent-approach="i" @update:model-value="setAgent(i, { approach: String($event ?? '') })" />
         </UFormField>
         <UFormField :error="marked(`args-${i}`)">
-          <UInput v-if="takesArgs(a.agentId)" :model-value="a.args" placeholder="Flags, as in a terminal" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono placeholder:font-sans' }" :aria-label="`Arguments of agent ${agentLetter(i)}`" class="w-full" :data-compare-agent-args="i" @update:model-value="setAgent(i, { args: String($event ?? '') })" />
+          <AgentArgsField v-if="takesArgs(a.agentId)" :model-value="a.args" :agent="flagsAgent(a.agentId)" plain-placeholder="Flags, as in a terminal" base-class="placeholder:font-sans" :aria-label="`Arguments of agent ${agentLetter(i)}`" class="w-full" :data-compare-agent-args="i" @update:model-value="setAgent(i, { args: String($event ?? '') })" />
           <span v-else class="flex min-h-8 items-center text-xs text-muted" :data-compare-agent-no-args="i">Takes no arguments.</span>
         </UFormField>
       </div>

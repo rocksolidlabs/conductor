@@ -200,12 +200,13 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   const g = page.locator('[data-brakeman-grant="launch_approved_plan"]')
   await expect(g).toHaveAttribute('data-grant-served', 'true', { timeout: 30_000 })
   await expect(page.locator('[data-brakeman-grants]')).toContainText('never approves one')
-  // Requesting a repair is served (RV1's review route), and never approves or accepts a result.
+  // Requesting a repair is served (RV1's review route), and never accepts a result (UX3 R59's words).
   await expect(page.locator('[data-brakeman-grant="request_repair"]')).toHaveAttribute('data-grant-served', 'true')
-  await expect(page.locator('[data-brakeman-grants]')).toContainText('It never approves or accepts a result')
+  await expect(page.locator('[data-brakeman-grants]')).toContainText('It never accepts a result')
+  await expect(page.locator('[data-brakeman-grants]')).not.toContainText('It never approves or accepts a result')
   // Routing a decision is served, to a person of its run's crew too, and never answers one.
   await expect(page.locator('[data-brakeman-grant="route_decision"]')).toHaveAttribute('data-grant-served', 'true')
-  await expect(page.locator('[data-brakeman-grants]')).toContainText("or to a person of its run's crew, by name or by the responsibility they hold. It never answers one")
+  await expect(page.locator('[data-brakeman-grants]')).toContainText('Sends an open decision to you or a crew member. It never answers one.')
   const sw = page.locator('[data-brakeman-grants]').getByRole('switch', { name: 'Launch an approved plan' })
   await expect(sw).toHaveAttribute('aria-checked', 'false')
   // With drafting and proposing off Brakeman observes only, until a grant is on: a grant runs by itself, whatever those two say. Both

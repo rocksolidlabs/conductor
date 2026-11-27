@@ -10,11 +10,14 @@ import { backTitle, BACK_TO_CREW, memberTabs, stripsRun } from '~/utils/memberSt
  * More members than fit scroll inside the strip, the open one kept in view. Its room is taken as soon as the page knows the session is
  * a member, so that the terminal under it is fitted once; the title and the tabs fill in when the run is read.
  *
+ * `inline`: the strip sits in the session bar's own row, left of the name, on a header wide enough for both (UX3 R12b); its tabs then
+ * take at most part of the row and scroll inside it.
+ *
  * Alt+Q goes back to the crew from anywhere on the page, the terminal included: the strip asks the terminal to hand KeyQ back
  * (usePageAltCodes, as the Yard does), so a page that is no member keeps Alt+Q for its terminal. Escape is not bound: in a terminal it
  * is the agent's own key. A run the server no longer holds, or a Brakeman turn's run, says `gone`, and the page draws no strip.
  */
-const props = defineProps<{ runId: string; sessionId: string }>()
+const props = defineProps<{ runId: string; sessionId: string; inline?: boolean }>()
 const emit = defineEmits<{ gone: [] }>()
 
 const live = useAttention()
@@ -42,19 +45,27 @@ watch(
 )
 watch(run, (r) => r && !stripsRun(r) && emit('gone'), { immediate: true })
 
-// The open member's tab in view, inside the strip's own scroll (a crew has up to twelve members), as it is drawn and when it changes.
+// The open member's tab in view, inside the strip's own scroll (a crew has up to twelve members): as it is drawn, when it changes, when
+// members are added, and when the strip's width changes (the window, the strip moving into the header's row).
 const list = useTemplateRef<HTMLElement>('list')
+const openName = computed(() => tabs.value.find((t) => t.selected)?.name ?? '')
+function keepInView() {
+  const el = list.value
+  if (!el || !openName.value) return
+  const tab = el.querySelector<HTMLElement>(`[data-member-tab="${CSS.escape(openName.value)}"]`)
+  if (!tab) return
+  const [l, t] = [el.getBoundingClientRect(), tab.getBoundingClientRect()]
+  if (t.left < l.left) el.scrollLeft -= l.left - t.left
+  else if (t.right > l.right) el.scrollLeft += t.right - l.right
+}
+watch([list, openName, () => tabs.value.length], () => void nextTick(keepInView), { immediate: true })
 watch(
-  [list, () => tabs.value.find((t) => t.selected)?.name],
-  ([el, name]) => {
-    if (!el || !name) return
-    void nextTick(() => {
-      const tab = el.querySelector<HTMLElement>(`[data-member-tab="${CSS.escape(name)}"]`)
-      if (!tab) return
-      const left = tab.offsetLeft - el.offsetLeft
-      if (left < el.scrollLeft) el.scrollLeft = left
-      else if (left + tab.offsetWidth > el.scrollLeft + el.clientWidth) el.scrollLeft = left + tab.offsetWidth - el.clientWidth
-    })
+  list,
+  (el, _prev, onCleanup) => {
+    if (!el) return
+    const observer = new ResizeObserver(() => keepInView())
+    observer.observe(el)
+    onCleanup(() => observer.disconnect())
   },
   { immediate: true },
 )
@@ -66,7 +77,13 @@ const TAB = 'inline-flex flex-none items-center gap-1.5 rounded-md px-2 py-1 tex
 </script>
 
 <template>
-  <div class="flex h-10 min-w-0 flex-none items-center gap-2 border-b border-default px-4 sm:px-6" data-member-strip :data-run="runId">
+  <div
+    class="flex min-w-0 items-center gap-2"
+    :class="inline ? 'max-w-[min(48rem,45%)] flex-none border-r border-default pr-3' : 'h-10 flex-none border-b border-default px-4 sm:px-6'"
+    data-member-strip
+    :data-run="runId"
+    :data-strip-inline="inline ? '' : undefined"
+  >
     <UTooltip :text="backTitle(run)" :kbds="['alt', 'Q']">
       <UButton :to="to" icon="i-lucide-arrow-left" :label="BACK_TO_CREW" color="neutral" variant="ghost" size="xs" class="flex-none" data-back-to-crew />
     </UTooltip>

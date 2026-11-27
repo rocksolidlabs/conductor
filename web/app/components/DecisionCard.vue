@@ -155,7 +155,7 @@ watch(
       />
       <dl v-if="showDetails" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md bg-elevated/40 p-2 text-xs" data-decision-details-list>
         <dt class="text-muted">Decision</dt>
-        <dd class="break-words"><span class="font-mono" data-decision-card-id>{{ decision.id }}</span> · <span data-decision-type>{{ decision.type }}</span><span v-if="decision.origin === 'plan'" data-decision-from-plan> · From the plan</span><span v-else-if="decision.origin === 'compare'" data-decision-from-compare> · A comparison's selection</span></dd>
+        <dd class="break-words"><span class="font-mono" data-decision-card-id>{{ decision.id }}</span> · <span data-decision-type>{{ decision.type }}</span><span v-if="decision.origin === 'plan'" data-decision-from-plan> · From the plan</span><span v-else-if="decision.origin === 'compare'" data-decision-from-compare> · A trial's selection</span></dd>
         <template v-if="subject.text">
           <dt class="text-muted">About</dt>
           <dd class="break-words font-mono" data-decision-subject>

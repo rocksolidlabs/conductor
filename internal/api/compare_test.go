@@ -375,7 +375,7 @@ func TestACompareCandidateIsNotDeliveredYet(t *testing.T) {
 	for _, run := range []string{"cmp-0000abcd", "cmp-0000abce"} {
 		op := opID()
 		out := e.deliver(t, "CND-1", op, "https://example.com/pull/"+run, run+"/approach-a/1@"+deliveryCommit(1), http.StatusConflict, "not_selected")
-		if apiMessage(out) != "select a candidate first: the comparison has not settled" || out["receipt"] != nil {
+		if apiMessage(out) != "select a candidate first: the trial has not settled" || out["receipt"] != nil {
 			t.Fatalf("%s: %v", run, out)
 		}
 		// Nothing kept: the op id is free for another link.

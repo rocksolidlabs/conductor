@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect, standingRoute, stopStrays, test, viaMore, type Api } from './fixtures'
 import type { Locator, Page, Request } from '@playwright/test'
@@ -577,11 +577,9 @@ async function putBack(api: Api, start: BrakemanConf) {
 }
 /** The Reads a turn field of Brakeman's section, and a value of it that is not the one saved. */
 const readsField = (page: Page) => page.locator('[data-brakeman-reads] input, input[data-brakeman-reads]').first()
-/** Opens the Advanced fold of Brakeman's section (#993), where its limits are: kept mounted while folded, shown once opened. */
+/** Brakeman's limits (#993), in view under Limits since UX3 R59: a settings page folds nothing. Waits for them to show. */
 async function brakemanAdvanced(page: Page) {
-  const toggle = page.locator('[data-brakeman-advanced-toggle]')
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-  await toggle.click()
+  await expect(page.locator('[data-brakeman-advanced-toggle]')).toHaveCount(0)
   await expect(readsField(page)).toBeVisible()
 }
 
@@ -940,7 +938,7 @@ test("in a browser, Brakeman's section is saved by the page's one Save", async (
 // `?section=`; below lg a sticky row of links, nothing else scrolling sideways, and the save bar above the bottom bar. The
 // stand-in bridge is the app's, as above; on win32 with an ICE status the WebRTC section and the WSL fields are laid out too.
 type Platform = 'linux' | 'win32'
-async function standIn(page: Page, state: E2EState, platform: Platform) {
+async function standIn(page: Page, state: E2EState, platform: Platform, server?: { state: string; lastError?: string }) {
   const form = {
     dataDir: state.data,
     allowedRoots: [state.root],
@@ -957,10 +955,11 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
     noticed: ['publishing'],
   }
   await page.addInitScript(
-    ({ token, form, url, platform }) => {
+    ({ token, form, url, platform, server }) => {
       const settings = { ...form }
-      const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[] }
+      const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[]; e2eRestarts: number }
       w.e2eSets = []
+      w.e2eRestarts = 0
       w.conductorDesktop = {
         version: 'e2e',
         platform,
@@ -973,10 +972,12 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
             return Object.assign(settings, p)
           },
         },
-        restartServer: async () => {},
+        restartServer: async () => {
+          w.e2eRestarts++
+        },
         openInBrowser: async () => {},
         showLog: async () => {},
-        serverState: async () => ({ state: 'running', url, failures: 0 }),
+        serverState: async () => ({ state: 'running', url, failures: 0, ...server }),
         notice: async () => '',
         ice: async () => ({ forwarding: true, port: 40001, publicIp: '203.0.113.7', wslAddress: '172.20.0.2', firewall: 'missing' }),
         allowIceFirewall: async () => 'present',
@@ -984,7 +985,7 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
         onServerState: () => () => {},
       }
     },
-    { token: state.token, form, url: state.baseURL, platform },
+    { token: state.token, form, url: state.baseURL, platform, server },
   )
 }
 
@@ -1017,6 +1018,9 @@ async function layoutOf(page: Page) {
 }
 /** Waits for what the page renders once the bridge, the catalog and Brakeman answered. */
 async function settled(page: Page, platform: Platform) {
+  // The app booted and drew the page first (on a loaded machine that alone can take most of an expect's bound), then what its
+  // reads bring: each step its own wait.
+  await expect(page.locator('[data-desktop-settings]')).toBeVisible()
   await expect(page.locator('[data-agent]').first()).toBeVisible()
   await expect(page.locator('[data-brakeman-enabled]')).toBeVisible()
   if (platform === 'win32') await expect(page.locator('[data-ice-status]')).toBeVisible()
@@ -1079,6 +1083,8 @@ for (const platform of ['linux', 'win32'] as const) {
   }
 
   test(`/settings?section=<id> opens on that section once it has rendered, and an unknown one at the top (${platform})`, async ({ page, state }) => {
+    // Eight loads, each waited on to settle (four waits of the expect's bound): the timeout bounds a hang, above their sum.
+    test.setTimeout(8 * 5 * 15_000)
     await standIn(page, state, platform)
     for (const id of ['switchyard', 'agents', 'app'] as const) {
       await page.goto(`/settings?section=${id}`)
@@ -1142,13 +1148,13 @@ for (const platform of ['linux', 'win32'] as const) {
       // The navbar fits: its buttons, icons alone, inside the window.
       // The panel's navbar: the element before its body.
       const navbar = body(page).locator('xpath=preceding-sibling::*[1]')
-      for (const b of ['[data-open-in-browser]', '[data-server-log]', '[data-restart-server]', '[data-fullscreen]']) {
-        const box = await boxOf(page.locator(b))
-        expect(box.right, b).toBeLessThanOrEqual(390)
-        expect(box.width, b).toBeLessThanOrEqual(40)
-      }
+      // The server's three buttons are The app's now (UX3 R57): the navbar holds Full screen alone.
+      for (const b of ['[data-open-in-browser]', '[data-server-log]', '[data-restart-server]']) await expect(navbar.locator(b)).toHaveCount(0)
+      const full = await boxOf(page.locator('[data-fullscreen]'))
+      expect(full.right).toBeLessThanOrEqual(390)
+      expect(full.width).toBeLessThanOrEqual(40)
       expect(await navbar.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true)
-      await expect(page.getByRole('button', { name: 'Restart server' })).toBeVisible()
+      await expect(page.locator('[data-about-card]').getByRole('button', { name: 'Restart server' })).toBeVisible()
       // The row of links: across the top of the body, stuck there as the sections scroll, scrolling sideways within itself.
       const nav = page.locator('[data-settings-nav]')
       expect(await nav.evaluate((e) => getComputedStyle(e).flexDirection)).toBe('row')
@@ -1634,3 +1640,134 @@ for (const size of [{ width: 2000, height: 810 }, { width: 1440, height: 810 }])
     }
   })
 }
+
+// The server's state and its three buttons sit in The app (UX3 R57): no banner while it runs, one line at the top while it does not,
+// and Restart server asks first while agents run, restarting at once with none.
+test("The app holds Conductor's server and its buttons; Restart server asks only while agents run", async ({ page, state, api }) => {
+  test.setTimeout(20 * 15_000)
+  await standIn(page, state, 'linux')
+  await page.goto('/settings?section=app')
+  await settled(page, 'linux')
+  const about = page.locator('[data-about-card]')
+  const row = about.locator('[data-server-row]')
+  await expect(page.locator('[data-server-state]')).toHaveCount(0)
+  await expect(about).toContainText("Versions, the tray and Conductor's server.")
+  await expect(row).toContainText("Conductor's server · Running at")
+  await expect(row.locator('[data-server-url]')).toHaveText(state.baseURL)
+  for (const b of ['[data-server-log]', '[data-open-in-browser]', '[data-restart-server]']) await expect(row.locator(b)).toBeVisible()
+  // None running: Restart server restarts at once.
+  const restarts = () => page.evaluate(() => (window as unknown as { e2eRestarts: number }).e2eRestarts)
+  await row.locator('[data-restart-server]').click()
+  await expect.poll(restarts).toBe(1)
+  await expect(row.locator('[data-restart-question]')).toHaveCount(0)
+  // One of the test's own running: it asks, Keep it running keeps it, and Restart server restarts.
+  const s = await api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'settings restart server', cwd: state.root })
+  try {
+    await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()).toBeAttached()
+    await row.locator('[data-restart-server]').click()
+    await expect(row.locator('[data-restart-question]')).toHaveText('Restart the server? 1 running agent stops.')
+    await expect(row.locator('[data-restart-keep]')).toBeFocused()
+    await expect(row.locator('[data-restart-keep]')).toHaveText('Keep it running')
+    await row.locator('[data-restart-keep]').click()
+    await expect(row.locator('[data-restart-question]')).toHaveCount(0)
+    expect(await restarts()).toBe(1)
+    await row.locator('[data-restart-server]').click()
+    await row.locator('[data-restart-confirm]').click()
+    await expect.poll(restarts).toBe(2)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+test("a server that stopped is said in one line at the top, with its log and a restart", async ({ page, state }) => {
+  await standIn(page, state, 'linux', { state: 'failed', lastError: 'the server exited with status 1' })
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  const line = page.locator('[data-server-state="failed"]')
+  await expect(line).toContainText("Conductor's server stopped: the server exited with status 1.")
+  await expect(line.locator('[data-server-state-log]')).toBeVisible()
+  await line.locator('[data-server-state-restart]').click()
+  await expect.poll(() => page.evaluate(() => (window as unknown as { e2eRestarts: number }).e2eRestarts)).toBe(1)
+  await expect(page.locator('[data-about-card] [data-server-word]')).toHaveText('Stopped')
+})
+
+// Accounts and GitHub (UX3 R58): what the grey Add account needs is said beside it; a rename's Cancel comes before its Save and a
+// remove question's Keep it before its Remove; GitHub's Check and save sits at its foot's right end. The account is the test's own.
+test('Accounts says what Add account needs, puts Cancel and Keep it first, and GitHub its Check and save at the right', async ({ page, api, state }) => {
+  test.setTimeout(20 * 15_000)
+  const dir = mkdtempSync(join(state.home, 'e2e-settings-account-'))
+  const { rev } = await api.ok<{ rev: number }>('GET', '/api/accounts')
+  const label = `e2e settings ${Date.now()}`
+  const made = await api.ok<{ account: { id: string } }>('POST', '/api/accounts', { adapter: 'claude', label, folder: dir, expectedRev: rev })
+  try {
+    await page.goto('/settings')
+    const card = page.locator('[data-accounts-card]')
+    await expect(card).toContainText('The logins your agents use. Each change saves at once.')
+    const add = card.locator('[data-account-add]')
+    await expect(add.locator('[data-account-add-submit]')).toBeDisabled()
+    await expect(add.locator('[data-account-add-needs]')).toHaveText('Needs a label and a folder.')
+    await add.locator('[data-account-add-label]').fill('Work')
+    const folderInput = add.locator('[data-account-add-folder] input[role="combobox"]')
+    await folderInput.fill(dir)
+    await folderInput.press('Escape')
+    await expect(add.locator('[data-account-add-needs]')).toHaveText('Saves at once.')
+    await expect(add.locator('[data-account-add-submit]')).toBeEnabled()
+    await add.locator('[data-account-add-label]').fill('')
+    // The order of a rename's and a remove question's buttons: the one that changes nothing first.
+    const row = card.locator(`[data-account-row="${made.account.id}"]`)
+    await row.locator('[data-account-rename]').click()
+    const renameButtons = await row.getByRole('button').evaluateAll((bs) => bs.map((b) => b.textContent?.trim()))
+    expect(renameButtons.indexOf('Cancel')).toBeLessThan(renameButtons.indexOf('Save'))
+    await row.locator('[data-account-rename-cancel]').click()
+    await row.locator('[data-account-remove]').click()
+    const removeButtons = await row.getByRole('button').evaluateAll((bs) => bs.map((b) => b.textContent?.trim()))
+    expect(removeButtons.indexOf('Keep it')).toBeLessThan(removeButtons.indexOf('Remove'))
+    await row.locator('[data-account-remove-keep]').click()
+    // The default badge shows where an agent has two logins to choose from.
+    await expect(card.locator('[data-accounts-adapter="claude"] [data-account-is-default]')).toHaveCount(1)
+    // GitHub: Check and save at the right end of its foot, the note left of it.
+    const foot = page.locator('[data-settings-github] [data-github-foot]')
+    await foot.scrollIntoViewIfNeeded()
+    const f = await boxOf(foot)
+    const b = await boxOf(foot.locator('[data-github-save]'))
+    expect(Math.abs(f.right - b.right)).toBeLessThanOrEqual(1)
+    await expect(page.locator('[data-settings-github]')).toContainText('Saved by its own button.')
+  } finally {
+    const d = await api.ok<{ rev: number }>('GET', '/api/accounts')
+    await api.call('DELETE', `/api/accounts/${made.account.id}?expectedRev=${d.rev}`)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// Edits not saved stay while another page is open (UX3 R81): back on Settings the field and the bar show them; a setting saved
+// meanwhile wins; a reload drops them.
+test('Settings keeps an edit not saved across a visit to another page, a setting saved meanwhile wins, and a reload drops it', async ({ page, state }) => {
+  test.setTimeout(20 * 15_000)
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  await page.locator('[data-yolo-switch]').click()
+  const mine = join(state.root, 'settings-draft-mine')
+  const theirs = join(state.root, 'settings-draft-theirs')
+  await page.getByLabel('Default folder', { exact: true }).fill(mine)
+  await expect(page.locator('[data-settings-changed]')).toHaveText('Changed: Where agents work, How agents run. Saving restarts the server.')
+  // Another page, in the same window.
+  await page.locator('a[href="/yard"]').first().click()
+  await expect(page).toHaveURL(/\/yard/)
+  // Meanwhile the default folder is saved elsewhere (the app's settings change under the page): that one wins.
+  await page.evaluate((theirs) => {
+    const w = window as unknown as { conductorDesktop: { settings: { set: (p: object) => Promise<unknown> } }; e2eSets: object[] }
+    return w.conductorDesktop.settings.set({ defaultCwd: theirs }).then(() => w.e2eSets.pop())
+  }, theirs)
+  await viaMore(page, 'Settings')
+  await expect(page).toHaveURL(/\/settings/)
+  await settled(page, 'linux')
+  await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByLabel('Default folder', { exact: true })).toHaveValue(theirs)
+  await expect(page.locator('[data-settings-changed]')).toHaveText('Changed: How agents run. Saving restarts the server.')
+  // A reload drops what was not saved.
+  await page.reload()
+  await settled(page, 'linux')
+  await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'false')
+  await expect(page.locator('[data-save-settings]')).toBeDisabled()
+})

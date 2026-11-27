@@ -88,7 +88,8 @@ export function argContext(line: string, cursor: number, flags: readonly AgentFl
   const before = words.filter((w) => w !== word && w.end <= (word ? word.start : cursor))
   if (before.some((w) => w.text === '--' && !w.quote)) return { kind: 'none' }
   const inner = word ? word.start + (word.quote ? 1 : 0) : cursor
-  const typed = word ? line.slice(inner, Math.max(cursor, inner)) : ''
+  // A closed quote at the cursor: what it holds, without the quote that closes it.
+  const typed = !word ? '' : word.quote && !word.open && cursor >= word.end ? word.text : line.slice(inner, Math.max(cursor, inner))
   const from = word ? word.start : cursor
   const to = word ? word.end : cursor
   // `--flag=part`: a value of that flag, filled in after the `=`.
@@ -226,4 +227,32 @@ export function holdsYolo(line: string, flags: readonly AgentFlag[]): boolean {
     if (value !== undefined && (f.choices ?? []).some((c) => c.set === 'yolo' && c.value === value)) return true
   }
   return false
+}
+
+/**
+ * The prefix GET /api/paths lists for a folder flag's value at the cursor (a flag of kind folder, as --add-dir): what is typed when
+ * it is an absolute path; the folder that holds the session's folder when nothing is typed, so that the folders beside it are
+ * listed (`cwd`: the session's folder, '' for the server's default, which the caller reads from the listing's `dir`); null for a
+ * relative path and for any other word: nothing is listed for it.
+ */
+export function folderPrefix(ctx: ArgContext, cwd: string): string | null {
+  if (ctx.kind !== 'value' || ctx.flag.kind !== 'folder') return null
+  if (ctx.typed === '') {
+    const c = cwd.trim().replace(/\/+$/, '')
+    if (!c.startsWith('/')) return null
+    return c.slice(0, c.lastIndexOf('/') + 1)
+  }
+  return ctx.typed.startsWith('/') ? ctx.typed : null
+}
+
+/**
+ * The rows of a folder flag's value: each folder listed, its path put in place of the word (in quotes when it holds a space) and the
+ * cursor after it with no space, so that the list goes on to that folder's children; a space typed ends the value.
+ */
+export function folderRows(line: string, ctx: ArgContext, folders: readonly { path: string; name: string }[]): ArgRow[] {
+  if (ctx.kind !== 'value') return []
+  return folders.map((f) => {
+    const word = valueWord(f.path)
+    return { key: f.path, label: f.name, text: line.slice(0, ctx.from) + word + line.slice(ctx.to), cursor: ctx.from + word.length }
+  })
 }

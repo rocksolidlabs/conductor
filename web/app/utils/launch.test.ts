@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { cutAtWord, firstMessageLine, isLoopbackHost, launchKey, messageProblem, namePreview, noFirstMessageLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
+import { argsHoldYolo, argsNameModel, chipStep, cutAtWord, firstMessageLine, isLoopbackHost, launchKey, launchNote, launchRefusal, messageProblem, namePlaceholderFor, namePreview, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
 
 describe('showsRunsOn', () => {
   it('never asks in the desktop app', () => {
@@ -109,14 +109,46 @@ describe('which agents take a first message', () => {
     expect(takesFirstMessage({ firstMessage: false })).toBe(false)
     expect(takesFirstMessage(undefined)).toBe(false)
   })
-  it('says why another does not, naming those offered that do', () => {
-    const claude = { name: 'Claude Code', firstMessage: true }
-    const codex = { name: 'Codex', firstMessage: true }
-    const aider = { name: 'aider' }
-    expect(noFirstMessageLine([claude, codex, aider])).toBe("Conductor types a first message only where it knows the agent's prompt: Claude Code and Codex here.")
-    expect(noFirstMessageLine([claude, aider])).toBe("Conductor types a first message only where it knows the agent's prompt: Claude Code here.")
-    expect(noFirstMessageLine([{ name: 'A', firstMessage: true }, { name: 'B', firstMessage: true }, codex])).toBe("Conductor types a first message only where it knows the agent's prompt: A, B and Codex here.")
-    expect(noFirstMessageLine([aider])).toBe("Conductor types a first message only where it knows the agent's prompt, and knows none of these agents' prompts.")
+  it('says, in place of the task, that an agent which takes none starts at its prompt, and where its task goes', () => {
+    expect(noTaskLine({ name: 'Plain', allowArgs: true })).toBe('Plain starts at its prompt. Type your task in its terminal.')
+    expect(noTaskLine({ name: 'Shell' })).toBe('Shell starts at its prompt.')
+    // The old line, which explained why, is gone.
+    expect(noTaskLine({ name: 'aider', allowArgs: true })).not.toContain('Conductor types a first message')
+  })
+})
+
+describe("the Agent row's keys", () => {
+  const ids = ['claude', 'codex', 'shell']
+  it('moves to the next and the previous chip, round at the ends, and to the first and the last', () => {
+    expect(chipStep(ids, 'claude', 'ArrowRight')).toBe('codex')
+    expect(chipStep(ids, 'claude', 'ArrowDown')).toBe('codex')
+    expect(chipStep(ids, 'shell', 'ArrowRight')).toBe('claude')
+    expect(chipStep(ids, 'claude', 'ArrowLeft')).toBe('shell')
+    expect(chipStep(ids, 'codex', 'ArrowUp')).toBe('claude')
+    expect(chipStep(ids, 'codex', 'Home')).toBe('claude')
+    expect(chipStep(ids, 'codex', 'End')).toBe('shell')
+  })
+  it('starts from the first when nothing offered is picked, and moves nothing for another key or no chips', () => {
+    expect(chipStep(ids, '', 'ArrowRight')).toBe('codex')
+    expect(chipStep(ids, 'claude', 'Tab')).toBeNull()
+    expect(chipStep(ids, 'claude', 'a')).toBeNull()
+    expect(chipStep([], '', 'ArrowRight')).toBeNull()
+  })
+})
+
+describe('a launch the server refused, in the dialog', () => {
+  it("says a folder's refusal under Folder in plain words", () => {
+    expect(launchRefusal('invalid_cwd', 'working directory is outside the allowed roots')).toEqual({ at: 'folder', words: "Agents can't use this folder yet.", outside: true })
+    expect(launchRefusal('invalid_cwd', 'working directory does not exist')).toEqual({ at: 'folder', words: 'There is no folder at this path.' })
+    expect(launchRefusal('invalid_cwd', 'working directory is not a directory')).toEqual({ at: 'folder', words: 'This is a file, not a folder.' })
+    expect(launchRefusal('invalid_cwd', 'invalid working directory')).toEqual({ at: 'folder', words: 'Invalid working directory.' })
+  })
+  it("says any other refusal on top as Not started, in the server's words, with no code in them", () => {
+    expect(launchRefusal('invalid_request', 'the arguments choose a model already: set the model in one place')).toEqual({ at: 'top', words: 'Not started: the arguments choose a model already: set the model in one place.' })
+    expect(launchRefusal('spawn_failed', 'could not start the agent process.')).toEqual({ at: 'top', words: 'Not started: could not start the agent process.' })
+    expect(launchRefusal('', 'Failed to fetch')).toEqual({ at: 'top', words: 'Not started: Failed to fetch.' })
+    expect(launchRefusal('x', '').words).toBe('Not started.')
+    expect(launchRefusal('invalid_request', 'bad').words).not.toContain('invalid_request')
   })
 })
 
@@ -149,3 +181,50 @@ describe('the keys that launch from the Launch dialog', () => {
     expect(launchKey(key({ key: 'a', ctrlKey: true }), true)).toBe(false)
   })
 })
+
+describe("Launch agent's More options, before the press", () => {
+  it('sees a model the arguments name, in each spelling the agents take', () => {
+    expect(argsNameModel(['--model', 'opus'])).toBe(true)
+    expect(argsNameModel(['--model=opus'])).toBe(true)
+    expect(argsNameModel(['-m', 'o3'])).toBe(true)
+    expect(argsNameModel(['--add-dir', '../shared'])).toBe(false)
+    expect(argsNameModel(['--models'])).toBe(false)
+    expect(argsNameModel([])).toBe(false)
+  })
+  it("sees the agent's own yolo arguments typed by hand, and nothing for an agent with no recipe", () => {
+    expect(argsHoldYolo(['--dangerously-skip-permissions'], ['--dangerously-skip-permissions'])).toBe(true)
+    expect(argsHoldYolo(['--add-dir', 'x'], ['--dangerously-skip-permissions'])).toBe(false)
+    expect(argsHoldYolo(['--yolo'], undefined)).toBe(false)
+    expect(argsHoldYolo(['--yolo'], [])).toBe(false)
+  })
+  it("gives Name's placeholder from the task, or the server's name for an agent that takes none", () => {
+    expect(namePlaceholderFor({ name: 'Claude Code' }, true, '')).toBe('Made from the task')
+    expect(namePlaceholderFor({ name: 'Claude Code' }, true, 'fix the build')).toBe(namePreview('fix the build'))
+    expect(namePlaceholderFor({ name: 'Plain' }, false, 'ignored')).toBe('Plain and a number')
+    expect(namePlaceholderFor(undefined, true, 'x')).toBe('')
+    expect(namePlaceholderFor({ name: 'Claude Code' }, true, '')).not.toBe('optional')
+  })
+})
+
+describe("the line under Launch agent's Account", () => {
+  const base = { state: 'ok', windows: [], limits: { source: 'provider' as const }, account: { id: 'work', label: 'Work' } }
+  const agent = { name: 'Claude Code' }
+  const win = (name: string, percent: number, severity: '' | 'normal' | 'warning' | 'critical' = 'normal', resetsAt?: string) => ({ source: 'provider' as const, kind: name, name, percent, severity, resetsAt })
+  it('names the window near its limit, its share and its reset, in the warning colour, the error colour when critical', () => {
+    const near = launchNote({ ...base, windows: [win('5-hour', 30), win('Weekly, all models', 92, 'warning', '2026-11-17T13:30:00Z')] }, agent, 'UTC')
+    expect(near).toEqual({ words: 'Work is near a limit: Weekly, all models 92% used, resets Tue 17 Nov 13:30. The agent may stop before then.', tone: 'warning' })
+    expect(launchNote({ ...base, windows: [win('5-hour', 95)] }, agent)?.words).toBe('Work is near a limit: 5-hour 95% used. The agent may stop before then.')
+    expect(launchNote({ ...base, windows: [win('5-hour', 95, 'warning'), win('Weekly', 60, 'critical')] }, agent)).toMatchObject({ tone: 'error', words: expect.stringContaining('Weekly 60% used') })
+  })
+  it("says a limit reached, in the provider's word, and a login signed out", () => {
+    expect(launchNote({ ...base, limits: { source: 'provider', reached: 'rate_limit_reached' } }, agent)).toEqual({ words: 'Work has reached a limit, its provider says. The agent may stop at once.', tone: 'error' })
+    expect(launchNote({ ...base, state: 'signed_out', account: { id: 'default' } }, agent)).toEqual({ words: 'Claude Code is signed out on Default login. It will ask you to sign in when it starts.', tone: 'warning' })
+  })
+  it('says nothing when all is fine, while nothing is known, or for another state', () => {
+    expect(launchNote({ ...base, windows: [win('5-hour', 12)] }, agent)).toBeNull()
+    expect(launchNote(null, agent)).toBeNull()
+    expect(launchNote({ ...base, state: 'error' }, agent)).toBeNull()
+    expect(launchNote(base, undefined)).toBeNull()
+  })
+})
+

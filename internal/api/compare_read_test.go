@@ -69,7 +69,7 @@ func TestComparisonRoute(t *testing.T) {
 		status int
 		words  string
 	}{
-		{"/api/runs/" + ce.plain + "/comparison", http.StatusNotFound, "this run is not a comparison"},
+		{"/api/runs/" + ce.plain + "/comparison", http.StatusNotFound, "this run is not a trial"},
 		{"/api/runs/api-0000dead/comparison", http.StatusNotFound, "no such run"},
 		{"/api/runs/NOT%20A%20RUN/comparison", http.StatusBadRequest, "a run id"},
 		{"/api/runs/" + ce.run + "/comparison?task=approach-a", http.StatusBadRequest, ""},
