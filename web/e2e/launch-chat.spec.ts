@@ -79,7 +79,17 @@ async function pick(dialog: Locator, name: string) {
 /** The dialog's Run as, and its two sides. */
 function runAs(dialog: Locator) {
   const choice = dialog.locator('[data-launch-run-as]')
-  return { choice, terminal: choice.locator('[data-run-as-side="terminal"]'), chat: choice.locator('[data-run-as-side="protocol"]'), line: choice.locator('[data-run-as-line]') }
+  return { choice, terminal: choice.locator('[data-run-as-side="terminal"]'), chat: choice.locator('[data-run-as-side="protocol"]') }
+}
+
+/**
+ * The sizes of the dialog and of its Run as, measured at rest (AGENTS.md, "Measure a thing at rest"): once the dialog's own
+ * animations (its opening) have ended. Sizes, not places: the dialog is centred, so its place follows its height.
+ */
+async function sizes(dialog: Locator): Promise<{ dialog: number; width: number; height: number }> {
+  await dialog.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)))
+  const [d, c] = await Promise.all([dialog.boundingBox(), runAs(dialog).choice.boundingBox()])
+  return { dialog: d!.height, width: c!.width, height: c!.height }
 }
 
 /** Launches from the open dialog and returns the session the server made, held for the end before anything else can fail. */
@@ -118,20 +128,20 @@ test('a launch as Chat starts in its terminal, says it moves, and is a chat afte
     const dialog = await openLaunch(page)
     await pick(dialog, CHAT_AGENT)
     budget(10 * STEP_MS)
-    // The first time: Terminal, in the header switch's order, and no line.
+    // The first time: Terminal, in the header switch's order; the choice alone, its text the two sides' and nothing more.
     const r = runAs(dialog)
     await expect(r.choice).toBeVisible()
     await expect(r.choice.getByRole('radio')).toHaveText(['Terminal', 'Chat'])
     await expect(r.terminal).toHaveAttribute('aria-checked', 'true')
-    await expect(r.line).toHaveCount(0)
-    // One press picks Chat, and its line says what a launch as a chat does; the arrow keys move between the two.
+    const asTerminal = await sizes(dialog)
+    // One press picks Chat: the picked side shows, and nothing is added: the dialog does not grow. The arrow keys move between the two.
     await r.chat.click()
     await expect(r.chat).toHaveAttribute('aria-checked', 'true')
-    await expect(r.line).toHaveText('Starts in its terminal, then moves to Chat.')
+    expect((await r.choice.innerText()).replace(/\s+/g, ' ').trim()).toBe('Run as Terminal Chat')
+    expect(await sizes(dialog)).toEqual(asTerminal)
     await r.chat.press('ArrowLeft')
     await expect(r.terminal).toHaveAttribute('aria-checked', 'true')
     await expect(r.terminal).toBeFocused()
-    await expect(r.line).toHaveCount(0)
     await r.terminal.press('ArrowRight')
     await expect(r.chat).toHaveAttribute('aria-checked', 'true')
     await expect(r.chat).toBeFocused()
@@ -218,7 +228,6 @@ test('Run as comes back as the agent was last launched, is not kept by a cancel,
     dialog = await openLaunch(page)
     await pick(dialog, CHAT_AGENT)
     await expect(runAs(dialog).chat).toHaveAttribute('aria-checked', 'true')
-    await expect(runAs(dialog).line).toHaveText('Starts in its terminal, then moves to Chat.')
     await dialog.getByRole('button', { name: 'Cancel' }).click()
   } finally {
     await page.context().close()
