@@ -66,6 +66,21 @@ export class RowDrafts {
     else if (d?.text === line) this.drafts.set(id, { ...d, kept: true })
   }
 
+  /**
+   * The line bound to `from` is bound to `to` now (UX3 R5): a line begun while its question had no id yet takes the id when it comes.
+   * Any other line is left as it is.
+   */
+  rebind(id: string, from: string, to: string): void {
+    const d = this.drafts.get(id)
+    if (d && d.question === from) this.drafts.set(id, { ...d, question: to })
+  }
+
+  /** The line is bound to no question now (UX3 R5): its question was already answered from this page, and it goes as a message. */
+  free(id: string): void {
+    const d = this.drafts.get(id)
+    if (d) this.drafts.set(id, { text: d.text })
+  }
+
   /** Drops the lines of sessions no longer listed. */
   keep(ids: Iterable<string>): void {
     const listed = new Set(ids)

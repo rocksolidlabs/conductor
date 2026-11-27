@@ -48,6 +48,8 @@ async function answered(page: Page, id: string, word: string) {
   await expect.poll(async () => (await own.api.session(id)).attention?.state ?? '', { timeout: LONG_MS }).not.toBe('needs_input')
   const answer = page.locator('[data-chat-prompt-answer]')
   await expect(answer).toHaveText(word)
+  // Received as the question's answer, never as a message: no message bubble holds the words.
+  await expect(page.locator('[data-chat-prompt-text]').filter({ hasText: word })).toHaveCount(0)
   await expect(answer).toHaveAttribute('data-answer-own', 'true')
   await expect(page.locator('[data-chat-answer-line]')).toHaveText(OWN_LINE)
   await expect(page.locator('[data-quick-reply]')).toHaveCount(0)
