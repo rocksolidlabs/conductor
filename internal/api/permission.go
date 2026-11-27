@@ -6,9 +6,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/agentproto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -133,6 +135,13 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 	}
 	local, ok := d.(*session.Local)
 	if !ok {
+		_ = reply(session.Verdict{Message: session.NotACallWords})
+		return
+	}
+	if name, _ := local.ProtocolName(); name != agentproto.ClaudeStreamJSON && slices.Contains(agentproto.Names(), name) {
+		// Only Claude Code's program asks through this route: another
+		// protocol's agent asks in its own stream, and a request here is
+		// none of its calls.
 		_ = reply(session.Verdict{Message: session.NotACallWords})
 		return
 	}
