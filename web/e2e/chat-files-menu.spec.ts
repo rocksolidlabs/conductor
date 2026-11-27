@@ -94,9 +94,12 @@ test('the list stays open through a turn that ends while it shows; a control lin
     await box(c.g).click()
     await c.g.keyboard.type('@no')
     await expect(box(c.g)).toHaveValue('@no')
-    // A picked file there would never be attached: no list (UX3 R10). Read again after a moment the find would have answered in.
-    await c.g.keyboard.type('t')
-    await expect(box(c.g)).toHaveValue('@not')
+    // A picked file there would never be attached: no list (UX3 R10). Read once the operator's own list for the same word has
+    // drawn from its find: the moment the link's would have.
+    await box(page).fill('')
+    await box(page).click()
+    await page.keyboard.type('@no')
+    await expect(row(page, 'notes.txt')).toBeVisible({ timeout: LONG_MS })
     await expect(c.g.locator('[data-chat-menu]')).toHaveCount(0)
   } finally {
     await page.context().close()

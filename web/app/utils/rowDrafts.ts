@@ -39,9 +39,11 @@ export class RowDrafts {
       this.drafts.delete(id)
       // A message the owner refused while the person wrote another comes back once the box is empty (putBack).
       const back = this.back.get(id)
-      if (back !== undefined) {
-        this.back.delete(id)
-        this.drafts.set(id, { text: back })
+      if (back?.length) {
+        const [first, ...rest] = back
+        if (rest.length) this.back.set(id, rest)
+        else this.back.delete(id)
+        this.drafts.set(id, { text: first! })
       }
       return
     }
@@ -72,17 +74,23 @@ export class RowDrafts {
     else if (d?.text === line) this.drafts.set(id, { ...d, kept: true })
   }
 
-  /** Messages the owner refused (`not_sent`) while the person had begun another line in that box, by session. */
-  private readonly back = new Map<string, string>()
+  /** Messages the owner refused (`not_sent`) while the person had begun another line in that box, by session, in order. */
+  private readonly back = new Map<string, string[]>()
 
   /**
    * A message the owner refused (`not_sent`) comes back into its own session's box, as a message bound to no question (UX3 R10): at
-   * once when that box is empty, else as soon as the person empties it. It is never dropped for a line typed meanwhile.
+   * once when that box is empty, else as soon as the person empties it, one at a time in the order they were refused. None is
+   * dropped for a line typed meanwhile, nor for another refused after it.
    */
   putBack(id: string, text: string): void {
     if (!text) return
     if (this.text(id) === '') this.drafts.set(id, { text })
-    else this.back.set(id, text)
+    else this.back.set(id, [...(this.back.get(id) ?? []), text])
+  }
+
+  /** How many refused messages wait for the session's box to be emptied. */
+  waiting(id: string): number {
+    return this.back.get(id)?.length ?? 0
   }
 
   /**

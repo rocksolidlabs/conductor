@@ -221,3 +221,31 @@ test("the server's word is the box's: once the session becomes a crew's member, 
     await page.context().close()
   }
 })
+
+test("a line the page put in the box opens no list, and goes as written", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const { conv } = await aChat(page, 'e2e expand page line')
+    budget(8 * STEP_MS + 3 * LONG_MS)
+    // The person's own @ word opens the list: the find answers here.
+    await box(page).click()
+    await page.keyboard.type('@no')
+    await expect(page.locator('[data-chat-menu-row="notes.txt"]')).toBeVisible({ timeout: LONG_MS })
+    await page.keyboard.press('Escape')
+    await box(page).fill('')
+    // An @ word the page put in the box, the cursor in it: no file list opens to make it the person's.
+    await box(page).evaluate((el: HTMLTextAreaElement) => {
+      el.value = '@no'
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await box(page).click()
+    await box(page).press('End')
+    await expect(box(page)).toHaveValue('@no')
+    await expect(page.locator('[data-chat-view] [data-chat-menu]')).toHaveCount(0)
+    const n = marks(conv)
+    await box(page).press('Enter')
+    expect(await markOf(conv, n + 1)).toBe('marked')
+  } finally {
+    await page.context().close()
+  }
+})

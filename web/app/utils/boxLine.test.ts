@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { expandsLine, freeHeld, markInput, ownInput } from './boxLine'
+import { afterPick, expandsLine, freeHeld, listsOpen, markInput, ownInput } from './boxLine'
 import { OwnLines, RowDrafts } from './rowDrafts'
 
 // Whose the chat box's line is (UX3 R10): only the person's own typing, line breaks, composing, pasting and deleting, or their own
@@ -62,5 +62,21 @@ describe("whose the box's line is", () => {
     own.typed('s', '/compact')
     expect(expandsLine(false, own, 's', '/compact')).toBe(false)
     expect(expandsLine(true, own, 's', '/compact')).toBe(true)
+  })
+
+  it("aPickNeverMakesThePagesLineThePersons: the person's own press into their own line keeps it theirs; into the page's line it stays the page's", () => {
+    const own = new OwnLines()
+    afterPick(own, 's', '/compact ', { trusted: true, wasMine: false })
+    expect(expandsLine(true, own, 's', '/compact ')).toBe(false)
+    afterPick(own, 's', '@notes.txt ', { trusted: false, wasMine: true })
+    expect(expandsLine(true, own, 's', '@notes.txt ')).toBe(false)
+    afterPick(own, 's', '@notes.txt ', { trusted: true, wasMine: true })
+    expect(expandsLine(true, own, 's', '@notes.txt ')).toBe(true)
+  })
+
+  it("listsOpenOnThePersonsOwnLineAlone, and never while the box would answer", () => {
+    expect(listsOpen({ mine: true, answering: false })).toBe(true)
+    expect(listsOpen({ mine: false, answering: false })).toBe(false)
+    expect(listsOpen({ mine: true, answering: true })).toBe(false)
   })
 })
