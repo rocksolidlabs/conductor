@@ -38,7 +38,7 @@ make mobile-android-notices    # every package the Android release build carries
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)
-make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
+make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine, and the flags an arguments field reads from each CLI's help (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
 python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/ and mobile/)
 python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py, live_setup.py, go_test_groups.py, ios_project.py and android_project.py: the phone shell's iOS and Android projects held to what they must not ship; ios_boot.py and android_boot.py: their fetches tried again)
