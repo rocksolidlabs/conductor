@@ -331,7 +331,7 @@ func TestHeldAnswerToASelectionIsRefused(t *testing.T) {
 	se.pass(t, se.run.ID, "approach-b", 1)
 	row := selectionWhen(t, se.ld, "open", rowIn(ledger.DecisionOpen), se.run.ID)
 	rc, err := se.e.RespondHeld(t.Context(), row.ID(), Response{ResponseID: "h1", Choice: choice(0), Rationale: "a is smaller", ExpectedRev: row.Rev}, "user:ana", held("ana", grantAdmin, "f-1"), heldStatement)
-	if de := decisionFailure(err); de == nil || de.Code != CodeNotApprover || !strings.Contains(rc.Words, "is a comparison's selection: it is answered only at this server") {
+	if de := decisionFailure(err); de == nil || de.Code != CodeNotApprover || !strings.Contains(rc.Words, "is a trial's selection: it is answered only at this server") {
 		t.Fatalf("the held answer to the selection: %+v %v", rc, err)
 	}
 	rec := decisionWhen(t, se.ld, row.ID(), "open", inState(ledger.DecisionOpen))

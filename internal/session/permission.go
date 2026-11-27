@@ -599,6 +599,10 @@ func strictCanonical(input []byte) ([]byte, bool) {
 	return bytes.TrimSuffix(b.Bytes(), []byte{'\n'}), true
 }
 
+// StrictCanonical is strictCanonical, for a driver that judges a line or a
+// value as the session does: false for what does not decode cleanly.
+func StrictCanonical(input []byte) ([]byte, bool) { return strictCanonical(input) }
+
 // maxInputDepth bounds the nesting of a request's input.
 const maxInputDepth = 256
 
@@ -819,10 +823,10 @@ const (
 )
 
 // streamFloored is the floor's walk of a call that came in an agent's
-// stream: a call whose input holds its raw input, its locations or its
-// content (an ACP agent's tool call: rawInput, locations, content's diffs)
-// names a place of the deny list anywhere in them or in its title, whatever
-// the call's kind. Every string they hold is judged as a command line's
+// stream: a call whose input holds its raw input, its locations, its
+// content or its title (an ACP agent's tool call: rawInput, locations,
+// content's diffs, title) names a place of the deny list anywhere in them,
+// whatever the call's kind. Every string they hold is judged as a command line's
 // words, from the session's folder and from each folder the raw input says
 // the call runs in (each folder judged once, before the walk: under the
 // list, as it is spelled, and as its links lead), and, where it looks like a
@@ -842,7 +846,8 @@ func (s *Local) streamFloored(input []byte) bool {
 	_, hasRaw := fields["rawInput"]
 	_, hasLoc := fields["locations"]
 	_, hasContent := fields["content"]
-	if !hasRaw && !hasLoc && !hasContent {
+	_, hasTitle := fields["title"]
+	if !hasRaw && !hasLoc && !hasContent && !hasTitle {
 		return false
 	}
 	// The folders the words are read from: the session's, and each the raw
@@ -965,7 +970,9 @@ func linksFirst(p string) (string, bool) {
 		}
 		hops++
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(cur, target)
+			// Joined as the system joins it, not cleaned by its letters: a
+			// link inside the target is followed before the ".." after it.
+			target = cur + string(filepath.Separator) + target
 		}
 		// The link's target, its own parts walked the same way, then the
 		// rest.

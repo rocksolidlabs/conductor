@@ -53,6 +53,23 @@ export interface PressedRoot {
 
 const PRESSED_KINDS = ['', 'home', 'above_home', 'holds_data'] as const
 
+/** under says whether path is root or lies inside it. */
+function under(path: string, root: string): boolean {
+  return path === root || path.startsWith(root.replace(/\/+$/, '') + '/')
+}
+
+/**
+ * typedDefault makes the folder the default folder lies in a typed one when only a pressed folder holds it: choosing a default
+ * folder in Settings is typing its folder there. The pressed entry leaves pressedRoots for allowedRoots, so the default folder
+ * always lies under a typed folder, as validate asks.
+ */
+export function typedDefault<T extends Pick<DesktopSettings, 'allowedRoots' | 'pressedRoots' | 'defaultCwd'>>(s: T): T {
+  if (!s.defaultCwd || (s.allowedRoots ?? []).some((r) => under(s.defaultCwd, r))) return s
+  const holder = (s.pressedRoots ?? []).find((p) => under(s.defaultCwd, p.path))
+  if (!holder) return s
+  return { ...s, allowedRoots: [...(s.allowedRoots ?? []), holder.path], pressedRoots: (s.pressedRoots ?? []).filter((p) => p !== holder) }
+}
+
 /** rootPaths are every folder agents may use, as a person sees them: the typed ones, then the pressed ones not among them. */
 export function rootPaths(s: Pick<DesktopSettings, 'allowedRoots' | 'pressedRoots'>): string[] {
   const out = [...(s.allowedRoots ?? [])]
@@ -64,9 +81,11 @@ export function rootPaths(s: Pick<DesktopSettings, 'allowedRoots' | 'pressedRoot
  * shownSettings are the settings as the Settings page has them: one list of folders (rootPaths), the press's apart from the typed
  * ones being the app's own business.
  */
-export function shownSettings(s: DesktopSettings): Omit<DesktopSettings, 'pressedRoots'> {
+export function shownSettings(s: DesktopSettings): Omit<DesktopSettings, 'pressedRoots'> & { pressedPaths: string[] } {
   const { pressedRoots: _pressed, ...rest } = s
-  return { ...rest, allowedRoots: rootPaths(s) }
+  // pressedPaths, read-only: which folders of the list a press added, for the page to say at a field what a save would do. Nothing
+  // the page sends under this name, or under pressedRoots, is ever taken (SettingsSaver).
+  return { ...rest, allowedRoots: rootPaths(s), pressedPaths: (s.pressedRoots ?? []).map((p) => p.path) }
 }
 
 /**
@@ -209,7 +228,8 @@ export function validate(s: DesktopSettings, posix = false): string[] {
   for (const r of s.allowedRoots ?? []) if (!r || !absolute(r)) out.push(`allowed root ${JSON.stringify(r)} must be ${kind}`)
   for (const p of s.pressedRoots ?? []) if (!p || typeof p.path !== 'string' || !absolute(p.path)) out.push(`allowed root ${JSON.stringify(p?.path)} must be ${kind}`)
   if (!s.defaultCwd || !absolute(s.defaultCwd)) out.push(`the default working directory must be ${kind}`)
-  else if (s.allowedRoots?.length && !rootPaths(s).some((r) => s.defaultCwd === r || s.defaultCwd.startsWith(r.replace(/\/+$/, '') + '/'))) out.push('the default working directory must lie under an allowed root')
+  // Under a typed folder, as the release before reads it: a file written here always loads there.
+  else if (s.allowedRoots?.length && !s.allowedRoots.some((r) => under(s.defaultCwd, r))) out.push('the default working directory must lie under an allowed root')
   if (!['auto', 'manual', 'off'].includes(s.reach)) out.push('reach must be auto, manual or off')
   // Off, nothing is published there: a switchyard the server would refuse is kept, and never handed to it (serverEnv).
   if (s.switchyardEnabled && s.switchyardServer) {
@@ -252,7 +272,7 @@ export function migrateToWsl(s: DesktopSettings, linuxHome: string): { settings:
 export function loadSettings(file: string, defaults: DesktopSettings): DesktopSettings {
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<DesktopSettings>
-    const merged: DesktopSettings = { ...defaults, ...pick(raw) }
+    const merged: DesktopSettings = typedDefault({ ...defaults, ...pick(raw) })
     return validate(merged).some((p) => p !== PLAIN_SWITCHYARD && p !== SWITCHYARD_EXTRA && p !== SWITCHYARD_SHAPE) ? defaults : merged
   } catch {
     return defaults

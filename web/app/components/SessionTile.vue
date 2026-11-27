@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
 import type { TerminalTransport } from '~/utils/transport/types'
-import { isEnded } from '~/utils/attention'
+import { answerDigit, isEnded } from '~/utils/attention'
 import { agentInitials } from '~/utils/sessions'
 import { sessionStatus, type MarkView } from '~/utils/status'
 import { TILE_FONT_SIZE, TILE_SCROLLBACK } from '~/utils/tile'
@@ -24,11 +24,15 @@ const props = defineProps<{
 
 const emit = defineEmits<{ select: []; digit: [n: number] }>()
 
-/** A number key on the frame itself (not its terminal, not a field), handed to the page: a run's tile answers its question with it. */
+/**
+ * A number key on the frame itself (not its terminal, not a field), handed to the page: a run's tile answers its question with it.
+ * A held key's repeats are taken and answer nothing (answerDigit).
+ */
 function frameKey(e: KeyboardEvent) {
   if (e.altKey || e.ctrlKey || e.metaKey || !/^[1-9]$/.test(e.key)) return
   e.preventDefault()
-  emit('digit', Number(e.key))
+  const n = answerDigit(e)
+  if (n) emit('digit', n)
 }
 
 const events = useEvents()

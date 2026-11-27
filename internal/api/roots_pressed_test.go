@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
@@ -132,5 +133,117 @@ func TestATypedFolderNotThereAtTheStartIsTakenOnceItIs(t *testing.T) {
 	mkdir(t, later)
 	if out := e.checkRoot(later); out["state"] != "allowed" {
 		t.Fatalf("a typed folder made after the start: %v", out)
+	}
+}
+
+// The start's judgement of a pressed folder is the press's, and fails
+// closed: any refusal, with words or without, leaves the folder unused,
+// and so does a kind the server does not know.
+func TestTheStartsJudgementIsThePresss(t *testing.T) {
+	ok := folderVerdict{path: "/srv/a", real: "/srv/a", state: folderOutside}
+	for _, c := range []struct {
+		name string
+		v    folderVerdict
+		p    config.PressedRoot
+		used bool
+	}{
+		{"a plain folder", ok, config.PressedRoot{Path: "/srv/a"}, true},
+		{"a refusal with no words", folderVerdict{path: "/srv/a", real: "/srv/a", state: folderOutside, refused: "a-reason-of-no-words"}, config.PressedRoot{Path: "/srv/a"}, false},
+		{"a kind the server does not know", ok, config.PressedRoot{Path: "/srv/a", Confirmed: "everything"}, false},
+		{"wide, confirmed as it", folderVerdict{path: "/srv/a", real: "/srv/a", state: folderOutside, wide: wideHome}, config.PressedRoot{Path: "/srv/a", Confirmed: wideHome}, true},
+		{"wide, confirmed as another", folderVerdict{path: "/srv/a", real: "/srv/a", state: folderOutside, wide: wideHome}, config.PressedRoot{Path: "/srv/a", Confirmed: wideAboveHome}, false},
+		{"missing", folderVerdict{path: "/srv/a", state: folderMissing}, config.PressedRoot{Path: "/srv/a"}, false},
+		{"through a link", folderVerdict{path: "/srv/a", real: "/srv/b", state: folderOutside}, config.PressedRoot{Path: "/srv/a"}, false},
+	} {
+		used, why := pressedVerdict(c.v, c.p)
+		if used != c.used || (!used && why == "") {
+			t.Errorf("%s: used %v, why %q", c.name, used, why)
+		}
+	}
+	// Through the start: an unknown kind is not used.
+	plain := mkdir(t, filepath.Join(realRoot(t, t.TempDir()), "plain"))
+	e := newTestEnv(t, func(c *config.Config) { c.PressedRoots = []config.PressedRoot{{Path: plain, Confirmed: "everything"}} })
+	if out := e.checkRoot(plain); out["state"] == "allowed" {
+		t.Fatalf("a pressed folder of an unknown kind is used: %v", out)
+	}
+}
+
+// After the start, a pressed folder moved away and replaced at its path,
+// first by a new folder and then by a link, leads nowhere: the check does
+// not say allowed, and a launch there is refused.
+func TestAPressedFolderReplacedAfterTheStartLeadsNowhere(t *testing.T) {
+	base := realRoot(t, t.TempDir())
+	elsewhere := realRoot(t, t.TempDir())
+	ok := mkdir(t, filepath.Join(base, "ok"))
+	e := newTestEnv(t, func(c *config.Config) { c.PressedRoots = []config.PressedRoot{{Path: ok}} })
+	if s := e.launchAt(ok); s != http.StatusCreated {
+		t.Fatalf("a launch before: %d", s)
+	}
+	if err := os.Rename(ok, ok+".was"); err != nil {
+		t.Fatal(err)
+	}
+	mkdir(t, ok)
+	if out := e.checkRoot(ok); out["state"] == "allowed" {
+		t.Fatalf("a new folder in its place: %v", out)
+	}
+	if s := e.launchAt(ok); s != http.StatusBadRequest {
+		t.Fatalf("a launch in the new folder: %d", s)
+	}
+	if err := os.Remove(ok); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, ok); err != nil {
+		t.Fatal(err)
+	}
+	if out := e.checkRoot(ok); out["state"] == "allowed" {
+		t.Fatalf("a link in its place: %v", out)
+	}
+	if s := e.launchAt(ok); s != http.StatusBadRequest {
+		t.Fatalf("a launch through the link: %d", s)
+	}
+}
+
+// A later look that finds the same device and number with another owner,
+// or another birth time, finds another folder: the root leads nowhere, and
+// an add says the folder changed.
+func TestALaterLookByOwnerAndBirth(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		change func(folderID) folderID
+	}{
+		{"another owner", func(id folderID) folderID { id.uid++; return id }},
+		{"another birth time", func(id folderID) folderID { id.birth += 1e9; return id }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newTestEnv(t, withDesktopKey)
+			folder := mkdir(t, filepath.Join(realRoot(t, t.TempDir()), "proj"))
+			var changed atomic.Bool
+			e.srv.roots.identity = func(p string, fi os.FileInfo) folderID {
+				id := identify(p, fi)
+				if id.birth == 0 {
+					id.birth = 1
+				}
+				if changed.Load() && p == folder {
+					return c.change(id)
+				}
+				return id
+			}
+			// The judgement's own identity, with a birth time to compare.
+			if status, out := e.allow(folder, ""); status != http.StatusOK {
+				t.Fatalf("allow: %d %v", status, out)
+			}
+			changed.Store(true)
+			if s := e.launchAt(folder); s != http.StatusBadRequest {
+				t.Fatalf("a launch in the folder seen as another: %d", s)
+			}
+			// The last look before an add.
+			other := mkdir(t, filepath.Join(realRoot(t, t.TempDir()), "next"))
+			changed.Store(false)
+			e.srv.roots.beforeAdd = func(string) { changed.Store(true) }
+			folder = other
+			if status, out := e.allow(other, ""); status != http.StatusConflict || errorCode(out) != "folder_changed" {
+				t.Fatalf("an add whose folder is seen as another at the last look: %d %v", status, out)
+			}
+		})
 	}
 }

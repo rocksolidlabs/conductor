@@ -1128,3 +1128,69 @@ func TestTheWalkOfACallsStringsIsBounded(t *testing.T) {
 		t.Fatal("linksFirst walked past its bound")
 	}
 }
+
+// A link whose target is relative is joined as the system joins it: a link
+// inside that target is followed before the ".." after it, so a path through
+// such a link and then ".." into a denied place is the denied place's.
+func TestTheFloorFollowsALinkInsideARelativeTarget(t *testing.T) {
+	base := realDir(t, t.TempDir())
+	data := filepath.Join(base, "conductor")
+	sibling := filepath.Join(base, "applications")
+	for _, d := range []string{data, sibling} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := realDir(t, t.TempDir())
+	if err := os.Symlink(sibling, filepath.Join(w, "c")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("c/../applications", filepath.Join(w, "M")); err != nil {
+		t.Fatal(err)
+	}
+	s, f, _ := permissionSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	through := filepath.Join(w, "M") + "/../conductor/hooks/new"
+	in := `{"file_path":"` + through + `","content":"x"}`
+	announce(f, "c-write", "Write", in)
+	if v := ask(s, "c-write", "Write", in).returned(t); v.Allow || v.Message != FloorWords {
+		t.Fatalf("a write through a link inside a relative target and ..: %+v", v)
+	}
+}
+
+// An in-stream call that carries only a title is floored by it.
+func TestAnACPCallWithOnlyATitleIsFloored(t *testing.T) {
+	data := realDir(t, t.TempDir())
+	s, _, f := protocolSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	f.TurnStarted("")
+	in := `{"kind":"execute","title":"cat ` + filepath.Join(data, "hosts.json") + `"}`
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "execute", Input: []byte(in)})
+	e, v := inStreamAsked(t, s, f, "req-1", "c1", "execute", in)
+	deniedWith(t, s, e, v, FloorWords)
+}
+
+// An answer is refused when the session no longer holds the call as it was
+// shown: announced again with another input after the request, the card's
+// Allow reaches nobody.
+func TestAnAnswerForACallAnnouncedAgainIsRefused(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "execute", Input: []byte(`{"title":"ls"}`)})
+	e, v := inStreamAsked(t, s, f, "req-1", "c1", "execute", `{"title":"ls"}`)
+	if v != nil || e.State != PermissionOpen {
+		t.Fatalf("not asked: %+v, replied %+v", e, v)
+	}
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "execute", Input: []byte(`{"title":"rm -rf ~"}`)})
+	owner, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Ada", Owner: true}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.AnswerPermission(context.Background(), owner, proto.PermissionAnswer{T: proto.CtlPermissionAnswer, ReqID: "a1", Question: e.Question, Call: e.Call, Sha256: e.InputSha256, Choice: proto.PermissionAllowOnce})
+	if !errors.Is(err, ErrStaleRequest) {
+		t.Fatalf("an answer for a call announced again: %v", err)
+	}
+	for _, r := range f.Replies() {
+		if r.Ref == "req-1" && r.Verdict.Allow {
+			t.Fatalf("allowed: %+v", r)
+		}
+	}
+}

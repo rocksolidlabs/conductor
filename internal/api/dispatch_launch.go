@@ -427,7 +427,7 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Candidates < 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request", "candidates is how many candidates the comparison's revision starts")
+		writeError(w, http.StatusBadRequest, "invalid_request", "candidates is how many candidates the trial's revision starts")
 		return
 	}
 	// A launch runs to its end when the client goes away: its store
@@ -495,7 +495,7 @@ func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *di
 			writeError(w, http.StatusConflict, dispatch.RefusalConfirmCandidates, fmt.Sprintf("this revision starts %d candidates: send candidates %d to launch them", f.Compare.Candidates, f.Compare.Candidates))
 			return
 		case f.Compare == nil && candidates != 0:
-			writeError(w, http.StatusBadRequest, dispatch.RefusalInvalid, fmt.Sprintf("candidates is sent with the launch of a comparison: revision %d starts none", v.N))
+			writeError(w, http.StatusBadRequest, dispatch.RefusalInvalid, fmt.Sprintf("candidates is sent with the launch of a trial: revision %d starts none", v.N))
 			return
 		}
 		if words := agentsChange(s.Catalog(), f, s.cfg.Yolo); words != "" {

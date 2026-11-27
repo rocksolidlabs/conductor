@@ -318,6 +318,30 @@ export class ServerWindows {
 }
 
 /**
+ * followTrusted wires the app's windows to the server it trusts: every state of the supervisor moves them (ServerWindows.moved),
+ * every page load in the session goes through mainFrameAllowed, and reload is the View menu's Reload for a window, loading its
+ * reloadTarget. It hands back the reload.
+ */
+export function followTrusted(o: {
+  supervisor: { on(event: 'state', fn: () => void): unknown }
+  windows: () => ShownWindow[]
+  requests: { onBeforeRequest(filter: { urls: string[] }, fn: (d: { resourceType: string; url: string }, cb: (r: { cancel: boolean }) => void) => void): void }
+  origin: () => string
+}): { reload: (w: ShownWindow | null) => void; shown: ServerWindows } {
+  const shown = new ServerWindows(o.windows)
+  o.requests.onBeforeRequest({ urls: ['<all_urls>'] }, (details, cb) => cb({ cancel: !mainFrameAllowed(details.resourceType, details.url, o.origin()) }))
+  o.supervisor.on('state', () => shown.moved(o.origin()))
+  return {
+    shown,
+    reload: (w) => {
+      if (!w || w.isDestroyed()) return
+      const target = shown.reloadTarget(w)
+      if (target) void w.webContents.loadURL(target).catch(() => {})
+    },
+  }
+}
+
+/**
  * mainFrameAllowed says whether a window's page may be loaded from url: a page of the server the app trusts, or anything that is
  * not http(s) (the app's own file: pages, about:blank). A reload, a history step or a load at an address the app does not trust
  * now is cancelled, in every window.

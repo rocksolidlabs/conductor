@@ -1317,7 +1317,9 @@ func TestServeReadsItsConfigurationThroughServeConfig(t *testing.T) {
 	var found bool
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
-		if !ok || fd.Name.Name != "runServe" {
+		// runServeAs is what serve and switchyard run (runServe and
+		// runSwitchyard hand it their arguments).
+		if !ok || fd.Name.Name != "runServeAs" {
 			continue
 		}
 		found = true
@@ -1336,10 +1338,10 @@ func TestServeReadsItsConfigurationThroughServeConfig(t *testing.T) {
 			return true
 		})
 		if calls["serveConfig"] != 1 || calls["config.Load"] != 0 {
-			t.Fatalf("runServe reads its configuration by %v, not serveConfig alone", calls)
+			t.Fatalf("runServeAs reads its configuration by %v, not serveConfig alone", calls)
 		}
 	}
 	if !found {
-		t.Fatal("no runServe in serve.go")
+		t.Fatal("no runServeAs in serve.go")
 	}
 }
