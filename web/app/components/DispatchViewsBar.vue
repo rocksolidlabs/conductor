@@ -260,7 +260,7 @@ defineExpose({ views, openSave, apply, applied })
     </template>
   </UModal>
 
-  <UModal v-model:open="deleteOpen" :title="deleting ? `Delete ${deleting.name}?` : 'Delete the view?'" description="A saved view deleted is gone for every browser; its tickets are not touched." :ui="{ content: 'max-w-md' }">
+  <UModal v-model:open="deleteOpen" :title="deleting ? `Delete ${deleting.name}?` : 'Delete the view?'" description="A saved view deleted is gone on every device; its tickets are not touched." :ui="{ content: 'max-w-md' }">
     <template #footer>
       <div class="flex w-full justify-end gap-2" data-view-delete-dialog>
         <UButton label="Cancel" color="neutral" variant="ghost" @click="deleteOpen = false" />

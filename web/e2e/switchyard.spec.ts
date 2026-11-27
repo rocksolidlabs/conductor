@@ -538,6 +538,8 @@ test("a run decision link through the switchyard: a phone answers a member's que
     await asked.locator('[data-inbox-evidence-toggle]').tap()
     await asked.locator(`[data-evidence-ref="session:${member}"] [data-evidence-terminal]`).tap()
     await expect(phone.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: STEP })
+    // The way back says so in words at a phone's width too (UX3 R17).
+    await expect(phone.getByRole('button', { name: 'Back to the crew' }).getByText('Back to the crew', { exact: true })).toBeVisible()
     await phone.getByRole('button', { name: 'Back to the crew' }).tap()
     await expect(asked.locator('[data-inbox-action="answer"]')).toHaveText(['Left', 'Right'], { timeout: STEP })
 

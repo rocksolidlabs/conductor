@@ -159,6 +159,10 @@ const agentModel = computed({
   },
 })
 const adapter = computed(() => agents.value.find((a) => a.id === form.value?.agentId)?.adapter)
+const brakemanAgent = computed(() => {
+  const a = agents.value.find((x) => x.id === form.value?.agentId)
+  return a ? { id: a.id, name: a.name, version: a.identity?.version } : null
+})
 const caps = computed(() => (adapter.value ? BRAKEMAN_ADAPTERS[adapter.value] : undefined))
 // The account, picked from the accounts of the agent's tool (docs/plans/capacity.md, PR-7): the configuration keeps a folder, so its
 // default login saves none and an account its folder. Without the accounts (not read, or a tool they do not list) the folder is typed.
@@ -315,7 +319,7 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
         <DirInput v-model="form.account" placeholder="/home/me/.claude-work" picker-title="The agent's login folder" data-brakeman-account />
       </UFormField>
       <UFormField v-if="caps?.model" label="Its model" description="Empty for the agent's default." :error="fieldError('model')" :ui="fieldUi">
-        <UInput v-model="form.model" class="w-full font-mono text-xs" placeholder="the agent's default" data-brakeman-model />
+        <ModelField v-model="form.model" :agent="brakemanAgent" placeholder="the agent's default" data-brakeman-model />
       </UFormField>
       <UFormField label="Folder it reads" description="It changes nothing there." :error="fieldError('cwd')" :ui="fieldUi">
         <DirInput v-model="form.cwd" picker-title="The folder Brakeman reads" data-brakeman-cwd />
