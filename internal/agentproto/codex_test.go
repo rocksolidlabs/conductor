@@ -531,7 +531,7 @@ func TestCodexApprovalThroughThePermissionPath(t *testing.T) {
 	s.write(`{"id":9,"method":"item/fileChange/requestApproval","params":{"threadId":"` + fixtureThread + `","turnId":"t","itemId":"call-never","startedAtMs":1}}`)
 	s.write(`{"id":10,"method":"item/commandExecution/requestApproval","params":{"threadId":"019a0000-0000-7000-8000-0000000000ff","turnId":"t","itemId":"call-1","command":"rm -rf /","startedAtMs":1}}`)
 	perms = waitEvent(t, rec, "permission", 4)
-	if f := perms[2].perm; f.Tool != "fileChange" || f.Call != "call-2" || string(f.Input) != `{"changes":[{"diff":"-a\n+b\n","kind":"update","path":"a.txt"}],"grantRoot":"/work"}` {
+	if f := perms[2].perm; f.Tool != "fileChange" || f.Call != "call-2" || string(f.Input) != `{"changes":[{"diff":"-a\n+b\n","kind":{"type":"update"},"path":"a.txt"}],"grantRoot":"/work"}` {
 		t.Fatalf("the file change's request %+v %s", f, f.Input)
 	}
 	if f := perms[3].perm; f.Tool != "fileChange" || f.Call != "call-never" || string(f.Input) != `{"changes":[]}` {
@@ -836,5 +836,107 @@ func TestCodexFixturesHoldNoAccount(t *testing.T) {
 				t.Errorf("%s holds %s", f, bad)
 			}
 		}
+	}
+}
+
+// A file change that moves a file is shown, bound and recorded with its
+// destination: the step's input and the request's carry the kind's
+// move_path, and the change is recorded at its destination with the file it
+// left deleted.
+func TestCodexAMoveIsShownWithItsDestination(t *testing.T) {
+	rec := &recorder{}
+	c, s, _ := newCodexServer(t, rec, CodexOptions{})
+	if err := c.Begin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	item := `{"type":"fileChange","id":"call-m","changes":[{"path":"/work/notes.txt","kind":{"type":"update","move_path":"/work/moved.txt"},"diff":"-a\n+b\n"}],"status":"inProgress"}`
+	s.write(`{"method":"item/started","params":{"threadId":"` + fixtureThread + `","turnId":"t","item":` + item + `}}`)
+	s.write(`{"id":30,"method":"item/fileChange/requestApproval","params":{"threadId":"` + fixtureThread + `","turnId":"t","itemId":"call-m","startedAtMs":1}}`)
+	p := waitEvent(t, rec, "permission", 1)[0].perm
+	want := `{"changes":[{"diff":"-a\n+b\n","kind":{"move_path":"/work/moved.txt","type":"update"},"path":"/work/notes.txt"}]}`
+	if string(p.Input) != want || string(rec.kinds("tool_started")[0].tool.Input) != want {
+		t.Fatalf("the move's input %s, its step's %s", p.Input, rec.kinds("tool_started")[0].tool.Input)
+	}
+	s.write(`{"method":"item/completed","params":{"threadId":"` + fixtureThread + `","turnId":"t","item":` + strings.Replace(item, `"inProgress"`, `"completed"`, 1) + `}}`)
+	files := waitEvent(t, rec, "file_changed", 2)
+	if files[0].file.Path != "/work/moved.txt" || files[0].file.Op != session.ChangeEdit || files[1].file.Path != "/work/notes.txt" || files[1].file.Op != session.ChangeDelete {
+		t.Fatalf("recorded %+v %+v", files[0].file, files[1].file)
+	}
+}
+
+// What the driver does not read is declined, never asked without it: an
+// approval about an item holding a field beyond the ones the driver reads
+// (in the item, a change, or a change's kind, or a kind of change it does
+// not know); a command approval asking for more than its command (a network
+// context, added permissions, a sub-approval's id, a reason, another
+// environment, another kind, a field it does not read); a file change's
+// asking for a reason; one naming no item; and a file change's whose item
+// announced no changes. Each is answered decline at once, with a notice,
+// and none reaches the session.
+func TestCodexWhatTheDriverDoesNotReadIsDeclined(t *testing.T) {
+	rec := &recorder{}
+	c, s, _ := newCodexServer(t, rec, CodexOptions{})
+	if err := c.Begin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	started := func(item string) {
+		s.write(`{"method":"item/started","params":{"threadId":"` + fixtureThread + `","turnId":"t","item":` + item + `}}`)
+	}
+	cmd := func(id, extra string) string {
+		return `{"type":"commandExecution","id":"` + id + `","command":"ls","cwd":"/work","status":"inProgress","commandActions":[]` + extra + `}`
+	}
+	change := func(id, ch string) string {
+		return `{"type":"fileChange","id":"` + id + `","changes":[` + ch + `],"status":"inProgress"}`
+	}
+	ask := func(n int, method, item, extra string) {
+		s.write(`{"id":` + itoa(100+n) + `,"method":"item/` + method + `/requestApproval","params":{"threadId":"` + fixtureThread + `","turnId":"t","itemId":"` + item + `","startedAtMs":1` + extra + `}}`)
+	}
+	started(cmd("i1", `,"newField":{"x":1}`))
+	started(change("i2", `{"path":"a","kind":{"type":"update","newKindField":"x"},"diff":""}`))
+	started(change("i3", `{"path":"a","kind":{"type":"update"},"diff":"","newChangeField":1}`))
+	started(change("i4", `{"path":"a","kind":{"type":"rename"},"diff":""}`))
+	started(`{"type":"fileChange","id":"i5","changes":[],"status":"inProgress"}`)
+	started(cmd("i6", ""))
+	started(change("i7", `{"path":"a","kind":{"type":"update"},"diff":""}`))
+	cases := []struct {
+		n             int
+		method, item  string
+		extra, reason string
+	}{
+		{1, "commandExecution", "i1", "", "an item field"},
+		{2, "fileChange", "i2", "", "a kind's field"},
+		{3, "fileChange", "i3", "", "a change's field"},
+		{4, "fileChange", "i4", "", "a kind of change"},
+		{5, "fileChange", "i5", "", "no changes announced"},
+		{6, "commandExecution", "i6", `,"networkApprovalContext":{"host":"example.com","protocol":"https"}`, "a network context"},
+		{7, "commandExecution", "i6", `,"additionalPermissions":{"network":true}`, "added permissions"},
+		{8, "commandExecution", "i6", `,"approvalId":"sub-1"`, "a sub-approval"},
+		{9, "commandExecution", "i6", `,"reason":"needs network access"`, "a reason"},
+		{10, "commandExecution", "i6", `,"environmentId":"remote-1"`, "another environment"},
+		{11, "commandExecution", "i6", `,"kind":"stdin"`, "another kind"},
+		{12, "commandExecution", "i6", `,"somethingNew":true`, "a field it does not read"},
+		{13, "fileChange", "i7", `,"reason":"wider write access"`, "a file change's reason"},
+		{14, "commandExecution", "", "", "no item"},
+	}
+	for _, tc := range cases {
+		ask(tc.n, tc.method, tc.item, tc.extra)
+	}
+	for _, tc := range cases {
+		id := itoa(100 + tc.n)
+		if got := s.await(`"id":` + id + `,`); got != `{"id":`+id+`,"result":{"decision":"decline"}}` {
+			t.Fatalf("%s: answered %s", tc.reason, got)
+		}
+	}
+	syncLine(t, c, s)
+	if n := len(rec.kinds("permission")); n != 0 {
+		t.Fatalf("%d declined requests reached the session:\n%s", n, rec.render())
+	}
+	if n := len(rec.kinds("notice")); n != len(cases) {
+		t.Fatalf("%d notices for %d declines", n, len(cases))
+	}
+	// Nulls are no fields: an ordinary approval with them is asked.
+	ask(15, "commandExecution", "i6", `,"approvalId":null,"reason":null,"networkApprovalContext":null,"kind":"command","proposedExecpolicyAmendment":["ls"]`)
+	if p := waitEvent(t, rec, "permission", 1)[0].perm; p.Call != "i6" {
+		t.Fatalf("the ordinary approval %+v", p)
 	}
 }
