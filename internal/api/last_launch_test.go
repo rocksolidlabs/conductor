@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
 )
 
 // lastLaunchOf reads GET /api/launch/last as the admin.
@@ -161,4 +160,3 @@ func TestLastLaunchIsTheAdminsAlone(t *testing.T) {
 		t.Fatalf("a host token read it: %d", resp.StatusCode)
 	}
 }
-

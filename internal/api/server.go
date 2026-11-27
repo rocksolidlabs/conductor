@@ -456,8 +456,6 @@ type Server struct {
 	// Changing one in place, with slices.Delete or an append into its spare
 	// capacity, would race with those readers.
 	catalogMu sync.Mutex
-	// lastLaunchMu serialises the record of the last launch (last_launch.go).
-	lastLaunchMu sync.Mutex
 	base      catalog.Catalog // the configured catalog, before the overlay; never changed after New
 	overlay   catalog.Overlay // the UI-managed layer, as saved in catalog.json
 	catalog   catalog.Catalog
@@ -542,6 +540,9 @@ type Server struct {
 	// drafts queues a comparison's Brakeman request once its lanes settle
 	// (compare_drafts.go).
 	drafts compareDrafts
+
+	// lastLaunchMu serialises the record of the last launch (last_launch.go).
+	lastLaunchMu sync.Mutex
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
