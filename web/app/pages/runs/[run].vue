@@ -12,7 +12,7 @@ import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { RUN_LAYOUTS, RUN_LAYOUT_LOOK, type RunLayout, type RunWallTile } from '~/utils/wall'
-import { choiceFor, choose, crewOfRun, largeOf, readRunTiles, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
+import { choiceFor, choose, crewOfRun, largeOf, readRunTiles, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
@@ -238,8 +238,8 @@ const viewItems = computed(() => [
 /** The view shown: Tasks is a managed run's alone, so a legacy run asked for it gets the grid. */
 const shownView = computed(() => (view.value === 'tasks' && !run.value?.managed ? 'grid' : view.value))
 
-// How the Members view draws the crew's tiles (runTiles): their layout, the member One large draws large, and whether Activity shows
-// beside them. Kept for the crew in this app's storage; a crew opened for the first time takes the last choice made for any crew.
+// How the Members view draws the crew's tiles (runTiles): their layout, the member One large draws large, the sizes its gaps were
+// dragged to, and whether Activity shows beside them. Kept for the crew in this app's storage; a crew opened for the first time takes the last choice made for any crew.
 function pageStorage(): Storage | null {
   try {
     return localStorage
@@ -670,6 +670,8 @@ palette.registerPage(() => {
           :activity="tilesChoice.activity"
           :layout="tilesLayout"
           :large="largeMember"
+          :sizes="tilesChoice.sizes?.[tilesLayout]"
+          @resize="(axis, shares) => chooseTiles(withShares(tilesChoice, tilesLayout, axis, shares))"
           @show-large="chooseTiles({ large: $event })"
           @decision="decisionModal.open($event)"
           @open="router.push(`/sessions/${$event}`)"

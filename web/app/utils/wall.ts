@@ -88,19 +88,20 @@ export interface WallTracks {
  * leaves. One large: the tile `large` (the first when it is out of range) in two thirds of the width and the whole height, the
  * others in a column at the right, each at least TILE_MIN_HEIGHT tall, the column scrolling. Columns: one row, each tile at least
  * TILE_MIN_WIDTH wide, the row scrolling sideways past that. Rows: one column, each tile at least TILE_MIN_HEIGHT tall, the wall
- * scrolling down. The tiles keep their order on the page
- * and only their cells change, so a change of layout never draws a tile again.
+ * scrolling down. `sizes`, the shares a person dragged the gaps to, apply where they hold as many tracks as the layout draws. The
+ * tiles keep their order on the page and only their cells change, so a change of layout never draws a tile again.
  */
-export function wallTracks(layout: RunLayout, n: number, w: number, h: number, large = 0): WallTracks {
+export function wallTracks(layout: RunLayout, n: number, w: number, h: number, large = 0, sizes?: WallShares): WallTracks {
   const none = Array.from({ length: n }, (): WallCell => ({}))
-  if (layout === 'columns') return { columns: `repeat(${Math.max(1, n)}, minmax(${TILE_MIN_WIDTH}px, 1fr))`, rows: 'minmax(0, 1fr)', cells: none, large: -1, scroll: 'x' }
-  if (layout === 'rows') return { columns: 'minmax(0, 1fr)', rows: `repeat(${Math.max(1, n)}, minmax(${TILE_MIN_HEIGHT}px, 1fr))`, cells: none, large: -1, scroll: 'y' }
+  const count = Math.max(1, n)
+  if (layout === 'columns') return { columns: tracksOf(count, `${TILE_MIN_WIDTH}px`, sizes?.cols), rows: 'minmax(0, 1fr)', cells: none, large: -1, scroll: 'x' }
+  if (layout === 'rows') return { columns: 'minmax(0, 1fr)', rows: tracksOf(count, `${TILE_MIN_HEIGHT}px`, sizes?.rows), cells: none, large: -1, scroll: 'y' }
   if (layout === 'large' && n > 1) {
     const big = large >= 0 && large < n ? large : 0
     const others = n - 1
     let k = 0
     const cells = Array.from({ length: n }, (_, i): WallCell => (i === big ? { gridColumn: '1', gridRow: `1 / span ${others}` } : { gridColumn: '2', gridRow: String(++k) }))
-    return { columns: 'minmax(0, 2fr) minmax(0, 1fr)', rows: `repeat(${others}, minmax(${TILE_MIN_HEIGHT}px, 1fr))`, cells, large: big, scroll: 'y' }
+    return { columns: tracksOf(2, '0', sharesFor(sizes?.cols, 2) ?? [2 / 3, 1 / 3]), rows: `repeat(${others}, minmax(${TILE_MIN_HEIGHT}px, 1fr))`, cells, large: big, scroll: 'y' }
   }
   const best = bestGrid(n, w, h, TILE_GAP, 1.4)
   const most = w > 0 ? Math.max(1, Math.floor((w + TILE_GAP) / (TILE_MIN_WIDTH + TILE_GAP))) : best.cols
@@ -108,7 +109,64 @@ export function wallTracks(layout: RunLayout, n: number, w: number, h: number, l
   const g = { cols, rows: Math.max(1, Math.ceil(n / cols)) }
   const span = lastItemSpan(n, g)
   const cells = Array.from({ length: n }, (_, i): WallCell => (i === n - 1 && span > 1 ? { gridColumn: `span ${span} / span ${span}` } : {}))
-  return { columns: `repeat(${g.cols}, minmax(0, 1fr))`, rows: `repeat(${g.rows}, minmax(${TILE_MIN_HEIGHT}px, 1fr))`, cells, large: -1, scroll: 'y' }
+  return { columns: tracksOf(g.cols, '0', sizes?.cols), rows: tracksOf(g.rows, `${TILE_MIN_HEIGHT}px`, sizes?.rows), cells, large: -1, scroll: 'y' }
+}
+
+/**
+ * The sizes a person gave a wall's tracks by dragging the gaps between them (RunTileGutter), as shares of the axis: kept for each
+ * crew and layout, and dropped when the number of tracks changes (sharesFor).
+ */
+export interface WallShares {
+  cols?: number[]
+  rows?: number[]
+}
+/** The most tracks an axis keeps shares for. */
+export const SHARES_MAX = 12
+
+/** `shares` when they are `n` positive shares (normalised to a sum of 1), else undefined: a record with the wrong count is ignored. */
+export function sharesFor(shares: readonly number[] | undefined, n: number): number[] | undefined {
+  if (!shares || n < 2 || shares.length !== n || n > SHARES_MAX || !shares.every((s) => Number.isFinite(s) && s > 0)) return undefined
+  const sum = shares.reduce((a, b) => a + b, 0)
+  return shares.map((s) => s / sum)
+}
+
+/** `n` tracks of at least `min`, even, or in the given shares (as flex factors that sum to n, so that they fill the axis). */
+function tracksOf(n: number, min: string, shares?: readonly number[]): string {
+  const s = sharesFor(shares, n)
+  if (!s) return `repeat(${n}, minmax(${min}, 1fr))`
+  return s.map((x) => `minmax(${min}, ${+(x * n).toFixed(4)}fr)`).join(' ')
+}
+
+/**
+ * The shares of an axis after the gap between tracks `k` and `k + 1` moved by `delta` px, from the tracks' drawn sizes `px`: the two
+ * tracks share what they had, neither below `floor` (as far as they can), and the others keep their sizes.
+ */
+export function movedShares(px: readonly number[], k: number, delta: number, floor: number): number[] {
+  const out = [...px]
+  const pair = out[k]! + out[k + 1]!
+  const lo = Math.min(floor, pair / 2)
+  const a = Math.min(pair - lo, Math.max(lo, out[k]! + delta))
+  out[k] = a
+  out[k + 1] = pair - a
+  const sum = out.reduce((x, y) => x + y, 0)
+  return out.map((x) => x / sum)
+}
+
+/** How far the gap after track `k` may move each way, in px, keeping both tracks at `floor` (as far as they can). */
+export function gutterRange(px: readonly number[], k: number, floor: number): { min: number; max: number } {
+  const pair = px[k]! + px[k + 1]!
+  const lo = Math.min(floor, pair / 2)
+  return { min: Math.min(0, lo - px[k]!), max: Math.max(0, pair - lo - px[k]!) }
+}
+
+/** The shares of an axis with tracks `k` and `k + 1` made even, the others kept. */
+export function evenShares(px: readonly number[], k: number): number[] {
+  const out = [...px]
+  const half = (out[k]! + out[k + 1]!) / 2
+  out[k] = half
+  out[k + 1] = half
+  const sum = out.reduce((x, y) => x + y, 0)
+  return out.map((x) => x / sum)
 }
 
 /**
