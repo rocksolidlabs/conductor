@@ -1,8 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { Api, DAILY, atRest, expect, logged, member, test } from './fixtures'
-import { inside, noOverlap, uncut } from './layout'
+import { Api, DAILY, atRest, dayPage, expect, logged, member, test } from './fixtures'
+import { stubInbox } from './inbox-stub'
+import { inside, noOverlap, noSideways, uncut } from './layout'
+import { ledgerRun, serveRun } from './run-fixtures'
 
 // A run's Members view (UX3): a wall of the members' tiles alone, the tab named Members, and the run's Activity a column the person
 // turns on beside the tiles, kept for the crew and taken by a crew opened for the first time; the tiles laid out as Grid, Columns,
@@ -467,3 +469,27 @@ test('a question without choices says it is answered in its terminal, and an end
   await expect(resume).toHaveAttribute('data-resume-kind', 'label')
   await expect(ended.locator('[data-tile-foot]')).not.toContainText('shared cwd')
 })
+
+// A run with tasks has a fourth view, Tasks: on a phone the layouts and Activity wrap under the views, their words kept, and nothing
+// runs past the window (CI on the run header's phone walk).
+for (const touch of [false, true]) {
+  test(`at 390 x 844${touch ? ' with touch' : ''} a run with tasks keeps its views and Activity inside the window`, async ({ day, browser }) => {
+    const run = ledgerRun()
+    const page = await dayPage(browser, { path: '/', width: 390, height: 844, touch })
+    await stubInbox(page, [])
+    await serveRun(page, run)
+    await page.goto(`/runs/${run.id}?view=grid`)
+    const views = page.locator('[data-run-view]')
+    await expect(views.getByRole('tab', { name: 'Tasks' })).toBeVisible()
+    await expect(views.getByRole('tab', { name: 'Members' })).toHaveAttribute('aria-selected', 'true')
+    const toggle = page.locator('[data-activity-toggle]')
+    await expect(toggle).toHaveText('Activity')
+    await atRest(toggle)
+    const b = (await toggle.boundingBox())!
+    expect(b.x).toBeGreaterThanOrEqual(0)
+    expect(b.x + b.width).toBeLessThanOrEqual(390)
+    await noOverlap(views.locator('..'))
+    await noSideways(page)
+    void day
+  })
+}

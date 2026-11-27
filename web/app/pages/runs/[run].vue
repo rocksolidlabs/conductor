@@ -590,7 +590,8 @@ palette.registerPage(() => {
       <PageEmpty v-if="gone" state="missing" :words="`No run has the id ${runId}. The server forgets runs when it restarts.`" :actions="[{ label: 'Crews', icon: 'i-lucide-arrow-left', to: '/crews' }]" data-run-missing />
 
       <template v-else>
-        <div class="flex flex-none items-center gap-2 px-3 pt-3">
+        <!-- The views, then the layouts and Activity at the right; on a narrow window that group wraps under the views, its words kept. -->
+        <div class="flex flex-none flex-wrap items-center gap-2 px-3 pt-3">
           <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-run-view />
           <div v-if="shownView === 'grid'" class="ml-auto flex items-center gap-2">
             <RunLayoutSwitch v-if="!wallStacked" v-model="tilesLayout" />
