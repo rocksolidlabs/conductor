@@ -1,4 +1,5 @@
-import { pathToFileURL } from 'node:url'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { external } from './window'
 import { shownSettings, type DesktopSettings } from './settings'
@@ -87,7 +88,11 @@ export function ownPage(
   if (!f || e.sender !== wc || wc.isDestroyed?.() || f.parent !== null || !sameFrame(f, wc.mainFrame)) return false
   try {
     const u = new URL(f.url)
-    return u.protocol === 'file:' && u.pathname === pathToFileURL(file).pathname
+    if (u.protocol !== 'file:') return false
+    // The page's file and the one meant, as the system names them (a drive and its letter's case on Windows).
+    const got = resolve(fileURLToPath(u))
+    const want = resolve(file)
+    return process.platform === 'win32' ? got.toLowerCase() === want.toLowerCase() : got === want
   } catch {
     return false
   }
