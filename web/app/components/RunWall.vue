@@ -5,7 +5,7 @@ import type { ChatMessage } from '~/utils/protocol'
 import type { TerminalTransport } from '~/utils/transport/types'
 import { memberAsk, memberLook } from '~/utils/crewWords'
 import { memberOffer } from '~/utils/runs'
-import { bestGrid, lastItemSpan, type RunWallTile } from '~/utils/wall'
+import { wallTracks, type RunLayout, type RunWallTile } from '~/utils/wall'
 
 /**
  * The run page's Members view: a tile for every member of one run in the run's order (a live terminal where the member has a session,
@@ -32,9 +32,14 @@ const props = defineProps<{
   receiving?: readonly string[]
   /** Whether the run's Activity shows beside the tiles. */
   activity: boolean
+  /** How the tiles are laid out, and the member One large draws large. */
+  layout: RunLayout
+  large: string
 }>()
 
-const emit = defineEmits<{ open: [sessionId: string]; start: [name: string] }>()
+const emit = defineEmits<{ open: [sessionId: string]; start: [name: string]; 'show-large': [name: string] }>()
+/** Whether the tiles stack (a narrow area): no layout applies there, and the page draws no switch. */
+const stacked = defineModel<boolean>('narrow', { default: false })
 
 defineSlots<{
   /** The page's own control beside a member's tile (SessionTile's leading slot). */
@@ -90,22 +95,39 @@ function boxOf(name: string) {
 const area = boxOf('area')
 const grid = boxOf('grid')
 const narrow = computed(() => area.value.w > 0 && area.value.w < 640)
-const layout = computed(() => bestGrid(props.tiles.length, grid.value.w, grid.value.h, 12, 1.4))
-const lastSpan = computed(() => lastItemSpan(props.tiles.length, layout.value))
+watch(narrow, (n) => (stacked.value = n), { immediate: true })
+const largeIndex = computed(() => props.tiles.findIndex((t) => t.name === props.large))
+const tracks = computed(() => wallTracks(props.layout, props.tiles.length, grid.value.w, grid.value.h, largeIndex.value))
 const gridStyle = computed(() =>
-  narrow.value
-    ? { gridTemplateColumns: 'minmax(0, 1fr)', gridAutoRows: '16rem' }
-    : { gridTemplateColumns: `repeat(${layout.value.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.value.rows}, minmax(0, 1fr))` },
+  narrow.value ? { gridTemplateColumns: 'minmax(0, 1fr)', gridAutoRows: '16rem' } : { gridTemplateColumns: tracks.value.columns, gridTemplateRows: tracks.value.rows },
 )
-/** The last tile takes the cells its row leaves empty, so the grid has no hole. */
-function cellStyle(i: number) {
-  return !narrow.value && i === props.tiles.length - 1 && lastSpan.value > 1 ? { gridColumn: `span ${lastSpan.value} / span ${lastSpan.value}` } : undefined
+/**
+ * A tile's cell. The tiles keep their order on the page whatever the layout, so a change of layout moves them and never draws them
+ * again: a terminal is fitted to its new cell, never reconnected. One large's large tile stays in view, the whole height of the
+ * wall, while the column beside it scrolls.
+ */
+function cellStyle(i: number): Record<string, string> | undefined {
+  if (narrow.value) return undefined
+  const cell = tracks.value.cells[i]
+  if (i !== tracks.value.large) return cell
+  return { ...cell, position: 'sticky', top: '0', alignSelf: 'start', height: `${grid.value.h}px` }
+}
+/** Whether a tile is one of One large's small ones, which offer to be drawn large. */
+function small(i: number) {
+  return !narrow.value && tracks.value.large >= 0 && i !== tracks.value.large
 }
 </script>
 
 <template>
   <div ref="area" class="flex min-h-0 flex-1 gap-3 p-3" :class="narrow ? 'flex-col overflow-y-auto' : 'overflow-hidden'" :data-activity-shown="props.activity || undefined">
-    <div ref="grid" class="grid min-h-0 min-w-0 flex-1 gap-3" :class="narrow ? 'flex-none' : 'h-full'" :style="gridStyle" data-run-grid>
+    <div
+      ref="grid"
+      class="grid min-h-0 min-w-0 flex-1 gap-3"
+      :class="narrow ? 'flex-none' : 'h-full overflow-y-auto'"
+      :style="gridStyle"
+      :data-run-layout="narrow ? 'stacked' : props.layout"
+      data-run-grid
+    >
       <template v-for="(t, i) in props.tiles" :key="t.session?.id ?? `m-${t.name}`">
         <SessionTile
           v-if="t.session"
@@ -123,6 +145,9 @@ function cellStyle(i: number) {
           <template v-if="$slots.leading" #leading>
             <slot name="leading" :tile="t" />
           </template>
+          <template v-if="small(i)" #header-action>
+            <IconButton :label="`Show ${t.name} large`" icon="i-lucide-layout-panel-left" size="xs" color="neutral" variant="ghost" data-tile-show-large @click.stop="emit('show-large', t.name)" />
+          </template>
           <template #footer>
             <span class="truncate font-mono" data-mono="commit" data-branch>{{ footer(t).where }}</span>
             <span class="ml-auto flex-none font-mono" data-mono="measure" data-diff>{{ footer(t).diff }}</span>
@@ -132,6 +157,7 @@ function cellStyle(i: number) {
           <div class="flex items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs">
             <SessionAvatar :agent-id="t.member?.agentId ?? ''" dashed />
             <span class="flex-1 truncate text-[13px] font-semibold">{{ t.name }}</span>
+            <IconButton v-if="small(i)" :label="`Show ${t.name} large`" icon="i-lucide-layout-panel-left" size="xs" color="neutral" variant="ghost" data-tile-show-large @click.stop="emit('show-large', t.name)" />
           </div>
           <div class="flex flex-1 flex-col items-center justify-center gap-2 p-3 text-center text-sm text-muted">
             <span v-if="looked(t)" class="inline-flex flex-wrap items-center justify-center gap-x-2" data-member-words :data-phase="looked(t)!.phase">

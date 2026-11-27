@@ -11,8 +11,8 @@ import type { PaletteItem } from '~/composables/usePalette'
 import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
-import type { RunWallTile } from '~/utils/wall'
-import { choiceFor, choose, crewOfRun, readRunTiles, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
+import { RUN_LAYOUTS, RUN_LAYOUT_LOOK, type RunLayout, type RunWallTile } from '~/utils/wall'
+import { choiceFor, choose, crewOfRun, largeOf, readRunTiles, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
@@ -237,8 +237,8 @@ const viewItems = computed(() => [
 /** The view shown: Tasks is a managed run's alone, so a legacy run asked for it gets the grid. */
 const shownView = computed(() => (view.value === 'tasks' && !run.value?.managed ? 'grid' : view.value))
 
-// How the Members view draws the crew's tiles (runTiles): whether Activity shows beside them. Kept for the crew in this app's storage;
-// a crew opened for the first time takes the last choice made for any crew.
+// How the Members view draws the crew's tiles (runTiles): their layout, the member One large draws large, and whether Activity shows
+// beside them. Kept for the crew in this app's storage; a crew opened for the first time takes the last choice made for any crew.
 function pageStorage(): Storage | null {
   try {
     return localStorage
@@ -256,6 +256,10 @@ function chooseTiles(change: Partial<RunTilesChoice>) {
 function setActivity(on: boolean) {
   chooseTiles({ activity: on })
 }
+const tilesLayout = computed({ get: () => tilesChoice.value.layout, set: (l: RunLayout) => chooseTiles({ layout: l }) })
+const largeMember = computed(() => largeOf(tilesChoice.value, tiles.value.map((t) => t.name)))
+/** Whether the wall stacks its tiles (a narrow area), where no layout applies and the switch is not drawn. */
+const wallStacked = ref(false)
 
 // The task selected in the Tasks view (`?task=`), in the URL so a link opens on it (#334, row 7).
 const selectedTask = computed(() => (typeof route.query.task === 'string' ? route.query.task : ''))
@@ -514,7 +518,17 @@ palette.registerPage(() => {
       },
       { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: !runOffer(r).add, run: () => header.value?.openAdd() },
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
-      // Activity is the Members view's column: showing it from another view shows the members too.
+      // The layouts and Activity are the Members view's: choosing one from another view shows the members too.
+      ...RUN_LAYOUTS.map((l) => ({
+        key: `page:layout:${l}`,
+        label: `Lay the members out: ${RUN_LAYOUT_LOOK[l].label}`,
+        icon: RUN_LAYOUT_LOOK[l].icon,
+        on: tilesLayout.value === l,
+        run: () => {
+          tilesLayout.value = l
+          view.value = 'grid'
+        },
+      })),
       tilesChoice.value.activity
         ? { key: 'page:activity', label: 'Hide activity', icon: 'i-lucide-activity', run: () => setActivity(false) }
         : {
@@ -590,18 +604,19 @@ palette.registerPage(() => {
       <template v-else>
         <div class="flex flex-none items-center gap-2 px-3 pt-3">
           <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-run-view />
-          <UButton
-            v-if="shownView === 'grid'"
-            label="Activity"
-            icon="i-lucide-activity"
-            size="xs"
-            color="neutral"
-            :variant="tilesChoice.activity ? 'soft' : 'outline'"
-            class="ml-auto"
-            :aria-pressed="tilesChoice.activity"
-            data-activity-toggle
-            @click="setActivity(!tilesChoice.activity)"
-          />
+          <div v-if="shownView === 'grid'" class="ml-auto flex items-center gap-2">
+            <RunLayoutSwitch v-if="!wallStacked" v-model="tilesLayout" />
+            <UButton
+              label="Activity"
+              icon="i-lucide-activity"
+              size="xs"
+              color="neutral"
+              :variant="tilesChoice.activity ? 'soft' : 'outline'"
+              :aria-pressed="tilesChoice.activity"
+              data-activity-toggle
+              @click="setActivity(!tilesChoice.activity)"
+            />
+          </div>
         </div>
         <div v-if="shownView === 'graph'" class="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" data-run-graph>
           <CrewGraph
@@ -649,7 +664,11 @@ palette.registerPage(() => {
           :create-transport="transportFor"
           :answerable="runChatAnswers.answerable"
           :answer="runChatAnswers.answer"
+          v-model:narrow="wallStacked"
           :activity="tilesChoice.activity"
+          :layout="tilesLayout"
+          :large="largeMember"
+          @show-large="chooseTiles({ large: $event })"
           @open="router.push(`/sessions/${$event}`)"
           @start="startMember"
         >

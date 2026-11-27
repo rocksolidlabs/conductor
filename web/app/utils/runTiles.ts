@@ -1,7 +1,9 @@
-// How a run's tiles are drawn, kept for each crew (the run page's Members view): whether the run's Activity shows beside the tiles.
+// How a run's tiles are drawn, kept for each crew (the run page's Members view): their layout, the member drawn large in One large,
+// and whether the run's Activity shows beside the tiles.
 // One record in the page's storage, `conductor.runTiles`: a choice for each crew the person set one for, the latest first and at most
 // RUN_TILES_CREWS of them, and the last choice made anywhere, which a crew opened for the first time takes. Pure: the storage is
 // handed in.
+import { isRunLayout, type RunLayout } from './wall'
 
 /** The key of the record in the page's storage. */
 export const RUN_TILES_KEY = 'conductor.runTiles'
@@ -12,7 +14,10 @@ export const ACTIVITY_AT_FIRST = false
 
 /** What the person chose for a crew's tiles. */
 export interface RunTilesChoice {
+  layout: RunLayout
   activity: boolean
+  /** The member One large draws large, by name; none for the first. */
+  large?: string
 }
 
 export interface RunTilesRecord {
@@ -24,8 +29,10 @@ export interface RunTilesRecord {
 
 /** A crew id as the server writes it (a crew's file name). */
 const CREW = /^[a-z0-9][a-z0-9-]{0,63}$/
+/** A member's name, as a crew's manifest takes it. */
+const MEMBER = /^[a-z0-9][a-z0-9._-]{0,39}$/
 
-export const FIRST_CHOICE: RunTilesChoice = { activity: ACTIVITY_AT_FIRST }
+export const FIRST_CHOICE: RunTilesChoice = { layout: 'grid', activity: ACTIVITY_AT_FIRST }
 
 function emptyRecord(): RunTilesRecord {
   return { last: { ...FIRST_CHOICE }, crews: [] }
@@ -36,7 +43,14 @@ function choiceOf(v: unknown): RunTilesChoice | null {
   if (!v || typeof v !== 'object') return null
   const o = v as Record<string, unknown>
   if (typeof o.activity !== 'boolean') return null
-  return { activity: o.activity }
+  const c: RunTilesChoice = { layout: isRunLayout(o.layout) ? o.layout : FIRST_CHOICE.layout, activity: o.activity }
+  if (typeof o.large === 'string' && MEMBER.test(o.large)) c.large = o.large
+  return c
+}
+
+/** The choice alone, without the crew it is kept for. */
+function onlyChoice(c: RunTilesChoice): RunTilesChoice {
+  return { layout: c.layout, activity: c.activity, ...(c.large ? { large: c.large } : {}) }
 }
 
 /** The record from its stored text: one that does not read is an empty record, and an entry that does not read is left out. */
@@ -70,15 +84,20 @@ export function parseRunTiles(raw: string | null): RunTilesRecord {
 /** The choice for a crew: its own, else the last one made anywhere. */
 export function choiceFor(record: RunTilesRecord, crew: string): RunTilesChoice {
   const own = record.crews.find((e) => e.crew === crew)
-  return own ? { activity: own.activity } : { ...record.last }
+  return onlyChoice(own ?? record.last)
 }
 
 /** The record after the person changed the crew's choice: the crew moves to the front, and the oldest past RUN_TILES_CREWS goes. */
 export function choose(record: RunTilesRecord, crew: string, change: Partial<RunTilesChoice>): RunTilesRecord {
-  const next = { ...choiceFor(record, crew), ...change }
+  const next = onlyChoice({ ...choiceFor(record, crew), ...change })
   if (!CREW.test(crew)) return { ...record, last: next }
   const crews = [{ crew, ...next }, ...record.crews.filter((e) => e.crew !== crew)].slice(0, RUN_TILES_CREWS)
   return { last: next, crews }
+}
+
+/** The member One large draws large among `names` (the run's order): the one chosen while it is still a member, else the first. */
+export function largeOf(choice: RunTilesChoice, names: readonly string[]): string {
+  return choice.large && names.includes(choice.large) ? choice.large : (names[0] ?? '')
 }
 
 /** The crew a run belongs to: its crew id, else the run id without its 8 hex digits (`<crew id>-<8 hex>`). */
