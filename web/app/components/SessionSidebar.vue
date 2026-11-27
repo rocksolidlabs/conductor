@@ -2,7 +2,7 @@
 import { remotePins } from '~/utils/remote'
 import { cutNotice, staleNotice } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
-import { choiceKey, newlyNeedingInput } from '~/utils/attention'
+import { answerDigit, choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
 import { filterSessions } from '~/utils/sessions'
 import { joinedPath } from '~/utils/joined'
@@ -316,12 +316,13 @@ function onKey(e: KeyboardEvent) {
       if (id) focusRow(id)
       return
     }
-    const n = Number(e.key)
-    if (target.closest('input, textarea') || !id || e.metaKey || e.ctrlKey || e.altKey || !(Number.isInteger(n) && n >= 1 && n <= 9)) return
+    if (target.closest('input, textarea') || !id || e.metaKey || e.ctrlKey || e.altKey || !/^[1-9]$/.test(e.key)) return
     e.preventDefault()
     e.stopPropagation()
+    // A held key's repeats are taken and answer nothing (answerDigit).
+    const n = answerDigit(e)
     const row = byId.value.get(id)
-    const o = row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
+    const o = n && row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
     if (row?.kind === 'session' && o && choiceKey(o, n - 1) === n) answer(row, n - 1, row.prompt?.question)
     return
   }
@@ -396,11 +397,12 @@ function onKey(e: KeyboardEvent) {
       }
       return
   }
-  const n = Number(e.key)
-  if (Number.isInteger(n) && n >= 1 && n <= 9) {
+  if (/^[1-9]$/.test(e.key)) {
     own()
-    // The digit names the question the focused row shows as it is pressed; a choice that changes the permission mode has none.
-    const o = row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
+    // The digit names the question the focused row shows as it is pressed; a choice that changes the permission mode has none, and
+    // a held key's repeats answer nothing (answerDigit).
+    const n = answerDigit(e)
+    const o = n && row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
     if (row?.kind === 'session' && o && choiceKey(o, n - 1) === n) answer(row, n - 1, row.prompt?.question)
   }
 }

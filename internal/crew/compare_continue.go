@@ -51,7 +51,7 @@ func (e *Engine) compareChainRoom(ctx context.Context, from Loaded, h history) e
 		}
 	}
 	if n >= maxCompareChain {
-		return &compareRefusal{is: ErrChainTooLong, words: fmt.Sprintf("this comparison has been continued %d times: launch a new comparison", maxCompareChain-1)}
+		return &compareRefusal{is: ErrChainTooLong, words: fmt.Sprintf("this trial has been continued %d times: run a new trial", maxCompareChain-1)}
 	}
 	return nil
 }
@@ -87,7 +87,7 @@ func (r *run) compareContinued(rows map[string]ledger.TaskRow, selected string, 
 	}
 	for _, t := range r.tasks {
 		if judged(t) && t.repair != nil && t.repair != carried[t.def.ID] {
-			return &compareRefusal{is: ErrNotSelected, words: "a comparison's candidate is repaired once it is selected"}
+			return &compareRefusal{is: ErrNotSelected, words: "a trial's candidate is repaired once it is selected"}
 		}
 	}
 	for _, t := range r.tasks {
@@ -95,7 +95,7 @@ func (r *run) compareContinued(rows map[string]ledger.TaskRow, selected string, 
 		if !judged(t) || !ok || row.State != ledger.TaskSucceeded || row.ResultAttempt == 0 || row.ResultAttempt <= row.Withdrawn || t.imported != "" {
 			continue
 		}
-		return &compareRefusal{is: ErrNotSelected, words: fmt.Sprintf("%s's result, attempt %d, is not in the ledger: a comparison's candidate goes on only with its result; launch a new comparison", t.def.ID, row.ResultAttempt)}
+		return &compareRefusal{is: ErrNotSelected, words: fmt.Sprintf("%s's result, attempt %d, is not in the ledger: a trial's candidate goes on only with its result; run a new trial", t.def.ID, row.ResultAttempt)}
 	}
 	return nil
 }

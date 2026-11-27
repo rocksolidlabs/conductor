@@ -206,7 +206,7 @@ var laneSummaries = map[string]string{
 
 // laneClosedWords is the one sentence every route closed to a
 // comparison's lane answers its session with (409 lane).
-const laneClosedWords = "a member of a comparison does not use this"
+const laneClosedWords = "a member of a trial does not use this"
 
 // laneClosed is the refusal of a route closed to a comparison's lane, or
 // of a lane's view that cannot be built: 409 lane.
@@ -307,6 +307,6 @@ func (s *Server) laneComment(ctx context.Context, w http.ResponseWriter, d sessi
 	if _, st := s.laneOf(d); st == noLane || s.selectedCandidate(ctx, d) {
 		return false
 	}
-	writeError(w, http.StatusConflict, "lane", "a candidate of a comparison does not comment on its ticket before the selection: say it in your result's summary")
+	writeError(w, http.StatusConflict, "lane", "a candidate of a trial does not comment on its ticket before the selection: say it in your result's summary")
 	return true
 }

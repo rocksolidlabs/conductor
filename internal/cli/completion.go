@@ -139,7 +139,7 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--body-file", kind: flagFile}, flagSpec{name: "--op-id", kind: flagValue}))),
 			words: []string{"request", "observe", "act", "brief", "ask", "status", "list", "show", "role"}, after: map[string][]string{"ask": brakeman.Kinds, "observe": observeWhats(), "act": actOperations(), "role": roleActions}},
 		{name: "up", flags: api(flagSpec{name: "--name", kind: flagValue}, flagSpec{name: "--resume", kind: flagValue}, flagSpec{name: "--open"}), crewID: true},
-		{name: "crews", flags: api(flagSpec{name: "--ids"}), words: []string{"compare"}},
+		{name: "crews", flags: api(flagSpec{name: "--ids"}), words: []string{"trial", "compare"}},
 		// Every flag of every dispatch command (each takes its own), and the
 		// store's vocabularies as their values.
 		{name: "dispatch", flags: api(flagSpec{name: "--project", kind: flagValue}, flagSpec{name: "--status", kind: flagEnum, values: dispatch.Statuses}, flagSpec{name: "--q", kind: flagValue}, flagSpec{name: "--json"},
@@ -159,7 +159,7 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--no-images"}, flagSpec{name: "--preview"}, flagSpec{name: "--target", kind: flagValue}, flagSpec{name: "--body-file", kind: flagFile},
 			flagSpec{name: "--with", kind: flagValue}, flagSpec{name: "--close", kind: flagEnum, values: []string{"completed", "not_planned"}}, flagSpec{name: "--digest", kind: flagValue},
 			flagSpec{name: "--repro"}, flagSpec{name: "--evidence", kind: flagValue}),
-			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "comparison", "review", "reviews", "findings", "finding",
+			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "trial", "comparison", "review", "reviews", "findings", "finding",
 				"import", "link-issue", "unlink-issue", "refresh", "authority", "read", "publish"},
 			after: map[string][]string{"plan": planVerbs, "review": reviewVerbs, "finding": findingVerbs, "publish": publishVerbs}},
 		// The GitHub tokens (trackers.go): set takes no --token, the rest

@@ -258,7 +258,7 @@ export function handRefusalWords(code: string, ctx: { task?: string; bytes?: num
     case 'not_managed':
       return 'The run has no tasks to hand a package to.'
     case 'comparison':
-      return "A comparison's lanes are handed alike: a package goes to no lane."
+      return "A trial's lanes are handed alike: a package goes to no lane."
     case 'task_not_found':
       return `The run's crew has no task ${task}: the package cannot go to it.`
     case 'package_too_large':

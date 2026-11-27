@@ -39,9 +39,9 @@ Usage:
                                launch a saved crew as a run and print its URL
   conductor crews [--server URL] [--token T] [--ids]
                                list the saved crews (--ids: ids only, for completion)
-  conductor crews compare SPEC.json|- [--server URL] [--token T]
-                               save a comparison's crew from its template
-  conductor dispatch projects|tickets|show|create|edit|comment|accept|link|plans|plan|launch|runs|comparison|
+  conductor crews trial SPEC.json|- [--server URL] [--token T]
+                               save an agent trial's crew from its template (crews compare too)
+  conductor dispatch projects|tickets|show|create|edit|comment|accept|link|plans|plan|launch|runs|trial|
                     review|reviews|findings|finding|import|link-issue|unlink-issue|refresh|
                     authority|read|publish [--server URL] [--token T]
                                Dispatch's projects and tickets from the shell, their plan revisions,
@@ -119,7 +119,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "up":
 		return runUp(ctx, args[1:], stdout, stderr)
 	case "crews":
-		if len(args) > 1 && args[1] == "compare" {
+		if len(args) > 1 && (args[1] == "trial" || args[1] == "compare") {
 			return runCrewsCompare(ctx, args[2:], stdin, stdout, stderr)
 		}
 		return runCrews(ctx, args[1:], stdout, stderr)
