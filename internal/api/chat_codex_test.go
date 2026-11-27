@@ -78,7 +78,7 @@ func (c *chatEnvT) launchCodex(t *testing.T) *session.Local {
 
 // A Codex chat's child starts through the session's Runtime's StartPipes,
 // in the terminal's folder, with the terminal's environment but TERM and
-// COLORTERM and CONDUCTOR_PROTOCOL=1 set, as the app server on stdio with
+// COLORTERM and CONDUCTOR_PROTOCOL set to its protocol's name, as the app server on stdio with
 // Conductor's MCP server as the terminal's launch gave it, not handed
 // CONDUCTOR_PROTOCOL (it lists no permission tool to Codex); the thread is
 // resumed in the
@@ -111,7 +111,7 @@ func TestCodexChatChildThroughPipes(t *testing.T) {
 	}) {
 		t.Fatalf("Conductor's MCP server is handed CONDUCTOR_PROTOCOL: %q", spec.Argv)
 	}
-	for name, value := range map[string]string{"CONDUCTOR_PROTOCOL": "1", "NO_COLOR": "1", "CONDUCTOR_SESSION_ID": info.ID, "CONDUCTOR_AGENT": "codex"} {
+	for name, value := range map[string]string{"CONDUCTOR_PROTOCOL": agentproto.CodexAppServer, "NO_COLOR": "1", "CONDUCTOR_SESSION_ID": info.ID, "CONDUCTOR_AGENT": "codex"} {
 		if v, ok := envValue(spec.Env, name); !ok || v != value {
 			t.Errorf("%s=%q (set %v), want %q", name, v, ok, value)
 		}
