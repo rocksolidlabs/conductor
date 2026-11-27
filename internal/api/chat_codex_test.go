@@ -79,8 +79,9 @@ func (c *chatEnvT) launchCodex(t *testing.T) *session.Local {
 // A Codex chat's child starts through the session's Runtime's StartPipes,
 // in the terminal's folder, with the terminal's environment but TERM and
 // COLORTERM and CONDUCTOR_PROTOCOL=1 set, as the app server on stdio with
-// Conductor's MCP server as the terminal's launch gave it, the variables it
-// is handed CONDUCTOR_PROTOCOL among them; the thread is resumed in the
+// Conductor's MCP server as the terminal's launch gave it, not handed
+// CONDUCTOR_PROTOCOL (it lists no permission tool to Codex); the thread is
+// resumed in the
 // session's folder; Info says the way, codex-app-server and that its
 // messages are not claimed as written; a message is a turn of the agent's.
 func TestCodexChatChildThroughPipes(t *testing.T) {
@@ -105,10 +106,10 @@ func TestCodexChatChildThroughPipes(t *testing.T) {
 	if !slices.Equal(spec.Argv, want) {
 		t.Fatalf("argv\n%q\nwant\n%q", spec.Argv, want)
 	}
-	if c.srv.cfg.MCP() && !slices.ContainsFunc(spec.Argv, func(a string) bool {
+	if slices.ContainsFunc(spec.Argv, func(a string) bool {
 		return strings.HasPrefix(a, "mcp_servers.conductor.env_vars=") && strings.Contains(a, `"CONDUCTOR_PROTOCOL"`)
 	}) {
-		t.Fatalf("Conductor's MCP server is not handed CONDUCTOR_PROTOCOL: %q", spec.Argv)
+		t.Fatalf("Conductor's MCP server is handed CONDUCTOR_PROTOCOL: %q", spec.Argv)
 	}
 	for name, value := range map[string]string{"CONDUCTOR_PROTOCOL": "1", "NO_COLOR": "1", "CONDUCTOR_SESSION_ID": info.ID, "CONDUCTOR_AGENT": "codex"} {
 		if v, ok := envValue(spec.Env, name); !ok || v != value {

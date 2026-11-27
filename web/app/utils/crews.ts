@@ -1301,26 +1301,114 @@ export function joinTileStatus(m: Pick<JoinRunMember, 'status'>, heard?: { statu
   return { label: st.replace('_', ' '), cls: 'text-muted', dot: 'bg-neutral-400' }
 }
 
-/** A member as the broadcast bar weighs it: whether its session runs, and whether that session waits on a prompt. */
+/**
+ * Where a member stands for the run's message bar: `ready`, it can get a line now (the server types only into a running member whose
+ * session does not wait on a prompt), or why it cannot: it waits on a question (`waiting`), it `ended`, it is `starting` (its session
+ * is up and its prompt not yet typed), or it has `not_started`.
+ */
+export type RecipientState = 'ready' | 'waiting' | 'starting' | 'ended' | 'not_started'
+
+/** A member's state for the message bar, from its run's record and its session as last read (a tile has one or both). */
+export function recipientState(member: Pick<RunMember, 'status' | 'needsInput'> | undefined, session: Pick<SessionInfo, 'status' | 'attention'> | undefined): RecipientState {
+  if (member?.status === 'ended' || (session && isEnded(session.status))) return 'ended'
+  if (session ? session.attention?.state === 'needs_input' : !!member?.needsInput) return 'waiting'
+  if (!member) return session?.status === 'starting' ? 'starting' : 'ready'
+  if (member.status === 'pending') return session ? 'starting' : 'not_started'
+  return member.status === 'running' ? 'ready' : 'starting'
+}
+
+/** A member as the message bar weighs it, in the run's order. */
 export interface BroadcastMember {
   name: string
-  live: boolean
-  waiting: boolean
+  state: RecipientState
 }
 
 /**
- * The run page's broadcast selection. Every member whose session runs is selected unless the person unticked it (`choices`, by name: the
- * person's own ticks and unticks, which outlast every read of the run and every run event); a member that starts later is selected as it
- * appears. `selected` is what the bar sends, in the run's order; `sending` the selected members the server will type into; `waiting` the
- * selected members it will skip because their sessions wait on a prompt.
+ * The person's pick of who gets a line: null while `All` is on (everyone who can get a line, and each member that starts or is
+ * answered joins as it can), else the names the person ticked, which nobody joins by themselves.
  */
-export function broadcastSelection(members: readonly BroadcastMember[], choices: Readonly<Record<string, boolean>>): { selected: string[]; sending: string[]; waiting: string[] } {
-  const selected = members.filter((m) => choices[m.name] ?? m.live)
-  return {
-    selected: selected.map((m) => m.name),
-    sending: selected.filter((m) => m.live && !m.waiting).map((m) => m.name),
-    waiting: selected.filter((m) => m.live && m.waiting).map((m) => m.name),
-  }
+export type RecipientPick = readonly string[] | null
+
+/** One chip of the message bar: a member that can be ticked (`ready`, `on` when it gets the line), or one that says why it cannot. */
+export interface MessageChip {
+  name: string
+  state: RecipientState
+  on: boolean
+  label: string
+  /** The tooltip; empty for a chip that can be ticked, whose name says it all. */
+  tip: string
+}
+
+/** What the message bar shows and sends: whether `All` is on, who gets the line (`to`, in the run's order), the chips and the words. */
+export interface MessageSelection {
+  all: boolean
+  to: string[]
+  chips: MessageChip[]
+  placeholder: string
+  button: string
+}
+
+/** `All`'s tooltip. */
+export const MESSAGE_ALL_TIP = 'Everyone who can get a line now'
+
+const CHIP_WHY: Record<Exclude<RecipientState, 'ready'>, { word: string; tip: (name: string) => string }> = {
+  waiting: { word: 'answer it first', tip: (n) => `${n} waits on your answer.` },
+  ended: { word: 'ended', tip: (n) => `${n} has ended. Resume it on its tile.` },
+  starting: { word: 'starting', tip: (n) => `${n} is starting.` },
+  not_started: { word: 'not started', tip: (n) => `${n} has not started yet.` },
+}
+
+/** Up to four names in words (`lead and core`, `lead, core and review`); past four, a count (`5 members`). */
+export function receiversWords(names: readonly string[]): string {
+  if (names.length > 4) return `${names.length} members`
+  if (names.length < 2) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/**
+ * The run page's message bar: who gets the line, and each member's chip. While `All` is on (`pick` null) every member that can get a
+ * line gets it, so a member that starts or is answered joins; once the person has left anyone out the pick is theirs, and a member that
+ * can get a line later comes in not ticked until the person ticks it or presses `All`. A member that cannot get a line (it waits on a
+ * question, ended, is starting, has not started) never gets it, ticked or not: a message is never typed into a question.
+ */
+export function broadcastSelection(members: readonly BroadcastMember[], pick: RecipientPick): MessageSelection {
+  const ticked = (name: string) => pick === null || pick.includes(name)
+  const chips = members.map((m): MessageChip => {
+    if (m.state === 'ready') return { name: m.name, state: m.state, on: ticked(m.name), label: m.name, tip: '' }
+    const why = CHIP_WHY[m.state]
+    return { name: m.name, state: m.state, on: false, label: `${m.name} · ${why.word}`, tip: why.tip(m.name) }
+  })
+  const to = chips.filter((c) => c.on).map((c) => c.name)
+  const someoneCan = chips.some((c) => c.state === 'ready')
+  const soon = chips.some((c) => c.state === 'starting' || c.state === 'not_started')
+  const placeholder = to.length
+    ? `Write a line for ${receiversWords(to)}`
+    : someoneCan
+      ? 'Pick who gets it'
+      : soon
+        ? 'Nobody can get a line yet: the members are starting'
+        : 'Nobody can get a line now'
+  return { all: pick === null, to, chips, placeholder, button: `Send to ${to.length}` }
+}
+
+/**
+ * The pick after a press on a member's chip: it ticks or leaves out that member, starting from everyone who can get a line while
+ * `All` is on. A pick that leaves nobody out who can get a line is `All` again (null). A chip that cannot be ticked changes nothing.
+ */
+export function togglePick(members: readonly BroadcastMember[], pick: RecipientPick, name: string): RecipientPick {
+  const ready = members.filter((m) => m.state === 'ready').map((m) => m.name)
+  if (!ready.includes(name)) return pick
+  const from = pick ?? ready
+  const next = from.includes(name) ? from.filter((n) => n !== name) : [...from, name]
+  return ready.every((n) => next.includes(n)) ? null : next
+}
+
+/**
+ * The toast after a line from the bar: broadcastSummary's, but `Not sent` when nobody got the line (the line then stays in the field).
+ */
+export function messageToast(r: BroadcastResult): { title: string; description: string; color: 'success' | 'warning' | 'error' } {
+  const s = broadcastSummary(r)
+  return r.sent.length ? s : { ...s, title: 'Not sent' }
 }
 
 /**
@@ -1343,16 +1431,16 @@ export const SETUP_WORDS = {
     { label: 'Stay on this page', value: 'stay' },
     { label: 'Open the run', value: 'open' },
   ],
-  permissions: 'Permission prompts',
+  permissions: 'Yolo',
   viewLink: 'View link',
 } as const
 
-/** The Permission prompts choice: the server's default (named with what it is now), ask, or skip; each the crew's `yolo` as it stores it (yoloChoice). */
+/** The Yolo choice: the server's default (named with what it is now), off, or on; each the crew's `yolo` as it stores it (yoloChoice). */
 export function permissionItems(serverDefault: boolean): Array<{ label: string; value: 'default' | 'off' | 'on' }> {
   return [
-    { label: `The server's default (now ${serverDefault ? 'skip' : 'ask'})`, value: 'default' },
-    { label: 'Ask before acting', value: 'off' },
-    { label: 'Skip: members act without asking', value: 'on' },
+    { label: `The server's default (now ${serverDefault ? 'on' : 'off'})`, value: 'default' },
+    { label: 'Off: members ask before acting', value: 'off' },
+    { label: 'On: members act without asking', value: 'on' },
   ]
 }
 
@@ -1363,10 +1451,9 @@ export function viewLinkHoursWords(ttlSeconds: number | undefined): string {
 
 /**
  * The line beside "More options" while they are folded: what each folded choice is now, so nothing set there is hidden. "Stays on this
- * page · Permission prompts: the server's default (ask) · No view link".
+ * page · No view link". Yolo is in view beside it, never folded.
  */
-export function moreOptionsLine(c: Pick<CrewInput, 'openAfterLaunch' | 'viewLinkTtlSeconds' | 'yolo'>, serverDefault: boolean): string {
-  const prompts = c.yolo === undefined || c.yolo === null ? `the server's default (${serverDefault ? 'skip' : 'ask'})` : c.yolo ? 'skip' : 'ask'
+export function moreOptionsLine(c: Pick<CrewInput, 'openAfterLaunch' | 'viewLinkTtlSeconds'>): string {
   const link = c.viewLinkTtlSeconds ? `a view link for ${viewLinkHoursWords(c.viewLinkTtlSeconds)}` : 'no view link'
-  return `${c.openAfterLaunch ? 'Opens the run' : 'Stays on this page'} · Permission prompts: ${prompts} · ${link.charAt(0).toUpperCase()}${link.slice(1)}`
+  return `${c.openAfterLaunch ? 'Opens the run' : 'Stays on this page'} · ${link.charAt(0).toUpperCase()}${link.slice(1)}`
 }

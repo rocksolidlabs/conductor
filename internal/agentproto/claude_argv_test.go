@@ -47,3 +47,34 @@ func TestStaysInTerminalAgreesWithClaudeArgs(t *testing.T) {
 		}
 	}
 }
+
+// For Codex, StaysInTerminal says yes exactly where CodexArgs refuses the
+// flag (with a value it takes, where it takes one).
+func TestStaysInTerminalAgreesWithCodexArgs(t *testing.T) {
+	refused := func(args ...string) bool {
+		_, _, err := CodexArgs(CodexLaunch{Command: []string{"codex"}, Conversation: "c0ffee-1", LaunchArgs: args})
+		var e *CodexArgError
+		return errors.Is(err, ErrAddedFolder) || errors.As(err, &e)
+	}
+	value := map[string]string{"-c": "k=v", "--config": "k=v", "--enable": "x", "--disable": "x", "-m": "o3", "--model": "o3", "-s": "read-only", "--sandbox": "read-only", "-a": "never", "--ask-for-approval": "never"}
+	for _, f := range codexTakes {
+		args := []string{f}
+		if v, ok := value[f]; ok {
+			args = append(args, v)
+		}
+		if StaysInTerminal(CodexAppServer, f) || refused(args...) {
+			t.Errorf("%s: marked %v, refused %v", f, StaysInTerminal(CodexAppServer, f), refused(args...))
+		}
+	}
+	for _, f := range []string{"--add-dir", "--add-dir=/x", "--cd", "-C", "--image", "--search", "--oss", "-i"} {
+		if !StaysInTerminal(CodexAppServer, f) {
+			t.Errorf("%s: not marked", f)
+		}
+		if !refused(f, "x") {
+			t.Errorf("%s: marked, and CodexArgs takes it", f)
+		}
+	}
+	if StaysInTerminal(CodexAppServer, "-mo3") || StaysInTerminal(CodexAppServer, "--model=o3") {
+		t.Error("a taken flag with its value attached was marked")
+	}
+}

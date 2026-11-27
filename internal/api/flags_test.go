@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/agentproto"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
@@ -394,6 +395,18 @@ func TestFlagsRouteMarksWhatKeepsATerminal(t *testing.T) {
 	for _, fl := range f.askUntil(t, "plain", flagsRead).Flags {
 		if fl.KeepsTerminal {
 			t.Errorf("an entry with no chat: %s marked", fl.Name)
+		}
+	}
+	// Codex's chat takes only the flags its app server has a counterpart of; nothing is marked while its sessions do not move
+	// (agentproto.Moves), as today.
+	codex, _ := catalog.Default().Get("codex")
+	codex.ID, codex.Name, codex.Command, codex.Protocol = "codex-chat", "Stub codex-chat", []string{flagsProgram(t)}, &catalog.ProtocolRecipe{Name: agentproto.CodexAppServer}
+	cx := newFlagsEnv(t, []catalog.Agent{codex})
+	cx.version.Store(agentproto.CodexMinVersion)
+	cflags := byFlagName(cx.askUntil(t, "codex-chat", flagsRead))
+	for name, want := range map[string]bool{"--add-dir": true, "--verbose": true, "--effort": true, "--model": false} {
+		if want = want && agentproto.Moves(agentproto.CodexAppServer); cflags[name].KeepsTerminal != want {
+			t.Errorf("codex %s: keepsTerminal %v", name, cflags[name].KeepsTerminal)
 		}
 	}
 	old := newFlagsEnv(t, []catalog.Agent{chat})

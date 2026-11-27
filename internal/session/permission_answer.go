@@ -107,7 +107,8 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 	out.event = "permission_answered"
 	s.mu.Lock()
 	if err := func() error {
-		if !s.listedLocked(p, r) || r.claim != token {
+		if !s.listedLocked(p, r) || r.claim != token || p.stopping {
+			// A stop under way answers every open request itself.
 			return ErrQuestionAnswered
 		}
 		if _, err := s.matchLocked(p, a); err != nil {

@@ -543,7 +543,7 @@ func TestClaudeGate(t *testing.T) {
 			t.Errorf("Qualified(%q) = %v", v, got)
 		}
 	}
-	if Qualified("acp-v1", "9.9.9") {
+	if Qualified("acp-v2", "9.9.9") {
 		t.Error("a protocol with no driver is qualified")
 	}
 	if !versionAtLeast(ClaudeMinVersion, "2.1.248") {
@@ -561,7 +561,7 @@ func TestClaudeGate(t *testing.T) {
 	if err := Check(&catalog.ProtocolRecipe{Name: "codex-app-server"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(&catalog.ProtocolRecipe{Name: "acp-v1"}); err == nil {
+	if err := Check(&catalog.ProtocolRecipe{Name: "acp-v2"}); err == nil {
 		t.Fatal("a protocol Conductor does not speak yet was taken")
 	}
 

@@ -3091,8 +3091,30 @@ false and no built-in names `codex-app-server` until the look below.
   an MCP server's form, `item/permissions/requestApproval` and
   `item/tool/requestUserInput` are declined at once (the last three with a
   notice), and every other request of the server's refused `-32601`.
-- The floor reads a Codex step's paths: a file change's `changes[].path`
-  and `grantRoot`, a command's `cwd`.
+- What the driver does not read is declined, never passed on without it:
+  an approval about an item holding a field beyond the ones it reads (in
+  the item, a change, or a change's kind; a kind of change other than add,
+  delete and update); a command approval asking for more than its command
+  (a network context, added permissions, a sub-approval's `approvalId`, a
+  `reason`, an `environmentId`, a kind other than `command`, a field it
+  does not read); a file change's with a `reason`; one naming no item; and
+  a file change's whose item announced no changes. A change that moves a
+  file carries its destination (`kind.move_path`) into the step's and the
+  request's input, the floor and the record (an edit at the destination,
+  the file it left deleted). A request named by an open one's id closes the
+  open one's card. A verdict on a request the driver no longer holds
+  (answered, resolved, replaced) is `ErrNoRequest`, and the session records
+  the request withdrawn, never as given.
+- The floor reads a Codex step's paths: a file change's `changes[].path`,
+  each change's `kind.move_path` and `grantRoot`, a command's `cwd`, and the
+  command line's relative words from that folder as well as from the
+  session's. An in-stream request that names no call is denied, as is one
+  read while a stop is under way, and an answer that arrives during a stop
+  reaches no request.
+- Conductor's MCP server for Codex is not handed `CONDUCTOR_PROTOCOL`, so
+  it lists no permission tool to Codex's model (Codex asks in its own
+  stream); Codex's notify and hooks have the variable from Codex's own
+  environment, which the live look confirms.
 - Items: `commandExecution` (its exit, its output, `declined` as denied),
   `fileChange` (each change a `file` entry, counted from its diff),
   `mcpToolCall` (as `mcp__<server>__<tool>`), `dynamicToolCall`, `webSearch`;
@@ -3112,6 +3134,22 @@ false and no built-in names `codex-app-server` until the look below.
   `TestStubCodexSpeaksTheDriver` holds it to the driver, and
   `chat-codex.spec.ts` walks a Codex chat (its `fixme` lifted with
   `CODEX_MOVES` by the declaration).
+
+**Read and stated before Codex is declared, beside the look below:**
+
+- What the floor covers for Codex. Claude Code keeps Conductor's deny rules
+  in every mode; for Codex the floor sees only the steps Codex asks about,
+  and a command its own policy runs unasked (a read inside its sandbox, a
+  safe command, everything under `never`) reaches no floor. Before the
+  declaration, one of two: the chat's child gets a floor it keeps itself
+  (its own configuration puts the deny list's places out of its sandbox's
+  reach, and a launch whose policy asks about nothing is not moved to
+  Chat), or this limit is stated under design 7's "What the floor does not
+  promise". The live look decides which is possible.
+- The fixtures. The live look records a file change's announcement before
+  its approval and replaces the hand-built fixtures; until a recording
+  shows a change set is whole when it is announced, a file change's
+  approval whose announced item has no changes is declined (as built).
 
 **Row 10's live look, before the declaration** (one session of the real
 Codex at `CodexMinVersion` or later, in a throwaway repository): the
@@ -3152,6 +3190,103 @@ the question and answers its held reply), `TestACPVerbatimIsDeclared`
 "/compact" is checked against the declaration, and the box draws "Messages
 starting with `/` may run as the agent's commands."), fixtures per agent,
 and the stub's third mode with its Playwright run. **18 h.**
+
+**As built, row 11, before the live looks** (#1176; `internal/agentproto/acp.go`,
+`acp_argv.go`, its fixtures in `testdata/acp`, `internal/api/chat_start.go`,
+`move.go`, `web/e2e/stub-protocol-acp.mjs`). No agent's catalog entry
+declares `acp-v1`, and `acpMoves` holds no agent, until each agent's look
+below.
+
+- One client, protocol 1, the baseline: `initialize` advertises `fs`
+  (`readTextFile`, `writeTextFile` false) and `terminal` false and names
+  `conductor`; every `fs/*`, `terminal/*` and other request the client did
+  not advertise is answered `-32601`. An answer of another protocol version
+  starts no chat.
+- The chat takes up the terminal's session through the protocol:
+  `session/resume` where the agent advertises
+  `sessionCapabilities.resume`, else `session/load` where it advertises
+  `loadSession` (the history a load replays is not shown), each with the
+  session's folder as `cwd` and no MCP server (`mcpServers: []`); an agent
+  that offers neither starts no chat. A refusal with `-32000` (the
+  protocol's auth required) goes back to the terminal ("This agent is not
+  signed in; sign in from its terminal.").
+- The argv is the catalog's command and the protocol recipe's arguments
+  (the agent's own start of its ACP server); a terminal launched with
+  arguments of its own or a model flag refuses the move ("This session's
+  arguments hold …, which a chat cannot take; it stays in its terminal."),
+  an added folder in its own words; a yolo launch's arguments are not
+  carried, so the chat's requests are asked.
+- A message is `session/prompt` with one text block, as written; the
+  agent's first update of the turn, or the prompt's answer, is the message
+  taken; `stopReason` `end_turn` is done, `cancelled` interrupted,
+  `max_tokens` and `max_turn_requests` a limit, `refusal` an error. Stop
+  sends `session/cancel` and answers every pending permission request
+  `cancelled`. `agent_message_chunk` is the agent's words, `tool_call` a
+  step (its `name`, else its `kind`; its `rawInput`, else `{}`; its title
+  the one line), `tool_call_update` its end with its content's text and its
+  diffs as file changes; thoughts, plans, the context's use and the rest
+  are no entry, and an update of another session, or between turns, is
+  dropped.
+- A tool call's input is every field it was shown with (`name`, `title`,
+  `kind`, `rawInput`, `content`, `locations`), whole. A permission request
+  is handed to the session with its `toolCallId` as the call and the step's
+  name and input as announced, the request's own values for those fields
+  over them, so that the session's binding (design 7, rule 1) takes only a
+  request about a call the stream showed as it showed it. What the client
+  does not read is declined, never asked without it: a request about a call
+  announced with a field it does not read or changed by an update since,
+  and one whose `toolCall` or params hold such a field. A verdict on a
+  request it no longer holds is `ErrNoRequest`, recorded withdrawn. The
+  floor judges an ACP call by every place it names (its raw input as a
+  command's and a file tool's, each location's and each diff's path),
+  whatever its kind; `execute` has a command's plain words. An Allow
+  selects the `allow_once` option by its own `optionId`, a Deny the
+  `reject_once` option's or `cancelled`; an `allow_always` or
+  `reject_always` option is never selected. Built differently from design
+  4: a request that offers no `allow_once` is declined at once with a
+  notice ("The agent offered no way to allow this call once; Conductor
+  declined it."), not put to the operator with Deny only: the session's
+  question has no Deny-only form yet. An agent's `$/cancel_request` takes
+  its request back, answered `-32800` as the protocol asks.
+- `MovesFor(name, adapter)` is the move's word for an agent: for `acp-v1`
+  the agent's own (`acpMoves`), for every other protocol its driver's. A
+  version is qualified once the identity probe read one; the protocol's
+  version is the gate.
+- The stub's third mode (`stub-protocol-acp.mjs`, reached by `acp` or
+  `--acp`, and from the terminal stub by them with `CONDUCTOR_PROTOCOL=1`);
+  `TestStubACPSpeaksTheClient` holds it to the client, and
+  `chat-acp.spec.ts` walks an ACP chat (its `fixme` lifted with `ACP_MOVES`
+  by the first agent's declaration).
+
+The built-in agents, by their own pages:
+
+| Agent | Its ACP start | Its catalog's session recipe | Chat |
+|---|---|---|---|
+| GitHub Copilot CLI | `copilot --acp` ("public preview") | yes | after its look |
+| Cursor CLI | `agent acp` (the catalog's command is `cursor-agent`) | yes | after its look |
+| OpenCode | `opencode acp` | none | needs a session recipe first: no conversation id is known to take up |
+| Goose | `goose acp` | yes | after its look |
+| Antigravity | `agy acp` | yes | after its look |
+| oh-my-pi | `omp acp` | none | needs a session recipe first |
+| DeepSeek Harness | `dsh --profile acp` ("developer preview") | none | needs a session recipe first |
+| pi, aider, Amp | none of their own | | no Chat: no protocol start the client could speak to |
+
+**Row 11's live looks, one per agent before its declaration** (the real
+program at its current version, in a throwaway repository, a terminal
+session that had a first turn): the start runs its ACP server on stdio with
+those arguments; its `initialize` answer (protocol 1, `loadSession`,
+`sessionCapabilities.resume`, `authMethods`); that the terminal's own
+session id taken up by `session/resume` or `session/load` is that
+conversation (its earlier turns known to the agent), and that the terminal
+resumed after with the catalog's resume arguments sees the chat's turns
+(`acpMoves`); what its start loads from the folder (its settings, its
+instructions file, its MCP servers) against what its terminal loaded;
+what a message that starts with `/` (one of its `available_commands`) and
+one holding `@path` do; whether every permission request names a
+`toolCallId` the stream showed with the same input (else every request is
+denied); its options' ids and kinds; what a signed-out start answers; and
+whether a turn leaves work running after its answer. Then its fixtures are
+recorded there.
 
 ### Row 12: the operator's own `@file` and `/command` in a chat
 

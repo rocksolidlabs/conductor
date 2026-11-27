@@ -8,6 +8,8 @@
 //   stub-protocol.mjs -p ... --resume ID speaks stream-json on stdin and stdout, on the conversation ID
 //   stub-protocol.mjs app-server ...     is Codex's app server (its second mode, stub-protocol-codex.mjs; with
 //                                        STUB_PROTOCOL_AGENT=codex, --version too)
+//   stub-protocol.mjs acp | --acp ...    is an agent's Agent Client Protocol server (its third mode,
+//                                        stub-protocol-acp.mjs; with STUB_PROTOCOL_AGENT=acp, --version too)
 //
 // Each turn's message goes into $HOME/.stub-sessions/<conversation>.txt as "chat: <message>" when that folder is there (the
 // terminal stub's transcript, which a terminal resumed on the conversation prints).
@@ -72,6 +74,11 @@ const args = process.argv.slice(2)
 // answers until its input ends and exits itself.
 if (process.env.STUB_PROTOCOL_AGENT === 'codex' || args.includes('app-server')) {
   await import('./stub-protocol-codex.mjs')
+  await new Promise(() => {})
+}
+// An agent's Agent Client Protocol server: the stub's third mode, in a file of its own (stub-protocol-acp.mjs).
+if (process.env.STUB_PROTOCOL_AGENT === 'acp' || args.includes('acp') || args.includes('--acp')) {
+  await import('./stub-protocol-acp.mjs')
   await new Promise(() => {})
 }
 const version = process.env.STUB_PROTOCOL_VERSION || '2.1.331'
