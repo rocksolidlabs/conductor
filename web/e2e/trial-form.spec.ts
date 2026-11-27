@@ -384,13 +384,20 @@ test('an agent trial starts in a new project: the folder gets its first commit, 
   await page.setViewportSize(DESK)
   await page.goto('/crews')
   const { dialog, form } = await openForm(page)
-  const folder = form.locator('[data-compare-cwd]').getByRole('combobox')
+  const field = form.locator('[data-compare-cwd]')
+  const folder = field.getByRole('combobox')
   const checked = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === fresh)
   await folder.fill(fresh)
   await folder.press('Tab')
-  expect((await checked).status()).toBe(200)
+  const answer = await checked
+  expect(answer.status()).toBe(200)
+  // The server's own verdict is that this folder is a new project, and the form has applied that answer (its mark names the folder)
+  // before the form is read: a read made before then would pass on any page.
+  expect((await answer.json()).message).toBe("no commit yet: the operator's launch makes the folder's first commit")
+  await expect(field).toHaveAttribute('data-folder-checked', fresh)
   await expect(folder).not.toHaveAttribute('aria-invalid', 'true')
-  for (const words of ['commit', 'repository', 'git']) await expect(dialog).not.toContainText(words)
+  await expect(dialog.locator('[data-compare-create]')).toBeEnabled()
+  for (const words of ['commit', 'repository', 'git', 'Launch would be refused']) await expect(dialog).not.toContainText(words)
   await dialog.locator('[data-compare-cancel]').click()
   // The checks of the form made nothing there.
   expect(existsSync(join(fresh, '.git'))).toBe(false)
