@@ -200,6 +200,11 @@ export interface DesktopBridge {
   openUrl?(url: string, browser?: AgentBrowser | null): Promise<{ outcome: string }>
   /** The browsers of the five an agent may name that are installed on this computer, for the Agents page to mark. Older apps lack it. */
   browsers?(): Promise<string[]>
+  /**
+   * The settings changed outside the Settings page (a folder allowed from the Launch agent dialog, a trial's or a crew's): the page
+   * reads them again (UX3 R62). Older apps lack it.
+   */
+  onSettings?(cb: () => void): () => void
   restartServer(): Promise<void>
   openInBrowser(): Promise<void>
   showLog(): Promise<void>
