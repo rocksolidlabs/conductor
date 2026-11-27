@@ -243,6 +243,92 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   run's tile, a crew's run card, the runs panel) is drawn neutral, never
   amber; its tooltip says "The agent skips its permission prompts". Amber
   stays for what waits on a person (`yolo-badge.spec.ts`).
+- **An agent's question is one amber card** (UX3 R3, #1169). The reply bar is a
+  card now: amber border and tint, the amber dot, and one line that reads
+  "<agent> asks:" and the question whole, wrapped, never cut. The choices sit
+  beside the question when they fit on its row and under it when they do not,
+  each a 44 px target under a finger. In the Terminal the card sits under the
+  terminal; in Chat just above the chat's box, inside the conversation's
+  column (under the pane's bar while the editor folds it away). A share link's
+  page and the Yard draw the same card under their pane. A chat's permission
+  request is still the last thing in the conversation, answered with its own
+  buttons. Every other form keeps its words: Open plan, Preview plan, Answer
+  dr-N, Answer it in the terminal with Paste into the terminal.
+- **The chat's box is one row, and keeps its line for each agent** (UX3 R4,
+  #1169). In Chat the box is the field, then `Stop turn` (with its word, while
+  a turn runs and you may stop it), then Send. Send's tooltip says Enter sends
+  and Shift+Enter makes a new line; the standing help lines under the box are
+  gone. Only while the line begins with / does one line say what happens to
+  it: "Sent as plain text. To run a command, use the Terminal." The
+  placeholder reads "Message <agent>". The box takes the cursor as the chat
+  opens and after a send, when nothing else has it and no question waits for
+  its number keys; Escape leaves it. A line you typed for one agent is there
+  again when you come back to it after answering another; it goes when sent,
+  emptied, when the session leaves the list, or at a reload.
+- **In Chat the box answers the agent's question** (UX3 R5, #1169). While the
+  agent's question takes a typed reply, the box says "Answer <agent>…", or
+  "Pick an answer above, or type your own" when it has choices, and Send reads
+  Answer once you type. A line you began before the question came stays a
+  message. The answer goes once, names the question you saw, and comes back
+  into the box if it is refused (someone answered first). The card above the
+  box has no field of its own in Chat; its choices and the number keys still
+  answer. Under a folded pane, a share link's page and the Yard, the card keeps
+  its own field. A line typed as an answer is never sent as something else: a
+  line you begin after your answer has gone is a message; an answer refused
+  because the question was already answered stays in the box for that
+  question, and goes as a message only once you empty the box and write it
+  again.
+- **A permission request out of view leaves one line above the box** (UX3 R71,
+  #1169). When the chat's open permission request is scrolled out of view, one
+  amber line above the box says "<agent> asks: Run a command?" with "Show it",
+  which brings the request back with the focus on its first button. It goes
+  once the request is in view or answered.
+- **A chat's tile shows the end of its conversation** (UX3 R8a, #1169). On the
+  Yard and on a run's page, a session that runs as a chat shows the last of its
+  conversation in its tile, read-only: no box and no Stop, each turn's steps one
+  line ("Working." while the turn runs), always at the end. Its question is
+  answered on the tile, as on any tile.
+- **A chat's file line has its counts and opens the editor in one press**
+  (UX3 R9, #1169). A file a tool changed reads "split_test.go changed · +38
+  −2", with "Open in the editor" beside it on the session page; opened, the
+  line shows its small diff, as before.
+- **The Chat box finds a file on @** (UX3 R6, #1169). An `@` at a word's start
+  in the agent's box opens a list above it: the files the agent touched, or,
+  as you type, the folder's files whose name holds what you typed. The arrows
+  move, Enter or Tab picks, Escape closes it and keeps your text; while it is
+  open Enter never sends. A pick writes `@<path> ` into the line. A path with
+  a space or a mark in its name is listed and says to type it yourself. No
+  list where the connection may not read files. A chat's permission request:
+  its reason field reads "Why you deny, for the agent (optional)": it goes
+  with a deny alone.
+- **Before the agent's first reply the Chat side is dimmed** (UX3 R15). Its
+  tooltip says "Chat opens after the agent's first reply.", and a press shows
+  the same words for a moment. No line stands above the terminal.
+- **The session page's More** (UX3 R14). Stop session… asks first, with the
+  same question as the sidebar's row, the palette and X ("Stop <name>?",
+  Cancel or Stop). Mark as holds the three marks: Needs you, Working, Clear
+  the mark (on a phone, a labelled group of three). Fit to my window is in
+  More while the terminal shows and another window sets its size.
+- **An ended session says so at its foot** (UX3 R16). When a session has
+  ended its foot reads "This session ended." with Resume (or Relaunch when
+  there is nothing to resume); the terminal keeps its last screen.
+
+### A crew's member
+
+- **A crew member's page carries its crew** (UX3 R12). A strip above its
+  header: Back to the crew (its tooltip names the crew; Alt+Q does the same
+  from anywhere on the page, the terminal included), the crew's name, and a
+  tab for each member with its state's mark. A tab opens that member in the
+  page's place, so one Back leaves the crew. On a phone the strip is the
+  member's way back, in place of Back to the list. On a very wide window the
+  strip shares the session's header row (UX3 R12b).
+- **A member's Terminal | Chat** (UX3 R13). A crew's member shows the same
+  Terminal | Chat switch as any agent; its Chat side is dimmed and says "Crew
+  members run in their terminals." on hover, on focus and when pressed.
+  Nothing is sent.
+- **A run link's member says Back to the crew in words** (UX3 R17): on a
+  crew's run link (a guest's page) the member's way back reads "Back to the
+  crew" beside its arrow, at every width.
 
 ### A crew's Setup
 
@@ -257,14 +343,341 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   (`crews.test.ts`, `CrewLaunchSheet.test.ts`, `designRules.test.ts`;
   `crew-yolo.spec.ts`, `crew-make.spec.ts`).
 
+### A running crew
+
+- **A run's Members view is its tiles, with Activity a column you turn on**
+  (UX3 R18b, #1168). The run page's first view reads "Members" (it was
+  "Grid"; links with `?view=grid` still open it, and the palette's row reads
+  "View the members"). The members' tiles fill the view by themselves, the
+  last one taking the cells its row leaves. "Activity", a button at the right
+  of the view row, shows the run's activity as a column 320 px wide beside
+  the tiles (under them on a narrow window), headed "Activity", with "This run
+  in History", which opens History filtered to the run. It is off at first;
+  the choice is kept for each crew on this device, and a crew opened for the
+  first time takes the last choice made. The palette has "Show activity" and
+  "Hide activity". A tile's open button says "Full size".
+- **A run's tiles lay out four ways, kept for the crew** (UX3 R19a, R19b,
+  #1168). Right of the views on the Members view, a switch of four icon
+  buttons: "Grid", "Columns", "Rows" and "One large" (not drawn where the
+  tiles stack, below 640 px). Grid fits the tiles to the view; Columns puts
+  them in one row, each at least 260 px wide, scrolling sideways past that;
+  Rows in one column, each at least 140 px tall, scrolling down; One large
+  draws one member in two thirds of the width and the others in a column at
+  the right, each with "Show <name> large". A change of layout moves each
+  terminal and never reconnects it. The palette has "Lay the members out:
+  Grid", "…Columns", "…Rows" and "…One large".
+- **Drag the gap between a run's tiles to resize them** (UX3 R21, #1168). Each
+  gap between two columns or rows of a run's tiles, and the one between the
+  large tile and the column in One large, can be dragged: a line follows the
+  pointer and the tiles change when it is let go. With the gap focused, the
+  arrow keys move it by 5 % and Home (or a double-click) makes the two even.
+  No tile goes below 260 px wide or 140 px tall.
+- **Each crew's tiles come back as you left them** (UX3 R18b, R19a, R21, R73,
+  R88, #1168). The layout, Activity, the member One large draws large and the
+  sizes the gaps were dragged to are kept for each crew, and a crew opened for
+  the first time takes the last choice made. The server keeps them too, in
+  the layout document (`runTiles`, at most 30 crews, the latest first), so a
+  crew opens as you left it after the server restarts and on your other
+  machines; only a wide window writes them, so a phone's choice stays on the
+  phone. The sizes of a crew's other layouts stay on the machine where they
+  were made.
+- **A run's tile that asks shows its question whole** (UX3 R20a, R20b, #1168).
+  Under its terminal a tile whose member asks shows "<member> asks:" and the
+  question whole, wrapping, never cut, then what answers it: its choices,
+  answered with a press; or, where the tile cannot answer it, "Answer it in
+  its terminal", a button "Answer dr-7" that opens the decision's card, or a
+  button "Open it to answer" that opens the member. The bar takes at most half
+  of the tile and scrolls inside past that. A member that ended keeps its
+  tile, and its header says "Resume" or "Relaunch" in words where the run takes
+  it back. A tile's foot says the branch when there is one.
+- **Number keys answer a run's tile** (UX3 R22, #1168). While the frame of a
+  run's tile that asks has the focus (not its terminal), 1 to 9 pick the
+  choice of that number, as on the sidebar's focused row; a choice that
+  changes the permission mode has no number. Enter and Space still open the
+  member. The shortcuts list has a group for the run page.
+- **The run's message bar says who gets the line** (UX3 R23a, #1168). The
+  checkboxes on the run page's tiles are gone: the bar under the tiles reads
+  "Message to", then a chip "All" and one chip for each member, in the run's
+  order. A member that can get a line now is a chip you press to tick or leave
+  out. A member that cannot says why on its chip and cannot be ticked:
+  "review · answer it first" (amber: it waits on a question, and a line is
+  never typed into a question), "web · ended", "docs · starting",
+  "tests · not started". While nobody who can get a line is left out, "All" is
+  on and a member that starts or is answered joins by itself; once you leave
+  anyone out the set is yours, a member that becomes able later comes in not
+  ticked, and "All" puts everyone back. The field names who gets the line
+  ("Write a line for lead and core", past four names "Write a line for 5
+  members"; "Pick who gets it" when you left everyone out; "Nobody can get a
+  line yet: the members are starting" when none can), the button counts them
+  ("Send to 2"), and Enter sends. The page names only the members that will
+  get the line, so a member waiting on a question no longer turns every send
+  into a warning. A send that reached nobody, or failed, says "Not sent" with
+  the server's words, and the line stays in the field. On a stopped run the
+  bar reads "This run has ended." The palette's row reads "Message the crew…".
+  Below 640 px the chips wrap and are 44 px tall.
+- **A line sent from the run's bar is confirmed in the bar** (UX3 R24, #1168).
+  After a line that every member it named got, no toast opens: the field
+  empties and reads "Sent to lead and core." for four seconds, then names who
+  gets the next line again, and a screen reader hears it once. A line only
+  some got keeps the toast that names who was skipped and why ("Sent to 1 of
+  2", "Skipped core (waiting on a prompt)."). One that reached nobody, or
+  failed, says "Not sent" and the line stays in the field. From 3,072 bytes
+  the field counts them at its right end ("3,100 / 4,096"); past 4,096 the
+  count is red and Send is off.
+- **The message bar's rest** (UX3 R23b, #1168). A double-click on a member's
+  chip gives the line to that member alone; "All" puts everyone back. The chip
+  of a member that waits on a question ("review · answer it first") is a
+  button: a press shows its tile, on the Members view, scrolled into view and
+  focused. While the bar holds the focus, each tile that will get the line
+  carries a ring. Who gets the line and the line you began are kept for each
+  run while the app is open, so a trip to a member and back loses neither; a
+  reload forgets them. The global palette's row for a live run reads Message
+  the crew…, and its verb Message to <run>: "…".
+
 ### Launch agent
 
+- **Launch agent** (UX3 R26, R26b, #1164). The dialog says what it is for
+  under its title ("Start an agent in a folder.") and holds, in order: the
+  agents as chips (one Tab stop, the arrows within the row, each chip's
+  tooltip the agent's description; a chip pressed with the pointer hands the
+  cursor back to the task), Folder (its placeholder the folder a launch that
+  names none runs in; a leading `~/` typed is the server's home), the Account
+  with its usage in one line under it (Details shows the full panel in
+  place), and What should it do?, which has the cursor as the dialog opens.
+  Enter there launches, once (Shift+Enter is a new line); Ctrl or Cmd+Enter
+  launches from any field. An agent that takes no task says it starts at its
+  prompt and where to type its task, and the dialog opened on it has the
+  focus on Launch. More options, folded, holds Where it runs (on a window
+  opened from another computer), Name, Model and Extra arguments; closed, its
+  line names what is set there (a name in quotes, the model, the arguments as
+  typed). Run as sits at the right end of its row, outside the fold. Yolo is
+  beside Launch, one press, "Yolo skips permission prompts" on and off, never
+  in a warning colour, starting as Settings' default says; for an agent that
+  cannot skip its prompts it is off and disabled and says so. A folder the
+  server refuses is said under Folder in plain words ("Agents can't use this
+  folder yet.", with a link to Settings' folders in the desktop app; "There
+  is no folder at this path."; "This is a file, not a folder."), the cursor
+  back in Folder, and Launch sends nothing until the folder changes; any
+  other refusal is said on top as "Not started: <the server's words>." A
+  clone keeps its Name on the face, required, with More options open
+  (`launch.test.ts`, `yolo.test.ts`, `dirInput.test.ts`;
+  `launch-dialog.spec.ts`, `capacity.spec.ts`, `launch-first-message.spec.ts`,
+  `launch-plain.spec.ts`, `main-action.spec.ts`).
+  More options holds, in order: Where it runs (when asked), Name and
+  Model on one row (Name's placeholder "Made from the task", then the
+  name the task gives; Model's "The agent's choice"), then Extra
+  arguments where the agent takes them, with what the launch runs under
+  it (the command, the arguments and Yolo's own, and the model in words).
+  Each agent keeps its own model and arguments while the dialog is open;
+  arguments are never kept past a launch. Before the press the dialog
+  says a model set in two places ("The model is set here and in Model.
+  Keep one of them.") and Yolo's own arguments typed by hand ("Use the
+  Yolo switch for this."); Launch stays enabled. Beside the Account, the
+  usage in one line ("5-hour 33% · Weekly, all models 40%", a window
+  near its limit in the warning colour); pressed, the full usage panel
+  shows in place. One line under the Account says when the usage should
+  slow a launch (near a limit, a limit reached, signed out); it never
+  holds Launch. The dialog remembers the last launch: its agent, its
+  folder, each agent's model and the names typed (offered under Model),
+  and how More options was left; never the arguments, the task, the
+  name, the account or Yolo. The server keeps the agent, the folder and
+  the models in its data directory (`GET /api/launch/last`), so they
+  come back after a restart (UX3 R27, R28, R29, R89; `capacity.test.ts`,
+  `lastLaunch.test.ts`, `last_launch_test.go`; `launch-dialog.spec.ts`,
+  `capacity.spec.ts`).
+- **Extra arguments and Model offer the agent's own flags and names** (UX3
+  R48, R49, R50, R53, #1172). Extra arguments offers the agent's own flags as
+  you type `--` (Claude Code and Codex, and Copilot CLI, Antigravity and
+  Goose), in the order its help lists them, each with the help's own
+  sentence; after a flag whose help lists its values (Claude Code's
+  `--effort` and `--permission-mode`, Codex's `--sandbox`), those values. Tab,
+  Enter or a click takes a row; Escape closes the list and leaves the dialog
+  open. What the dialog sets itself is not offered (the model, when the
+  dialog has a Model field; the Yolo switch's flags and the values that turn
+  asking off; the session's id; what a launch takes for itself; `--help`,
+  `--version`). A flag that would keep a session out of Chat says `Terminal
+  only`. Anything typed is sent as typed; a value that turns asking off,
+  typed by hand, shows `Use the Yolo switch for this.` After a flag that
+  takes a folder (`--add-dir`), the list offers folders as the Folder field
+  does, under the folders agents may use: with nothing typed, the folders
+  beside the session's folder; a pick goes on to that folder's folders. A
+  path outside them is sent as typed. Model offers the model names the
+  agent's help gives (today Claude Code's), and takes any other name as
+  typed; Brakeman's Model in Settings does the same, and a crew member's
+  Extra arguments and Model offer its agent's flags and model names too.
+- **Whether agents may use a folder, asked before the launch** (UX3 R63,
+  #1173). `GET /api/roots/check?path=` says of one folder what a launch there
+  would meet: `allowed`, `outside`, `missing`, `not_directory` or
+  `unreadable`, by trying what the launch tries, its open of the folder
+  included. For a folder outside every allowed one it says why it is never
+  allowed from the app's screens (the whole disk, Conductor's own data, a name
+  the saved list cannot hold) or how wide it is (the home folder, a folder
+  holding it, one holding Conductor's data). Where the folder leads through a
+  link is said where every folder may be listed (the app's server). The
+  admin's alone; a switchyard has none of it. The folders agents may use are
+  now read from one place on the server, set from the configuration when it
+  starts; nothing else reads the configuration's list after that. A folder
+  another user owns is not allowed from the app's screens (reason `owner`).
+- **What the folders agents may use are** (UX3 R63, #1173). They are the
+  folders in which Conductor starts agents, and the folders its own pages
+  read: the Files tab, the folder list and picker, and a run's repository.
+  They are not a sandbox. An agent is a program running as you, with your own
+  reach on this machine; what it does there is governed by the agent's own
+  permission prompts, and by your choice to skip them (Yolo).
+- **The desktop app may allow one more folder, with no restart** (UX3 R64,
+  R65, #1173). `GET /api/whoami` says `folders`: `app` when the server was
+  started by the desktop app with its key, `config` when its folders are its
+  configuration's alone (a server started by hand, or the app on Windows).
+  `POST /api/roots {path, confirmed?}`: the desktop app allows one more folder
+  for agents while the server runs. The folder is judged again as the check
+  judges it: a link, a folder not there, a file, one that cannot be opened,
+  the whole disk, Conductor's own data, a folder another user owns and a name
+  the saved list cannot hold are refused; the home folder, a folder above it
+  and one holding Conductor's data need `confirmed` naming that kind; at most
+  64 folders. The app's bridge offers `allowFolder(path, confirmed?)` to the
+  workbench's own main frame: the app asks the server it started to let
+  agents use the folder, keeps it in the folders of its settings, and
+  restarts nothing, so running agents go on. It refuses, before asking
+  anything, a path the saved list cannot hold as one folder, the 65th folder
+  and a list past 8,192 characters; a call while Settings are being saved or
+  the server restarts is busy, and a Settings save waits for a call under
+  way. After it every workbench window is told (`onSettings`). When
+  Conductor restarted while a call was under way, the app waits for it to
+  run and asks it again, and says so when it did not take the folder. A
+  settings file that cannot be written keeps nothing: the call says the
+  folder was not saved. The app makes a fresh token and key for every start
+  of its server, and every window of the app follows the server the app
+  trusts, showing nothing while none runs. On Windows the bridge does not
+  offer it yet, and the app hands its server no key there.
 - **An agent's own flags, read from its help** (UX3 R46, R47, R52, #1172). The
   server reads the flags of Claude Code, Codex, Copilot CLI, Antigravity and
   Goose from the help of the version installed, once for each version, and
   answers them to the app's arguments fields (`GET /api/catalog/{id}/flags`).
   Nothing is read for an agent whose program the identity check did not
   recognise, or that takes no arguments.
+
+### The welcome
+
+- **A welcome with one button** (UX3 R31 to R35, #1162). See the welcome's
+  entry under the UX review (#945): the mark, one sentence, Launch <agent>
+  with the other agents on one line under it, Other ways to start folded, the
+  card saying what it found, Pick up where you left off, and, for someone who
+  launched before, "Nothing is running" with the last agent launched.
+
+### Settings
+
+- **Settings opens on where and how agents work** (UX3 R54, #1167). The
+  sections now read Where agents work, How agents run, Agents on this
+  machine, Accounts, Switchyard, GitHub, Brakeman, The app, so the folders
+  agents may use and the Yolo switch are in view as the page opens, at
+  2000 x 810 and at 1440. Every setting of rc.24 is still on the page and
+  nothing folds. WebRTC from WSL is no section of its own any more: it is the
+  Windows firewall row of Switchyard (`rule missing` in amber with Allow,
+  `rule present` neutral), and `?section=webrtc` still lands on that row.
+  Reach moved from How agents run into Switchyard, as "Reach from outside
+  your network", with the line it lacked. On Windows "Also allow your Windows
+  folders" sits with the folders it adds to. The switchyard's long paragraph
+  became the line of its switch, "Share links work from anywhere", keeping
+  every fact it stated. Agents on this machine draws its badges as the Agents
+  page does, from one table (`web/app/utils/agentBadges.ts`): not installed
+  and an identified agent's version are neutral.
+- **The folders agents can use are a list** (UX3 R55, #1167). In Settings →
+  Where agents work the Allowed roots box became "Folders agents can use":
+  one chip a folder, its path in the code font and wrapping, a Remove for
+  each, and Add folder, which opens the folder picker. The last folder cannot
+  be taken away. "Default folder" and "Where Conductor keeps its data" (the
+  old Default working directory and Data directory) are checked as they are
+  picked: a default folder outside every folder agents can use says "Pick a
+  folder inside one that agents can use." under the field and holds Save; a
+  data folder inside one says "Keep this outside the folders agents can
+  use." and does not hold Save. The checks are what the desktop app's own
+  validate refuses (`folderProblems` in `web/app/utils/desktop.ts`).
+- **Settings' save bar names what changed** (UX3 R56, #1167). Left to right:
+  the bar's words, Discard, Save. After a change it says where: "Changed: How
+  agents run, Brakeman.", with "Saving restarts the server." and a button
+  "Save and restart" when the save restarts it, or "Fix the marked field to
+  save." in the error tone when a field holds what cannot be saved. Discard
+  puts the app's fields and Brakeman's form back to what is saved. While
+  agents run, Save and restart asks in the bar first: "Restart the server
+  now? 2 running agents stop.", with Keep editing (focused; Escape too) and
+  Save and restart; the second click of a double click does not pass it, and
+  with nothing running the save goes at once. The palette's Save asks the
+  same words, only while agents run. A refused save says why in the bar,
+  announced, and the edits stay; the alert at the top of the page and the
+  error toast are gone.
+- **Conductor's server sits in Settings → The app** (UX3 R57, #1167). The
+  green "Server running at ..." banner is gone; only while the server does
+  not run does one line at the top say so ("Conductor's server stopped: ..."
+  or "Conductor's server is starting."), with Server log and Restart server.
+  Open in browser, Server log and Restart server moved from the navbar into
+  The app's row "Conductor's server · Running at <address>". While agents
+  run, Restart server asks first, in the row: "Restart the server? 1 running
+  agent stops.", Keep it running or Restart server; the palette's Restart
+  server asks the same, only then. With none running it restarts at once.
+- **Accounts and GitHub in Settings, in fewer words** (UX3 R58, #1167).
+  Accounts: "The logins your agents use. Each change saves at once."; a
+  login is a login everywhere on the page; beside the grey Add account
+  "Needs a label and a folder."; in a rename Cancel comes before Save, in
+  the remove question Keep it before Remove. GitHub: "Saved by its own
+  button.", the classic token named in the token line, and Check and save
+  at the right of its foot.
+- **Brakeman's settings say what each choice does, its limits in view**
+  (UX3 R59, #1167). Each preset and each grant has one short line ("Reads and
+  briefs. Nothing else.", "Starts a run from a plan you approved. It never
+  approves one."). The agent select reads "Runs on", and Brakeman on with no
+  agent says "Pick the agent Brakeman runs on." at the field. The Advanced
+  fold is gone: the budget and the waking limits are in view under Limits,
+  a refused value said at its field. Settings now folds nothing.
+- **An account is a flat row** (UX3 R60, #1167). In Settings → Accounts the
+  logins under each agent are rows parted by a line, with no box round
+  them, and a login's usage is its row's second line with Read now at the
+  right. The default badge shows only when the agent has two or more logins.
+- **The main button sits at the right in seven more forms** (UX3 R61,
+  #1167): a Dispatch project's close policy, the capture's Send, Brakeman's
+  two drafts, Needs you's comment on a ticket, the paste page's Make my
+  invite and a ticket's title (Cancel, then Save). Words unchanged.
+- **Settings keeps edits while another page is open** (UX3 R81, #1167). An
+  edit not yet saved stays when you open another page of the same window;
+  back on Settings the field shows it and the bar says what changed. A
+  setting saved meanwhile (from the palette, another window) wins. A reload,
+  a closed app or a new server drops what was not saved, as before.
+- **Settings keeps a folder the app allowed meanwhile** (UX3 R62, #1173). A
+  folder the desktop app allows while Settings is open shows up in its
+  folders list at once, and the edits not saved yet stay. It is saved
+  already, so the save bar does not count it as a change, Discard keeps it,
+  and the next Save keeps it too.
+
+### Agent trial
+
+- **New agent trial** (UX3 R36 to R41, R51, #1165). The form is New agent
+  trial on the Crews page and in the command palette: two to four agents each
+  try the same task, each on its own copy, and you keep the best result. It
+  opens on what every trial needs: the task (the cursor in it), the agents as
+  chips (two installed agents picked, up to four, each a menu of the
+  installed agents, its arguments shown on it), Check (a command each result
+  must pass, typed as a terminal line, never through a shell) and Folder. More
+  options holds, in five groups: each agent's approach and arguments; what
+  every agent is told and the lines a good result meets; more checks and the
+  project's own checks; a review and Brakeman's summary; the trial's name
+  (else the task's first words). Its closed row names what was changed. Yolo
+  sits beside Save trial, as the server's default says until moved. Nothing is
+  marked before the first press; a press marks each field in its words and
+  puts the cursor in the first; Ctrl or Cmd with Enter presses it. A folder
+  agents may not use is marked as it is picked. A save the server refuses
+  keeps what was typed. The next trial starts from the last one's agents,
+  folder and that folder's check (never its arguments). Each agent's
+  Arguments offers that agent's own flags and their values as you type `--`,
+  the model flag and the model names its help gives among them. Saving makes
+  the trial's crew, whose page shows an "Agent trial" block (Agent A, Agent
+  B, What a good result does); a ticket's approved plan starts it, as before.
+- **Every screen says trial** (UX3 R43, R44, R79, #1165). The ticket's launch
+  dialog ("This trial starts N candidates"), a plan revision ("Agent trial: N
+  candidates from one base"), the results ("Trial results"), decisions ("A
+  trial's selection", "a new trial tries them again"), Brakeman's part
+  ("Brakeman's summary", "Ask Brakeman for a summary", the request kind "Sum
+  up a trial") and the refusals after the pick ("run a new trial") say
+  trial. Candidate, lane, selection and "Launch N candidates" stay; every
+  route, field, event and code keeps its name.
 
 ## Chat or terminal: a session run as a chat, and its permission question (#1088, row 7 #1110; 2026-11-25)
 
@@ -1263,7 +1676,8 @@ on 2026-11-18.
 
 ## Compare approaches (CP1, `docs/plans/compare-crew.md`; 2026-11-16)
 
-- **A comparison is a crew shape.** New comparison on the Crews page makes
+- **A comparison is a crew shape.** New agent trial (UX3 R36; it was New
+  comparison) on the Crews page makes
   a crew whose `compare` block names two to four candidates of one base,
   each an agent with its approach, the criteria and the checks they are
   held to alike, and, when asked, a review of each and Brakeman's draft.
@@ -1823,21 +2237,56 @@ open deferred item from rounds 1 and 2, then the features below.
   the same shape, "Nothing needs you now.", with what shows up there and
   what was decided in the last day under it; it reads, and a first read
   that fails says so with Read again, the same way.
-- **A welcome that teaches (#945; the UX review's P17, part of #374).** A
-  server with no session at all shows the welcome on the home and, on a
-  phone, on the Sessions page in place of the list's empty line: what
-  Conductor is in one sentence, then three steps. Launch an agent offers
-  the first four agents the server can launch, in the catalog's order, each
-  with the version its check found (`welcomeAgents`), and "and N more" for
-  the rest; an agent not installed is never offered. Bring one in from
-  another machine says to run `conductor host` there and links the README's
-  Quick start. Try a crew loads the example crews and says what that does
-  (`EXAMPLES_LINE`), as Crews' empty page and the palette's two rows that
-  load them say too. "Where things are" lists the sidebar's tiles, then the
-  pages under More, each with the sentence its tooltip says. Settings left
-  the card
-  (`agents.test.ts`; `welcome.spec.ts`, `home-wide.spec.ts`,
-  `empty-pages.spec.ts`).
+- **A welcome with one button (#945; the UX review's P17, part of #374;
+  #1162; UX3 R31, R32, R35).** A server with no session at all shows the
+  welcome on the home and, on a phone, on the Sessions page in place of the
+  list's empty line: the mark, Welcome to Conductor, one sentence ("Run your
+  coding agents here, and answer them from anywhere."), and one main button,
+  Launch <agent>: the first agent the server can launch, in the catalog's
+  order, never the built-in shell (`welcomeOffer`). An agent whose program
+  the server is still looking up holds the button back (the card says it is
+  looking) and is read once; one still unknown after that counts as not
+  found for now, so the button never changes its agent under the pointer.
+  Under it, "Or:" names the other agents the server can launch, all of them
+  when they are three or fewer, else two and "N more", each opening the
+  Launch dialog with that agent picked. An agent's version is in its
+  button's tooltip. Other ways to start, folded at every visit, holds how to
+  bring an agent in from another machine (run `conductor host` there, and
+  the Quick start) and Try a crew, which loads the example crews and says
+  how many were added in the words Crews says. The card sits a fixed
+  distance under the header, so unfolding only grows it downward. The steps,
+  the versions on the face and "Where things are" left the card; each tile
+  of the sidebar says its page's sentence in its tooltip.
+  The card says what it found. While it looks, a disabled button stands
+  where the main one will be, so nothing moves when the answer comes. With
+  no coding agent it says so in plain words ("No coding agent is installed
+  on this machine yet."), or, for an agent the server found only on
+  Windows from WSL, names it and says to install it in WSL; with Choose an
+  agent to install (Agents) and Look again, which asks the machine about
+  each program now and reads the agents again: one found turns the card
+  into its Launch button at once, none says "Looked again: still none
+  found." A read of the agents that failed says the server's words, with
+  Launch agent and Read again.
+  Someone coming back with nothing running finds, under the Or line, "Pick
+  up where you left off": the three sessions of this server that ended
+  last (no crew's member, none hosted, only those whose agent has a
+  conversation to resume, the newest of each conversation), each with its
+  folder in the code font, how long ago it ended, and Resume, which asks
+  first and resumes as the palette does (`useRecordResume`: started opens
+  the new session; a question only the record's page asks in full, or an
+  outcome not known, opens that page). A session whose end was not seen
+  says Resume… and opens its record. With more, "All N ended sessions"
+  opens History's sessions. While the list shows, the card's title reads
+  "Nothing is running".
+  Someone who launched before reads "Nothing is running" in place of the
+  welcome's title and sentence, and the main button names the agent they
+  launched last, from the server's record of the last launch (kept in its
+  data directory, so after a restart too) over the app's own memory of it,
+  while the server can still launch it; else the first agent found and
+  the first run's words. The sidebar's empty line reads "Nothing is
+  running." (UX3 R33; `agents.test.ts`, `welcome.test.ts`,
+  `history.test.ts`; `welcome.spec.ts`, `welcome-states.spec.ts`,
+  `welcome-resume.spec.ts`, `home-wide.spec.ts`, `empty-pages.spec.ts`).
 - **A page to connect (#946; the UX review's P18).** A browser that holds
   no workbench token, or whose token the server refused, sees Connect to
   Conductor in place of the app: the mark, one sentence, the field (from the
@@ -9528,8 +9977,9 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   query since the sidebar resizes; stacked below that. The panel's body
   scrolls, never the window. `/settings?section=<id>` (written with
   `router.replace`) opens on a section once it has rendered; the ids are
-  `webrtc`, `switchyard`, `folders`, `running`, `agents`, `brakeman` and
-  `app`, kept stable, in `web/app/utils/settingsSections.ts`. A save that
+  `folders`, `running`, `agents`, `accounts`, `switchyard`, `github`,
+  `brakeman` and `app`, kept stable, with `webrtc` still read as the Windows
+  firewall row of Switchyard (UX3 R54), in `web/app/utils/settingsSections.ts`. A save that
   restarts the server writes the section in view first, or none at the top,
   so the window that follows the server lands where the person was. The
   publishing notice's Settings opens `?section=switchyard`; every other way

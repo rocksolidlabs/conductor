@@ -1388,8 +1388,9 @@ any run is in no link's scope, and is answered on the LAN or the desktop.
 `conductor serve --listen 127.0.0.1:0 --print-listen --exit-on-stdin-close`
 with the settings it keeps (`userData/settings.json`: data directory,
 allowed roots, default directory, yolo, reach) as `CONDUCTOR_*` variables,
-a workbench token minted for the run in the environment, and the login shell's
-PATH so the agents are found; reads the handshake line from stdout; opens the
+a workbench token minted for the run on the first line of the server's stdin
+(`serve --secrets-stdin`, never in its environment or command line), and the
+login shell's PATH so the agents are found; reads the handshake line from stdout; opens the
 workbench in a window whose preload exposes the token through a
 context-isolated bridge (`window.conductorDesktop`); polls the server's
 health and restarts it with backoff; and stops it by closing its stdin when
@@ -1397,6 +1398,19 @@ the app quits. Navigation stays on the server's origin, other links open in
 the system browser, and "Open in browser" carries the token in a URL
 fragment the workbench takes and drops. On Windows the shell runs the Linux
 binary inside a WSL 2 distribution. `desktop/README.md` has the layout.
+
+Where it can allow a folder while the server runs, the app also mints a
+second key for each run and hands it on that stdin line with the token. The
+app talks to the address its server bound (`http://127.0.0.1:<port>`, from
+the handshake's `listen`): its windows load from it, its bridge answers it,
+and while the server is not running it trusts no origin. `POST /api/roots`
+takes the workbench token AND the key in `X-Conductor-Desktop-Key`; without a
+key held, nobody may add a folder. The app keeps the saved list; the server
+writes nothing to disk for it. Every window of the app keeps the same fences:
+a workbench window, every window it opens and theirs navigate only within the
+server's origin and open a window only there; anything else opens outside
+the app. Every channel of the bridge answers the workbench's main frame
+alone; the app's own local pages (log, setup) have only the calls they need.
 
 On Windows the shell also runs a UDP forwarder in front of the server in
 WSL (its default NAT mode left as it is): one port on Windows, each remote
@@ -1881,6 +1895,16 @@ still resolved. A switchyard routes and answers none.
   without its sandbox) as the server's user. An agent session id is passed to
   an agent only as one argument, after matching its agent's pattern and
   beginning with a letter or a digit.
+- The allowed roots are held in one place that can change while the server
+  runs (an atomic list, one lock for writers). Every folder agents may use,
+  configured or added, stays the folder it was when it was allowed (as the
+  server started, or as it was added): a link put in its place or above it,
+  or another folder made at its path, leads nowhere; a launch opens its
+  folder through the root's kept identity. Running sessions are never touched
+  by an add. The whole disk, the home folder and the folders above it or
+  above Conductor's data are told by what the folder is, whatever name
+  reaches it. What these folders are, and are not (no sandbox), is said in
+  `docs/features.md`.
 - Server session working directories must resolve under `allowedRoots` after
   symlink evaluation, and are opened through the root they lie under
   (`os.Root`): the process starts in the directory opened (on Linux by its
