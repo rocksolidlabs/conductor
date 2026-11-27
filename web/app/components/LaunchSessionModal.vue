@@ -641,7 +641,7 @@ async function submit() {
                 <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
               </UFormField>
               <UFormField v-if="takesAccount" label="Model" name="model" :error="modelError || undefined" data-launch-model>
-                <ModelField v-model="model" :agent="selected ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" placeholder="The agent's choice" autocapitalize="off" autocorrect="off" spellcheck="false" :list="modelNames.length ? modelListId : undefined" data-launch-model-input />
+                <ModelField v-model="model" :agent="selected ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :recent="modelNames" placeholder="The agent's choice" autocapitalize="off" autocorrect="off" spellcheck="false" :list="modelNames.length ? modelListId : undefined" data-launch-model-input />
                 <datalist v-if="modelNames.length" :id="modelListId" data-launch-model-names>
                   <option v-for="n in modelNames" :key="n" :value="n" />
                 </datalist>
