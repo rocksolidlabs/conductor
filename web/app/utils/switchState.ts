@@ -85,7 +85,8 @@ export function switchState(f: SwitchFacts): SwitchState {
   else if (f.refused) s.line = f.refused
   else if (f.noted) s.line = f.why || notedWords(f.noted, f.firstReply)
   else if (f.why) s.line = f.why
-  else if (other === 'protocol' && !f.firstReply) s.line = FIRST_REPLY
+  // Before the agent's first reply Chat cannot be taken: no line stands above the terminal; the dimmed Chat side says why (UX3 R15).
+  else if (other === 'protocol' && !f.firstReply) s.held = FIRST_REPLY
   else if (other === 'protocol' && !f.qualified) s.line = NOT_QUALIFIED
   // During a turn nothing is said until a move is pressed (its `way` message says it is noted, with its sentence); at rest, what a
   // move to Chat ends.

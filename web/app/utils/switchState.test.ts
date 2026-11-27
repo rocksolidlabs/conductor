@@ -9,9 +9,13 @@ describe('switchState: which sentence the switch shows', () => {
   it('shows no switch for an agent with no protocol', () => {
     expect(switchState(at({ hasProtocol: false })).shown).toBe(false)
   })
-  it('before the first reply: Chat waits for it, and is not pressable', () => {
+  it('before the first reply: Chat waits for it, not pressable, with no line at rest: the sentence is the dimmed side\'s (UX3 R15)', () => {
     const s = switchState(at({ firstReply: false }))
-    expect(s).toMatchObject({ shown: true, selected: 'terminal', pressable: false, line: FIRST_REPLY })
+    expect(s).toMatchObject({ shown: true, selected: 'terminal', pressable: false, line: '', held: FIRST_REPLY })
+    // During its first turn too.
+    expect(switchState(at({ firstReply: false, inTurn: true }))).toMatchObject({ pressable: false, line: '', held: FIRST_REPLY })
+    // A move to Chat noted at the launch says it moves, and Terminal may be pressed to take it back: nothing held.
+    expect(switchState(at({ firstReply: false, noted: 'protocol' }))).toMatchObject({ pressable: true, held: '' })
     expect(FIRST_REPLY).toBe("Chat opens after the agent's first reply.")
   })
   it('an unqualified version stays in its terminal', () => {
@@ -82,17 +86,17 @@ describe('firstReplyOf: the offer is the route\'s own fact', () => {
   it('a first line entered (the conversation resumable) is not the first reply ended: no Chat, the sentence stays', () => {
     const entered = { agentSession: { resumable: true } }
     expect(firstReplyOf(entered, 'terminal')).toBe(false)
-    expect(switchState(at({ firstReply: firstReplyOf(entered, 'terminal'), inTurn: true }))).toMatchObject({ pressable: false, line: FIRST_REPLY })
+    expect(switchState(at({ firstReply: firstReplyOf(entered, 'terminal'), inTurn: true }))).toMatchObject({ pressable: false, line: '', held: FIRST_REPLY })
   })
   it('the first turn ended: Chat offered at rest, the sentence gone', () => {
     const ended = { firstTurn: true, agentSession: { resumable: true } }
     expect(firstReplyOf(ended, 'terminal')).toBe(true)
-    expect(switchState(at({ firstReply: firstReplyOf(ended, 'terminal') }))).toMatchObject({ pressable: true, line: ENDS_TERMINAL_WORK })
+    expect(switchState(at({ firstReply: firstReplyOf(ended, 'terminal') }))).toMatchObject({ pressable: true, line: ENDS_TERMINAL_WORK, held: '' })
   })
   it('an older server sends no firstTurn: no move offered, nothing worse', () => {
     expect(firstReplyOf({}, 'terminal')).toBe(false)
     expect(firstReplyOf(undefined, 'terminal')).toBe(false)
-    expect(switchState(at({ firstReply: firstReplyOf({}, 'terminal') }))).toMatchObject({ shown: true, pressable: false, line: FIRST_REPLY })
+    expect(switchState(at({ firstReply: firstReplyOf({}, 'terminal') }))).toMatchObject({ shown: true, pressable: false, line: '', held: FIRST_REPLY })
   })
   it('a chat is past its first reply', () => {
     expect(firstReplyOf({}, 'protocol')).toBe(true)
