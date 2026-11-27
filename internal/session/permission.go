@@ -965,7 +965,9 @@ func linksFirst(p string) (string, bool) {
 		}
 		hops++
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(cur, target)
+			// Joined as the system joins it, not cleaned by its letters: a
+			// link inside the target is followed before the ".." after it.
+			target = cur + string(filepath.Separator) + target
 		}
 		// The link's target, its own parts walked the same way, then the
 		// rest.
