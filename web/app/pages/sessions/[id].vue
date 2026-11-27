@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, SessionInfo, ShareLink } from '~/composables/useSessions'
-import { answersInChat, liveAttention } from '~/utils/attention'
+import { answersInChat, liveAttention, offeredChoices, takesReply } from '~/utils/attention'
 import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge, ChatQuote } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
@@ -9,7 +9,7 @@ import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts
 import { firstMessageLine } from '~/utils/launch'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
 import { sessionStatus, statusOfKey } from '~/utils/status'
-import { choiceReply, listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
+import { choiceReply, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
 import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
 import { revokeQuestion, stopQuestion } from '~/utils/actions'
 import { resolveTyped } from '~/utils/fileTree'
@@ -404,6 +404,20 @@ function openChange(e: TranscriptEntry) {
   const name = parts.pop() ?? e.path
   openDiff({ path: e.path, abs, dir: parts.length ? `${parts.join('/')}/` : '', name, status: e.op === 'create' ? 'A' : e.op === 'delete' ? 'D' : 'M', added: e.added ?? 0, removed: e.removed ?? 0, binary: false }, { top: cwd })
 }
+/**
+ * Where the question's card is drawn (UX3 R3): in Chat just above the chat's box, in the chat's column; in the Terminal, and in Chat
+ * while the editor folds the pane under it (EditorColumn's terminalFolded), in the column's foot under the pane or its bar.
+ */
+const askInChat = computed(() => way.value === 'protocol' && !(tabs.value.tabs.length > 0 && !tabs.value.folded && (phone.value || !!tabs.value.collapsed)))
+/**
+ * The question the chat's box knows of (UX3 R4, R5): while one waits in Chat, its id, whether choices show and whether it takes a
+ * typed reply (takesReply: not a permission request, a decision's mirror, a held turn or a startup question).
+ */
+const chatAsked = computed(() =>
+  way.value === 'protocol' && attention.value.state === 'needs_input'
+    ? { id: questionOf(attention.value), choices: offeredChoices(attention.value).length > 0, reply: takesReply(attention.value, 'control') }
+    : null,
+)
 /** The reply bar's "Answer it in the chat.": the question in view. */
 function showQuestion() {
   terminal.value?.showQuestion()
@@ -878,6 +892,10 @@ palette.registerPage(() => {
                 operator
                 opens-changes
                 :chat-note="chatNote"
+                :agent-name="agentLabel"
+                :draft-key="id"
+                :asked="chatAsked"
+                @reply="reply"
                 @dismiss-note="chatNote = null"
                 :verbatim="current?.way === 'protocol' ? !!current.verbatim : undefined"
                 @nvim="editor.onNvim"
@@ -895,13 +913,18 @@ palette.registerPage(() => {
                 @open-change="openChange"
                 @link-opened="linkOpened"
                 @link-offered="linkOffered"
-              />
+              >
+                <!-- In Chat the question's card sits just above the chat's box (UX3 R3), unless the editor folds the pane away. -->
+                <template v-if="askInChat" #ask>
+                  <QuickReplyBar v-if="!answersInChat(attention)" :attention="attention" :agent-name="agentLabel" role="control" answers pastes :field="false" @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+                </template>
+              </TerminalView>
             </div>
           </div>
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
             <!-- A chat's permission question is answered in the chat, which shows it: no bar repeats it (only for a terminal's question). -->
-            <QuickReplyBar v-if="!(way === 'protocol' && answersInChat(attention))" :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <QuickReplyBar v-if="!askInChat && !(way === 'protocol' && answersInChat(attention))" :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <!-- The inspector (design 4h): its rail stays at xl, the panel beside it open or collapsed. -->

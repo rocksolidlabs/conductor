@@ -70,12 +70,14 @@ for (const theme of ['light', 'dark'] as const) {
         } else {
           await uncut(page.locator('[data-way-switch] [data-way-side]'))
         }
-        // The box's controls in view and whole: the field, Send, the help line.
+        // The box's controls in view and whole: the field, Send, and the help line a leading / brings.
         const box = chat.locator('[data-chat-box]')
         await box.locator('textarea').scrollIntoViewIfNeeded()
         await uncut(box.locator('[data-chat-send]'))
         await expect(box.locator('textarea')).toBeInViewport()
+        await box.locator('textarea').fill('/compact')
         await uncut(box.locator('[data-chat-help]'))
+        await box.locator('textarea').fill('')
         // The question's buttons in reach.
         const q = chat.locator('[data-permission-question][data-permission-state="open"]')
         await q.locator('[data-permission-allow]').scrollIntoViewIfNeeded()
