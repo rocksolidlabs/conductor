@@ -279,7 +279,7 @@ function onKey(e: KeyboardEvent) {
             <CrewTrialOptions :model-value="draft" :agents="agents" :marked="marked" @update:model-value="draft = $event" />
           </MoreOptions>
 
-          <p class="text-xs text-muted" data-compare-next>This saves the trial as a crew. To run it: on a ticket in Dispatch, propose this crew as the plan, approve it, then launch.</p>
+          <p class="text-xs text-muted" data-compare-next>This saves the trial as a crew. To launch it: on a ticket in Dispatch, press Propose a plan or New revision, pick this crew, then Propose, Approve and Launch.</p>
           <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-x" title="Not saved" :description="error" data-compare-template-error />
         </fieldset>
       </form>

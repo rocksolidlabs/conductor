@@ -22,7 +22,7 @@ const checks = computed(() => comparisonChecks(props.body) ?? [])
 
 <template>
   <section v-if="cmp" class="flex min-w-0 flex-col gap-2" data-plan-compare :data-plan-compare-candidates="cmp.candidates.length">
-    <h4 class="text-xs font-semibold text-muted">Agent trial: {{ cmp.candidates.length }} candidates from one base, checked alike</h4>
+    <h4 class="text-xs font-semibold text-muted">Agent trial: {{ cmp.candidates.length }} agents, each from the same commit, checked alike</h4>
     <div class="flex flex-col gap-0.5">
       <span class="text-xs text-muted">Every candidate is held to</span>
       <ol class="flex list-decimal flex-col gap-0.5 pl-5" data-plan-compare-criteria>

@@ -262,7 +262,7 @@ export function compareProblems(d: DraftComparison, agents: readonly TrialAgent[
   d.agents.forEach((a, i) => {
     const agent = agents.find((x) => x.id === a.agentId)
     if (!a.agentId) add(`agent-${i}`, 'Pick an agent.')
-    else if (!agent) add(`agent-${i}`, `Agent ${agentLetter(i)}: ${a.agentId} is not on this server.`)
+    else if (!agent) add(`agent-${i}`, `Agent ${agentLetter(i)}: ${a.agentId} is not on this server. Pick another.`)
   })
 
   if (d.check.trim()) {
@@ -317,9 +317,12 @@ export function trialFolderLine(answer: { code?: string; message?: string } | nu
   return answer?.code === 'invalid_cwd' ? sentence(answer.message ?? '') : ''
 }
 
-/** The words of a press the server refused, with what the form kept. */
+/**
+ * The words of a press the server refused, as a sentence, with what the form kept: the name of the server's package it came from
+ * (`compare: `, `crew: `) is not a person's word and is left off.
+ */
 export function notSavedWords(server: string): string {
-  const t = server.trim().replace(/[.\s]+$/, '')
+  const t = server.trim().replace(/^(?:(?:compare|crew): )+/i, '').replace(/[.\s]+$/, '')
   return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}. What you typed is kept.` : 'What you typed is kept.'
 }
 

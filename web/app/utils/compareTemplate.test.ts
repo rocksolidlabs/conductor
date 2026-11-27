@@ -189,7 +189,7 @@ describe('what stops the press, field by field', () => {
     unpicked.agents[1]!.agentId = ''
     expect(compareProblems(unpicked, agents)).toEqual([{ field: 'agent-1', words: 'Pick an agent.' }])
     unpicked.agents[1]!.agentId = 'nobody'
-    expect(compareProblems(unpicked, agents)).toEqual([{ field: 'agent-1', words: 'Agent B: nobody is not on this server.' }])
+    expect(compareProblems(unpicked, agents)).toEqual([{ field: 'agent-1', words: 'Agent B: nobody is not on this server. Pick another.' }])
   })
 
   it("marks an agent's arguments with an open quote, or given to an agent that takes none, on that agent's row", () => {
@@ -305,7 +305,8 @@ describe('what the form says of the folder as it is picked, and of a save the se
   })
 
   it("keeps the server's words and says what was kept", () => {
-    expect(notSavedWords('compare: a trial has 2 to 4 candidates, not 1')).toBe('Compare: a trial has 2 to 4 candidates, not 1. What you typed is kept.')
+    expect(notSavedWords('compare: a trial has 2 to 4 candidates, not 1')).toBe('A trial has 2 to 4 candidates, not 1. What you typed is kept.')
+    expect(notSavedWords('crew: compare: a trial has 1 to 12 criteria, not 13')).toBe('A trial has 1 to 12 criteria, not 13. What you typed is kept.')
     expect(notSavedWords('Crews are off here. ')).toBe('Crews are off here. What you typed is kept.')
   })
 })
