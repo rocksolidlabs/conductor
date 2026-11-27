@@ -652,7 +652,7 @@ func TestAFullRunOpensNoSelection(t *testing.T) {
 	se.e.mu.Lock()
 	words := r.sel.ended
 	se.e.mu.Unlock()
-	if words != "this run has recorded 1,000 decisions: no room for a selection: continue the run to select in its continuation, or launch a new comparison" {
+	if words != "this run has recorded 1,000 decisions: no room for a selection: continue the run to select in its continuation, or run a new trial" {
 		t.Fatalf("the words: %q", words)
 	}
 	// The ledger's own read, once the change that ended the last lane has

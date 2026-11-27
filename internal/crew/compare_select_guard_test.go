@@ -39,7 +39,7 @@ func TestUnselectedLanesRefuseCommands(t *testing.T) {
 		before := countKind(eventsOf(t, se.ld, se.run.ID), "command.accepted")
 		ctx := t.Context()
 		_, err := se.e.Retry(ctx, se.run.ID, "admin", Command{ID: "r1"}, "approach-c")
-		refusedUnselected(t, se, se.run.ID, "r1", "approach-c was not selected in "+row.ID()+": launch a new comparison to try it again", err)
+		refusedUnselected(t, se, se.run.ID, "r1", "approach-c was not selected in "+row.ID()+": run a new trial to try it again", err)
 		_, err = se.e.Retry(ctx, se.run.ID, "admin", Command{ID: "r2"}, "approach-b")
 		refusedUnselected(t, se, se.run.ID, "r2", "approach-b was not selected in "+row.ID(), err)
 		_, err = se.e.Accept(ctx, se.run.ID, "admin", Command{ID: "a1"}, "approach-b")
@@ -66,7 +66,7 @@ func TestUnselectedLanesRefuseCommands(t *testing.T) {
 		for i, task := range []string{"approach-a", "approach-b"} {
 			id := fmt.Sprintf("r%d", i)
 			_, err := se.e.Retry(t.Context(), se.run.ID, "admin", Command{ID: id}, task)
-			refusedUnselected(t, se, se.run.ID, id, "no candidate was selected in "+row.ID()+" (None of these): launch a new comparison to try "+task+" again", err)
+			refusedUnselected(t, se, se.run.ID, id, "no candidate was selected in "+row.ID()+" (None of these): run a new trial to try "+task+" again", err)
 		}
 	})
 }

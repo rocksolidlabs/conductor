@@ -385,7 +385,7 @@ func TestTheWordsKeepWholeClausesAtTheBound(t *testing.T) {
 	if len(words) > ledger.MaxOptionTradeoffs || encodedLen(words) > ledger.MaxOptionTradeoffs {
 		t.Fatalf("the option is %d bytes", len(words))
 	}
-	more := regexp.MustCompile(`; and (\d+) more checks: the comparison has them$`).FindStringSubmatch(words)
+	more := regexp.MustCompile(`; and (\d+) more checks: the trial's results have them$`).FindStringSubmatch(words)
 	if more == nil {
 		t.Fatalf("the option does not say what it leaves out: %q", words)
 	}
@@ -409,10 +409,10 @@ func TestTheWordsKeepWholeClausesAtTheBound(t *testing.T) {
 	if n := utf8.RuneCountInString(ctx); n > ledger.MaxDecisionContext {
 		t.Fatalf("the context is %d characters", n)
 	}
-	if !regexp.MustCompile(`and \d+ more criteria: the comparison has them\.`).MatchString(ctx) {
+	if !regexp.MustCompile(`and \d+ more criteria: the trial's results have them\.`).MatchString(ctx) {
 		t.Fatalf("the context does not say which criteria it leaves out: %q", ctx)
 	}
-	m := regexp.MustCompile(` And (\d+) more candidates?: the comparison has (them|it)\.$`).FindStringSubmatch(ctx)
+	m := regexp.MustCompile(` And (\d+) more candidates?: the trial's results have (them|it)\.$`).FindStringSubmatch(ctx)
 	if m == nil {
 		t.Fatalf("the context does not say which candidates it leaves out: %q", ctx)
 	}
