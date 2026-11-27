@@ -1077,3 +1077,54 @@ func TestTheFloorFollowsAPathsLinksBeforeItsDotDot(t *testing.T) {
 	e, v = inStreamAsked(t, s, f, "req-cmd", "c-cmd", "commandExecution", cmd)
 	deniedWith(t, s, e, v, FloorWords)
 }
+
+// The walk of a call's strings is for calls that come in an agent's
+// stream: a request to the prompt tool (Claude Code's) to write a file whose
+// text names a denied place is asked, as any write outside the list is; the
+// same text in an in-stream call's content is floored.
+func TestTheWalkOfACallsStringsIsForCallsThatComeInAStream(t *testing.T) {
+	data := realDir(t, t.TempDir())
+	text := "Its state lives in " + filepath.Join(data, "secrets.json") + "\n"
+	s, f, _ := permissionSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	write := j(map[string]any{"file_path": "docs/x.md", "content": text})
+	announce(f, "c-write", "Write", write)
+	h := ask(s, "c-write", "Write", write)
+	if e := openRequest(t, s, "c-write"); e.Tool != "Write" || !h.held() {
+		t.Fatalf("a write whose text names the list: %+v, held %v", e, h.held())
+	}
+	in := j(map[string]any{"kind": "edit", "title": "x", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": text}}}})
+	f.ToolStarted(ToolStep{Ref: "c-acp", Name: "edit", Input: []byte(in)})
+	e, v := inStreamAsked(t, s, f, "req-acp", "c-acp", "edit", in)
+	deniedWith(t, s, e, v, FloorWords)
+}
+
+// The walk is bounded: a call with more strings than the walk judges, and a
+// folder with more parts than a path's walk takes, are floored, never
+// passed unjudged.
+func TestTheWalkOfACallsStringsIsBounded(t *testing.T) {
+	data := realDir(t, t.TempDir())
+	s, _, f := protocolSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	f.TurnStarted("")
+	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	many := make([]any, maxWalkStrings+1)
+	for i := range many {
+		many[i] = "x"
+	}
+	long := "/" + strings.Repeat("a/", maxLinkSteps+1)
+	for i, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"more strings than the walk judges", j(map[string]any{"kind": "other", "title": "x", "content": many})},
+		{"a folder longer than its walk", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "ls", "cwd": long}})},
+	} {
+		call := fmt.Sprintf("c-%d", i)
+		f.ToolStarted(ToolStep{Ref: call, Name: "other", Input: []byte(tc.input)})
+		e, v := inStreamAsked(t, s, f, "req-"+call, call, "other", tc.input)
+		deniedWith(t, s, e, v, FloorWords)
+	}
+	if _, ok := linksFirst(long); ok {
+		t.Fatal("linksFirst walked past its bound")
+	}
+}
