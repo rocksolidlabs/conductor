@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -437,16 +438,28 @@ func TestWhoAmISaysWhereTheFoldersComeFrom(t *testing.T) {
 }
 
 // An add judges the folder under the roots' lock: a second press of the
-// same folder, asked while the first is held between its judgement and its
-// add, waits for the lock, then finds the folder allowed and adds nothing.
-// Judged before the lock, it would find the folder outside and add it a
-// second time.
+// same folder, made while the first is held between its judgement and its
+// add, lets the first go only as it asks for the lock itself (its
+// beforeLock, which also proves the first holds the lock), then finds the
+// folder allowed and adds nothing. A judgement made before the lock is
+// made before the first has added, and adds the folder a second time,
+// every run.
 func TestAnAddIsJudgedUnderTheLock(t *testing.T) {
 	e := newTestEnv(t, withDesktopKey)
 	folder := realRoot(t, t.TempDir())
 	held, release := make(chan struct{}), make(chan struct{})
-	atLock := make(chan struct{}, 2)
-	e.srv.roots.beforeLock = func(string) { atLock <- struct{}{} }
+	var asks atomic.Int32
+	e.srv.roots.beforeLock = func(string) {
+		if asks.Add(1) != 2 {
+			return
+		}
+		// The second press: the first holds the lock, and goes on now.
+		if e.srv.roots.mu.TryLock() {
+			e.srv.roots.mu.Unlock()
+			t.Error("the first press does not hold the roots' lock")
+		}
+		close(release)
+	}
 	var once sync.Once
 	e.srv.roots.beforeAdd = func(string) {
 		once.Do(func() {
@@ -463,15 +476,11 @@ func TestAnAddIsJudgedUnderTheLock(t *testing.T) {
 		status, out := e.allow(folder, "")
 		first <- answer{status, out}
 	}()
-	<-atLock
 	<-held
 	go func() {
 		status, out := e.allow(folder, "")
 		second <- answer{status, out}
 	}()
-	// The second press is at the lock, the first holding it.
-	<-atLock
-	close(release)
 	a, b := <-first, <-second
 	if a.status != http.StatusOK || a.out["added"] != true {
 		t.Fatalf("the first press: %d %v", a.status, a.out)

@@ -21,7 +21,7 @@ import (
 func TestServeSecretsChild(t *testing.T) {
 	cfg := os.Getenv("CONDUCTOR_TEST_SERVE_CHILD")
 	if cfg == "" {
-		t.Skip("run by TestServeHoldsItsSecretsInNoEnvironmentNorArgument")
+		t.Skip("run by TestAServerProcessTakesItsSecretsFromStdin")
 	}
 	code, err := runServe(context.Background(), []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen", "--exit-on-stdin-close", "--secrets-stdin"}, os.Stdin, os.Stdout, os.Stderr)
 	if err != nil {
@@ -30,11 +30,14 @@ func TestServeSecretsChild(t *testing.T) {
 	os.Exit(code)
 }
 
-// A server started as the app starts it holds its token and key in
-// neither its starting environment nor its command line, as the system
-// shows them to any process of the same user (/proc/<pid>/environ and
-// cmdline), and answers with them all the same.
-func TestServeHoldsItsSecretsInNoEnvironmentNorArgument(t *testing.T) {
+// A server started as a process of its own takes its token and key from
+// the first line of its stdin, across the process boundary, as the desktop
+// app starts it: its handshake names its own process, it answers with the
+// token from the line and allows a folder with the key, and its log holds
+// neither. (That the app hands the server no secret in its environment or
+// its arguments is the app's own tests' to prove: desktop/test, and
+// desktop/e2e/allow.spec.ts, which reads the real server's.)
+func TestAServerProcessTakesItsSecretsFromStdin(t *testing.T) {
 	clearConductorEnv(t)
 	dir := t.TempDir()
 	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, filepath.Join(dir, "state")))
@@ -66,22 +69,6 @@ func TestServeHoldsItsSecretsInNoEnvironmentNorArgument(t *testing.T) {
 	}
 	if h.PID != cmd.Process.Pid {
 		t.Fatalf("the handshake's pid %d is not the child's %d", h.PID, cmd.Process.Pid)
-	}
-	environ, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", h.PID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", h.PID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(environ), "CONDUCTOR_TEST_SERVE_CHILD=") || !strings.Contains(string(cmdline), "TestServeSecretsChild") {
-		t.Fatalf("the child's environment or command line was not read: %q", cmdline)
-	}
-	for _, v := range []string{stdinToken, stdinKey} {
-		if strings.Contains(string(environ), v) || strings.Contains(string(cmdline), v) {
-			t.Fatal("a secret is in the server's starting environment or its command line")
-		}
 	}
 	if status, me := whoami(t, h.Listen, stdinToken); status != http.StatusOK || me["folders"] != "app" {
 		t.Fatalf("whoami: %d %v\n%s", status, me, logs.String())
