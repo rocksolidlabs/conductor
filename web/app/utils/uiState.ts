@@ -8,7 +8,7 @@ import { SPLIT_KEY } from './editorTabs'
 import { RECENT_MAX, type Recent } from './palette'
 import { SIDEBAR_FOLDS_KEY, SIDEBAR_KEY, SIDEBAR_SIZE_KEY, type SectionKey, type SidebarMode } from './sidebar'
 import type { Pin } from './pins'
-import { crewsOf, type RunTilesRecord } from './runTiles'
+import { crewsForDoc, crewsOf, type RunTilesRecord } from './runTiles'
 
 export type UiName = 'layout' | 'palette' | 'pins'
 export const UI_NAMES: readonly UiName[] = ['layout', 'palette', 'pins']
@@ -158,6 +158,21 @@ export function layoutToStorage(storage: Write, l: UiLayout): void {
   if (l.runTiles) set(storage, RUN_TILES_LAST_KEY, JSON.stringify(l.runTiles))
   if (l.runView) set(storage, RUN_VIEW_KEY, l.runView)
   if (l.projectView) set(storage, PROJECT_VIEW_KEY, l.projectView)
+}
+
+/**
+ * The layout as it is sent to the server: its run tiles read by the server's own bounds (a layout it names, a boolean Activity, the
+ * crews through crewsForDoc), so a save never carries what the server refuses and one refused part never holds back the next save.
+ */
+export function layoutForServer(l: UiLayout): UiLayout {
+  const t = l.runTiles
+  if (!t) return l
+  const tiles: NonNullable<UiLayout['runTiles']> = {}
+  if (TILE_LAYOUTS.includes(t.layout as TileLayout)) tiles.layout = t.layout
+  if (typeof t.activity === 'boolean') tiles.activity = t.activity
+  if (t.crews) tiles.crews = crewsForDoc(t.crews)
+  const { runTiles: _, ...rest } = l
+  return Object.keys(tiles).length ? { ...rest, runTiles: tiles } : rest
 }
 
 /** The layout with `patch` laid over it, each part merged one level deep. */
