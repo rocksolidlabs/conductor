@@ -87,40 +87,32 @@ const msgCanWorktree = "a git repository with a commit: a crew with worktrees ca
 // the check refuses nothing.
 const msgFirstCommit = "no commit yet: the operator's launch makes the folder's first commit"
 
-// repoState makes the checks CheckRepo makes of dir, through the same
-// rev-parse calls: whether dir is in a git working tree, and its top, and
-// whether HEAD is a commit to branch from. refusal is the error a launch
-// refuses dir with, which matches ErrNotRepo, nil when worktrees can be made
-// of it: HEAD is no commit only when git says so by its exit status alone
-// (an unborn branch, a name that resolves to nothing). err is ErrNoGit when
-// git is not on PATH, ctx's, or a *headError when git failed reading HEAD
-// (an object it cannot read), with st then in the repository and without
-// a commit.
+// repoState makes the checks CheckRepo makes of dir (readFolderState, in
+// dir by its path, with the locations of the person's git settings the
+// server's environment holds, personSettings, as a first commit's own
+// gits have them): whether dir is in a git working tree, and its top, and
+// whether HEAD names a commit to branch from. HEAD is read by its name
+// alone, without reading an object, so that no look at a folder makes git
+// fetch one (a partial clone's missing object); a launch reads the commit
+// itself after (headCommit, the worktree's add) and fails there when HEAD
+// names something that is no commit. refusal is the error a launch refuses
+// dir with, which matches ErrNotRepo, nil when worktrees can be made of it:
+// HEAD is no commit only when git says so by its exit status alone (an
+// unborn branch, a name that resolves to nothing). err is ErrNoGit when git
+// is not on PATH, ctx's, or a *headError when git failed reading HEAD's
+// name, with st then in the repository and without a commit.
 func repoState(ctx context.Context, dir string) (st State, refusal, err error) {
-	top, err := toplevel(ctx, dir)
-	if err != nil {
-		if errors.Is(err, ErrNotRepo) {
-			return State{}, err, nil
-		}
-		return State{}, nil, err
-	}
-	st = State{InRepo: true, Toplevel: top}
-	if _, err := headCommit(ctx, dir); err != nil {
-		var exit *exec.ExitError
-		switch {
-		case ctx.Err() != nil:
-			return State{}, nil, ctx.Err()
-		case !errors.As(err, &exit) || exit.ExitCode() != 1 && exit.ExitCode() != 128:
-			return st, nil, &headError{err}
-		}
-		return st, errNoCommit, nil
-	}
-	st.HasCommit = true
-	return st, nil, nil
+	return repoStateIn(ctx, dir, nil)
 }
 
-// headError is git's own failure reading a working directory's HEAD (an
-// object it cannot read), apart from a HEAD that is no commit: it is not
+// repoStateIn is repoState with env over git's environment: the tests' way
+// to a git that would fetch a missing object (GIT_NO_LAZY_FETCH=0).
+func repoStateIn(ctx context.Context, dir string, env map[string]string) (st State, refusal, err error) {
+	return readFolderState(ctx, gitAt{a: gitcli.Alone{Path: dir, Env: withEnv(fromServer(personSettings), env)}})
+}
+
+// headError is git's own failure reading a working directory's HEAD (a
+// name it cannot read), apart from a HEAD that is no commit: it is not
 // the directory's refusal (ErrNotRepo) but git's, so a caller answers it
 // as git's failure.
 type headError struct{ err error }
@@ -147,10 +139,16 @@ func (e *headError) Unwrap() error { return e.err }
 // commit, with git's message. The error is ErrNoGit when git is not on
 // PATH, or ctx's.
 func GitState(ctx context.Context, dir string) (State, error) {
+	return gitStateIn(ctx, dir, nil)
+}
+
+// gitStateIn is GitState with env over git's environment (repoStateIn).
+func gitStateIn(ctx context.Context, dir string, env map[string]string) (State, error) {
 	if err := checkGit(); err != nil {
 		return State{}, err
 	}
-	g := gitAt{a: gitcli.Alone{Path: dir}}
+	// The locations of the person's settings, as the press's gits have them.
+	g := gitAt{a: gitcli.Alone{Path: dir, Env: withEnv(fromServer(personSettings), env)}}
 	st, isNew, refusal, err := judgeFolder(ctx, g, func(name string) (fs.FileInfo, error) {
 		return os.Lstat(filepath.Join(dir, name))
 	}, dir)

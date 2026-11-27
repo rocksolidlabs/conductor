@@ -14,9 +14,9 @@ const firstCommitHere = false
 
 var errNotHere = errors.New("not on this system")
 
-func renameNoReplace(*os.File, string, *os.File, string) error { return errNotHere }
-func renameOverMade(*os.File, string, *os.File, string) error  { return errNotHere }
-func noReplaceUnsupported(error) bool                          { return false }
-func placeTaken(error) bool                                    { return false }
-func rmdirAt(*os.File, string) error                           { return errNotHere }
-func lockFile(*os.File) (bool, error)                          { return false, errNotHere }
+func renameNoReplace(*os.File, string, *os.File, string) error        { return errNotHere }
+func renameOverMade(*os.File, string, *os.File, string, func()) error { return errNotHere }
+func noReplaceUnsupported(error) bool                                 { return false }
+func placeTaken(error) bool                                           { return false }
+func rmdirAt(*os.File, string) error                                  { return errNotHere }
+func lockFile(*os.File) (bool, error)                                 { return false, errNotHere }

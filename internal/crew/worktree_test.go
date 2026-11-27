@@ -500,27 +500,46 @@ func TestAddDetachedWorktreeHasNoBranch(t *testing.T) {
 	}
 }
 
-// A HEAD whose commit git cannot read is git's failure, not a repository
-// without a commit: CheckRepo hands git's error back, matching neither
-// ErrNotRepo nor ErrNoGit, and GitState reports the directory in its
-// repository, without a commit, in git's words.
-func TestCheckRepoKeepsGitsFailureReadingHead(t *testing.T) {
+// The check reads HEAD by its name alone, without reading an object: a
+// HEAD whose commit git cannot read, or that names something that is no
+// commit, passes it, and the launch's own reads of the commit refuse it
+// (the base a managed run reads, the worktree's add), nothing made.
+func TestAHeadThatNamesNoCommitPassesTheCheckAndFailsTheLaunch(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a file whatever its mode")
 	}
-	repo := newRepo(t)
-	head := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
-	f := filepath.Join(repo, ".git", "objects", head[:2], head[2:])
-	if err := os.Chmod(f, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(f, 0o444) })
-	err := CheckRepo(t.Context(), repo)
-	if err == nil || errors.Is(err, ErrNotRepo) || errors.Is(err, ErrNoGit) || !strings.Contains(err.Error(), "unable to open loose object") {
-		t.Fatalf("CheckRepo: %v", err)
-	}
-	st, err := GitState(t.Context(), repo)
-	if err != nil || !st.InRepo || st.HasCommit || !strings.HasPrefix(st.Message, "git cannot read the working directory's HEAD: ") {
-		t.Fatalf("GitState: %+v %v", st, err)
+	for _, name := range []string{"a commit git cannot read", "a blob"} {
+		t.Run(name, func(t *testing.T) {
+			repo := newRepo(t)
+			head := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+			switch name {
+			case "a commit git cannot read":
+				f := filepath.Join(repo, ".git", "objects", head[:2], head[2:])
+				if err := os.Chmod(f, 0); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.Chmod(f, 0o444) })
+			default:
+				blob := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD:README"))
+				branch := strings.TrimSpace(runGit(t, repo, "symbolic-ref", "HEAD"))
+				writeFile(t, filepath.Join(repo, ".git", filepath.FromSlash(branch)), blob+"\n")
+			}
+			if err := CheckRepo(t.Context(), repo); err != nil {
+				t.Fatalf("CheckRepo: %v", err)
+			}
+			if st, err := GitState(t.Context(), repo); err != nil || !st.InRepo || !st.HasCommit || st.Message != msgCanWorktree {
+				t.Fatalf("GitState: %+v %v", st, err)
+			}
+			if c, err := headCommit(t.Context(), repo); err == nil {
+				t.Fatalf("a managed run's base read %s", c)
+			}
+			path := filepath.Join(repo, ".conductor", "worktrees", "r-1", "lead")
+			if err := AddWorktree(t.Context(), repo, path, "crew/r-1/lead"); err == nil {
+				t.Fatal("a worktree was added of a HEAD that is no commit")
+			}
+			if _, err := os.Stat(filepath.Join(path, "README")); err == nil {
+				t.Fatal("a worktree was checked out")
+			}
+		})
 	}
 }

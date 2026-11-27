@@ -228,8 +228,9 @@ func (g gitAt) each(ctx context.Context, each func([]byte) bool, args ...string)
 }
 
 // readFolderState is repoState read where g runs: whether the folder is in
-// a git working tree and its top, and whether HEAD is a commit (refusal
-// nil), by the same rev-parse calls and the same answers.
+// a git working tree and its top, and whether HEAD names a commit (refusal
+// nil), its name resolved without reading an object (no peel), so that git
+// fetches nothing to answer.
 func readFolderState(ctx context.Context, g gitAt) (st State, refusal, err error) {
 	out, err := g.run(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -242,10 +243,9 @@ func readFolderState(ctx context.Context, g gitAt) (st State, refusal, err error
 		return State{}, classifyRevParse(err), nil
 	}
 	st = State{InRepo: true, Toplevel: strings.TrimSpace(out)}
-	if _, err := g.run(ctx, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
-		// No commit only when git says so by its exit status alone, as
-		// repoState reads it: a git that says why (an object it cannot
-		// read) failed.
+	if _, err := g.run(ctx, "rev-parse", "--verify", "--quiet", "HEAD"); err != nil {
+		// No commit only when git says so by its exit status alone: a
+		// git that says why (a name it cannot read) failed.
 		var exit *exec.ExitError
 		switch {
 		case ctx.Err() != nil:
@@ -459,7 +459,14 @@ func (f *firstCommitter) putInPlace(cdir *os.File, name string) error {
 	}
 	err := rename(cdir, name, f.dir, ".git")
 	if err != nil && noReplaceUnsupported(err) {
-		err = renameOverMade(cdir, name, f.dir, ".git")
+		err = renameOverMade(cdir, name, f.dir, ".git", func() { f.hold("made") })
+		var moved *os.LinkError
+		if errors.As(err, &moved) && placeTaken(err) {
+			// Something came into, or in place of, the empty .git made for
+			// the repository: it is left as it is, and so is that .git once
+			// something is in it, which the next press then meets.
+			return &firstCommitError{"Something was put at the folder's .git while Conductor put the new repository there, and is left as it is. Make the first commit yourself, or remove .git, then launch"}
+		}
 	}
 	switch {
 	case err == nil:
@@ -525,8 +532,14 @@ func (f *firstCommitter) aside() (name string, cdir *os.File, done func(), err e
 		return fail(err)
 	}
 	for _, e := range entries {
-		if asideName(e.Name()) {
-			sweep(croot, e.Name())
+		switch name := e.Name(); {
+		case asideName(name):
+			sweep(croot, name)
+		case asideName(strings.TrimSuffix(name, asideLock)) && name != strings.TrimSuffix(name, asideLock):
+			// A lock left with no folder (a stop between the two makes).
+			if _, err := croot.Lstat(strings.TrimSuffix(name, asideLock)); errors.Is(err, fs.ErrNotExist) {
+				sweep(croot, strings.TrimSuffix(name, asideLock))
+			}
 		}
 	}
 	var b [8]byte
@@ -541,10 +554,10 @@ func (f *firstCommitter) aside() (name string, cdir *os.File, done func(), err e
 		_ = croot.Remove(name + asideLock)
 		lock.Close()
 	}
-	if ok, err := lockFile(lock); err != nil || !ok {
+	if ok, err := lockFile(lock); err != nil || !ok || !holdsLock(croot, name+asideLock, lock) {
 		unlock()
 		cdir.Close()
-		return fail(cmp.Or(err, errors.New("the first commit's lock is held")))
+		return fail(cmp.Or(err, errors.New("the first commit's lock was taken by another")))
 	}
 	// The mode git's own mkdir gives a new .git: what the umask leaves.
 	if err := croot.Mkdir(name, 0o777); err != nil {
@@ -562,10 +575,11 @@ func (f *firstCommitter) aside() (name string, cdir *os.File, done func(), err e
 }
 
 // sweep removes the folder an earlier attempt left in .conductor/ under
-// name, with its lock, when it is a real folder and its lock can be taken
-// now: one whose builder still holds it is left.
+// name, with its lock, when it is a real folder (or none, its lock left
+// alone) and its lock can be taken now: one whose builder still holds it
+// is left.
 func sweep(croot *os.Root, name string) {
-	if fi, err := croot.Lstat(name); err != nil || !fi.IsDir() {
+	if fi, err := croot.Lstat(name); err == nil && !fi.IsDir() || err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return
 	}
 	if fi, err := croot.Lstat(name + asideLock); err == nil && !fi.Mode().IsRegular() {
@@ -576,11 +590,19 @@ func sweep(croot *os.Root, name string) {
 		return
 	}
 	defer lock.Close()
-	if ok, err := lockFile(lock); err != nil || !ok {
+	if ok, err := lockFile(lock); err != nil || !ok || !holdsLock(croot, name+asideLock, lock) {
 		return
 	}
 	_ = croot.RemoveAll(name)
 	_ = croot.Remove(name + asideLock)
+}
+
+// holdsLock reports whether name in croot is still the file lock is open on:
+// a lock taken on a file another removed meanwhile holds nothing.
+func holdsLock(croot *os.Root, name string, lock *os.File) bool {
+	at, err := croot.Lstat(name)
+	mine, err2 := lock.Stat()
+	return err == nil && err2 == nil && os.SameFile(at, mine)
 }
 
 // pathspecs are what a first commit takes of the folder: all of it but

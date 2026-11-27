@@ -90,7 +90,10 @@ var safeEnv = map[string]string{
 	// protocol.allow and protocol.<name>.allow.
 	"GIT_ALLOW_PROTOCOL": "",
 	// A partial clone's missing object is an error rather than a fetch (git
-	// 2.45 and later; before, the fetch stops at GIT_ALLOW_PROTOCOL).
+	// 2.45 and later). An older git starts the fetch, which
+	// GIT_ALLOW_PROTOCOL then refuses, after it has begun: so a look at a
+	// folder Conductor does not vouch for reads no object (the crews'
+	// check reads HEAD by its name alone).
 	"GIT_NO_LAZY_FETCH":   "1",
 	"GIT_TERMINAL_PROMPT": "0",
 	// Reads take no lock and write no index beside the agent's own git.

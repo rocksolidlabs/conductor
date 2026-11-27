@@ -16,11 +16,13 @@ import (
 // the folder is renamed over that empty folder of Conductor's own, which a
 // plain rename does, and refuses what another writer put there meanwhile:
 // a folder no longer empty (ENOTEMPTY) or a file (ENOTDIR). The folder made
-// is removed when the rename fails, if it is still an empty folder.
-func renameOverMade(from *os.File, fromName string, to *os.File, toName string) error {
+// is removed when the rename fails, if it is still an empty folder. made is
+// called between the two steps.
+func renameOverMade(from *os.File, fromName string, to *os.File, toName string, made func()) error {
 	if err := unix.Mkdirat(int(to.Fd()), toName, 0o700); err != nil {
 		return &os.PathError{Op: "mkdirat", Path: toName, Err: err}
 	}
+	made()
 	if err := unix.Renameat(int(from.Fd()), fromName, int(to.Fd()), toName); err != nil {
 		_ = unix.Unlinkat(int(to.Fd()), toName, unix.AT_REMOVEDIR)
 		return &os.LinkError{Op: "renameat", Old: fromName, New: toName, Err: err}

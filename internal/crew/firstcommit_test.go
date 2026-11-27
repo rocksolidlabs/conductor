@@ -396,8 +396,12 @@ func TestAFailureAfterTheBuildAsideLeavesTheFolderAsItWas(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(stale, "objects"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A lock left with no folder: a stop between the lock's make and the folder's.
+	lone := filepath.Join(again, ".conductor", asidePrefix+"8899aabbccddeeff"+asideLock)
+	writeFile(t, lone, "")
 	mustFirstCommit(t, in)
 	noEntry(t, stale)
+	noEntry(t, lone)
 }
 
 // A home folder and a file system's root are never committed by Conductor.
@@ -570,7 +574,7 @@ func TestARepositoryWithNoCommitIsRefusedAndLeftAsItWas(t *testing.T) {
 			if !errors.Is(err, ErrNotRepo) || fc.Made {
 				t.Fatalf("not refused: %+v %v", fc, err)
 			}
-			if !strings.HasPrefix(c.name, "a common directory") && err.Error() != msgMakeItYourself {
+			if err.Error() != msgMakeItYourself {
 				t.Fatalf("refused in other words: %v", err)
 			}
 			noEntry(t, mark)
@@ -769,6 +773,12 @@ func TestSettingsFoundThroughTheServersEnvironmentAreThePersons(t *testing.T) {
 		t.Run(where, func(t *testing.T) {
 			dir, in := project(t, "")
 			delete(in.GitEnv, "GIT_CONFIG_GLOBAL")
+			// Neither place set by the machine running the test: only the one
+			// this case sets says where the settings are.
+			for _, v := range []string{"GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME"} {
+				t.Setenv(v, "")
+				os.Unsetenv(v)
+			}
 			kept := t.TempDir()
 			switch where {
 			case "GIT_CONFIG_GLOBAL":
@@ -798,6 +808,7 @@ func TestSettingsFoundThroughTheServersEnvironmentAreThePersons(t *testing.T) {
 // server's environment names; without it the commit, which must be signed,
 // is refused, never made unsigned.
 func TestAnSSHSignerReachesItsAgent(t *testing.T) {
+	sshSigning(t)
 	bin := t.TempDir()
 	sock := filepath.Join(bin, "agent.sock")
 	sign := filepath.Join(bin, "ssh-sign")
@@ -823,6 +834,7 @@ func TestAnSSHSignerReachesItsAgent(t *testing.T) {
 // runs: the first commit is refused, nothing is left running, nothing is
 // made, and the next call is not held.
 func TestASignerThatNeverEndsIsEndedAtTheBound(t *testing.T) {
+	sshSigning(t)
 	bin := t.TempDir()
 	pidFile := filepath.Join(bin, "pid")
 	sign := filepath.Join(bin, "sign")
@@ -860,11 +872,13 @@ func TestASignerThatNeverEndsIsEndedAtTheBound(t *testing.T) {
 	if err := <-done; !errors.Is(err, ErrNotRepo) || !strings.Contains(err.Error(), "did not finish within its bound") {
 		t.Fatalf("refused: %v", err)
 	}
-	for syscall.Kill(pid, 0) == nil {
-		if t.Context().Err() != nil {
-			t.Fatalf("the signer %d is still running", pid)
+	// The group was sent SIGKILL as the call returned: what is left is the
+	// kernel's delivery and the reaping by the machine's init, which no
+	// bound of the code's covers; signerGone bounds the test's wait for it.
+	for gone := time.Now().Add(signerGone); syscall.Kill(pid, 0) == nil; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(gone) {
+			t.Fatalf("the signer %d is still running %s after the call returned", pid, signerGone)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	noEntry(t, filepath.Join(dir, ".git"))
 	noEntry(t, filepath.Join(dir, ".conductor"))
@@ -954,4 +968,159 @@ func TestTheFolderCheckMakesNothing(t *testing.T) {
 	if after := folderListing(t, dir); after != before {
 		t.Fatalf("the check changed the repository:\n%s", after)
 	}
+}
+
+// signerGone bounds the wait for a signer sent SIGKILL to be gone: the
+// kernel's and init's work on a loaded machine, not a bound of the code's.
+const signerGone = 30 * time.Second
+
+// sshSigning skips the test on a git that cannot sign with ssh (before
+// 2.34).
+func sshSigning(t *testing.T) {
+	t.Helper()
+	out, err := exec.Command("git", "version").Output()
+	if err != nil {
+		t.Skip("git is not installed")
+	}
+	var major, minor int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(strings.TrimSpace(string(out)), "git version "), "%d.%d", &major, &minor); err != nil || major < 2 || major == 2 && minor < 34 {
+		t.Skipf("%s cannot sign with ssh", strings.TrimSpace(string(out)))
+	}
+}
+
+// The folder's check reads a repository's head without reading an object:
+// a repository prepared as a partial clone whose head names a missing
+// object, judged by a git left to fetch it (as a git before 2.45 does), is
+// byte for byte as it was after the check, after the press (which finds a
+// head and makes nothing), and after the launch's own read of the commit
+// is refused.
+func TestTheCheckReadsTheHeadWithoutReadingAnObject(t *testing.T) {
+	dir, in := project(t, "")
+	gitOf(t, dir, "init", "-q")
+	for _, kv := range [][2]string{{"core.repositoryformatversion", "1"}, {"extensions.partialClone", "origin"},
+		{"remote.origin.url", filepath.Join(t.TempDir(), "gone")}, {"remote.origin.promisor", "true"}} {
+		gitOf(t, dir, "config", kv[0], kv[1])
+	}
+	branch := gitOf(t, dir, "symbolic-ref", "HEAD")
+	writeFile(t, filepath.Join(dir, ".git", filepath.FromSlash(branch)), "0123456789abcdef0123456789abcdef01234567\n")
+	fetching := map[string]string{"GIT_NO_LAZY_FETCH": "0", "GIT_CONFIG_NOSYSTEM": "1"}
+	before := folderListing(t, dir)
+	same := func(after string) {
+		t.Helper()
+		if now := folderListing(t, dir); now != before {
+			t.Fatalf("%s changed the repository:\n%s\nwas\n%s", after, now, before)
+		}
+	}
+	if st, err := gitStateIn(t.Context(), dir, fetching); err != nil || !st.HasCommit {
+		t.Fatalf("the check: %+v %v", st, err)
+	}
+	same("the folder's check")
+	if _, refusal, err := repoStateIn(t.Context(), dir, fetching); err != nil || refusal != nil {
+		t.Fatalf("the launch's check: %v %v", refusal, err)
+	}
+	same("the launch's check")
+	in.GitEnv = fetching
+	if fc, err := EnsureFirstCommit(t.Context(), in); err != nil || fc.Made {
+		t.Fatalf("the press: %+v %v", fc, err)
+	}
+	same("the press")
+	if c, err := headCommit(t.Context(), dir); err == nil {
+		t.Fatalf("the launch read a commit %s", c)
+	}
+	same("the launch's read of its base")
+}
+
+// Where the repository is put in place by a make of .git and a rename over
+// it, what comes into that .git or in its place between the two steps is
+// kept: the commit is refused in words that say so, and the next press
+// meets what is there.
+func TestWhatComesBetweenTheMakeAndTheRenameIsKept(t *testing.T) {
+	unsupported := func(*os.File, string, *os.File, string) error {
+		return &os.LinkError{Op: "renameat2", Err: syscall.EINVAL}
+	}
+	const words = "Something was put at the folder's .git while Conductor put the new repository there"
+	for _, theirs := range []string{"a file put into it", "a link in its place", "a file in its place"} {
+		t.Run(theirs, func(t *testing.T) {
+			dir, in := project(t, "")
+			writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+			elsewhere := t.TempDir()
+			at := filepath.Join(dir, ".git")
+			in.rename = unsupported
+			in.hold = func(step string) {
+				if step != "made" {
+					return
+				}
+				switch theirs {
+				case "a file put into it":
+					writeFile(t, filepath.Join(at, "theirs"), "t\n")
+				case "a link in its place":
+					if err := os.Remove(at); err != nil {
+						t.Error(err)
+					}
+					if err := os.Symlink(elsewhere, at); err != nil {
+						t.Error(err)
+					}
+				default:
+					if err := os.Remove(at); err != nil {
+						t.Error(err)
+					}
+					writeFile(t, at, "gitdir: theirs\n")
+				}
+			}
+			refused(t, in, words)
+			kept := folderListing(t, dir)
+			switch theirs {
+			case "a file put into it":
+				if b, err := os.ReadFile(filepath.Join(at, "theirs")); err != nil || string(b) != "t\n" {
+					t.Fatalf("theirs changed: %q %v", b, err)
+				}
+			case "a link in its place":
+				if to, err := os.Readlink(at); err != nil || to != elsewhere {
+					t.Fatalf("their link changed: %q %v", to, err)
+				}
+			default:
+				if b, err := os.ReadFile(at); err != nil || string(b) != "gitdir: theirs\n" {
+					t.Fatalf("their file changed: %q %v", b, err)
+				}
+			}
+			noEntry(t, filepath.Join(dir, ".conductor"))
+			// The next press meets what is there, and makes nothing.
+			in.hold = nil
+			if _, err := EnsureFirstCommit(t.Context(), in); !errors.Is(err, ErrNotRepo) {
+				t.Fatalf("the next press: %v", err)
+			}
+			if after := folderListing(t, dir); after != kept {
+				t.Fatalf("the next press changed the folder:\n%s", after)
+			}
+		})
+	}
+}
+
+// The folder's check and the press read the person's settings from the
+// same places: a setting kept only where the server's environment says
+// (here one that refuses a bare repository found above the folder) gives
+// the two the same answer.
+func TestTheCheckAndThePressReadTheSameSettings(t *testing.T) {
+	_, in := project(t, "")
+	delete(in.GitEnv, "GIT_CONFIG_GLOBAL")
+	bare := t.TempDir()
+	gitOf(t, bare, "init", "-q", "--bare")
+	work := filepath.Join(bare, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := filepath.Join(t.TempDir(), "gitconfig")
+	writeFile(t, settings, "[safe]\n\tbareRepository = explicit\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", settings)
+	st, err := GitState(t.Context(), work)
+	if err != nil || !strings.Contains(st.Message, "safe.bareRepository") {
+		t.Fatalf("the check does not read the person's settings: %+v %v", st, err)
+	}
+	pressed := opened(t, work, os.Getenv("HOME"))
+	delete(pressed.GitEnv, "GIT_CONFIG_GLOBAL")
+	_, err = EnsureFirstCommit(t.Context(), pressed)
+	if err == nil || err.Error() != st.Message {
+		t.Fatalf("the press said %v, the check %q", err, st.Message)
+	}
+	noEntry(t, filepath.Join(work, ".git"))
 }
