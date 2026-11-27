@@ -675,7 +675,6 @@ const SETTINGS_FOLDS_KNOWN: Known = {}
 
 const BROWSER_WORDS_KNOWN: Known = {
   'components/AddAgentSlideover.vue': { count: 1, why: "a real browser: an agent's browser profile folder" },
-  'components/WelcomeCard.vue': { count: 1, why: '"from any browser": to be reworded as from anywhere' },
   'pages/settings.vue': { count: 1, why: "a real browser: Open in browser, The app's server row, which the desktop app opens" },
 }
 

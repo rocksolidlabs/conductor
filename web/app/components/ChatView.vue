@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { SessionConnection } from '~/composables/useSessionConnection'
 import type { PermissionAnswer, TranscriptEntry, TranscriptPartName, TranscriptRequest } from '~/utils/protocol'
-import { ReplyError } from '~/utils/reply'
+import { ReplyError, type ReplyTaken } from '~/utils/reply'
 import { answerOf, atChatEnd, chatBlocks, limitReads, OWN_ANSWER_LINE, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
 import { MAX_TRANSCRIPT_IN_FLIGHT } from '~/utils/protocol'
+import { plainWords } from '~/utils/permissionInput'
 
 /**
  * A session run as a chat (docs/plans/chat-or-terminal.md, design 11), where its terminal is drawn otherwise: quiet by design. What
@@ -31,10 +32,25 @@ const props = withDefaults(
      * notice, where it covers nothing, until dismissed (`dismissNote`). `site` is the agent's site from its catalog entry.
      */
     note?: { site?: string } | null
+    /** The agent's name, for the box's placeholder and Stop's tooltip; `draftKey` the session whose line the app keeps (useBoxDrafts). */
+    agentName?: string
+    draftKey?: string
+    /**
+     * The question the session's page shows for this chat, while one waits (the session page alone). One that takes a typed reply
+     * (`reply`) is answered from the box (UX3 R5). With choices, or one the box does not answer, the box leaves the cursor where it is,
+     * so that 1 to 9 still answer; otherwise it takes the cursor as the chat is drawn, when nothing else holds it.
+     */
+    asked?: { id?: string; choices: boolean; reply: boolean } | null
+    /**
+     * A tile's form (UX3 R8a: the Yard's tiles, a run's): the end of the conversation, read-only (no box, no Stop, no answer), each
+     * turn's steps one line ("Working." while it runs), always following the end. A tile's question is answered on the tile.
+     */
+    tile?: boolean
   }>(),
-  { readOnly: false, operator: false, verbatim: undefined, opensChanges: false, note: null },
+  { readOnly: false, operator: false, verbatim: undefined, opensChanges: false, note: null, agentName: undefined, draftKey: undefined, asked: null, tile: false },
 )
-const emit = defineEmits<{ openDiff: [entry: TranscriptEntry]; dismissNote: [] }>()
+/** `reply`: a line typed in the box as the answer to the question the page shows (`asked`), for the page's answer. */
+const emit = defineEmits<{ openDiff: [entry: TranscriptEntry]; dismissNote: []; reply: [text: string, question: string | undefined, taken: ReplyTaken] }>()
 
 const conn = props.connection
 /** A message that answers a question as the chat draws it: this browser's own answer, from the tab's store of them, or the words for one. */
@@ -46,10 +62,10 @@ const entries = computed(() => {
 })
 const blocks = computed(() => chatBlocks(entries.value))
 const running = computed(() => blocks.value.some((b) => b.kind === 'turn' && b.running))
-const controls = computed(() => !props.readOnly && conn.role.value === 'control')
+const controls = computed(() => !props.tile && !props.readOnly && conn.role.value === 'control')
 /** The chat's own welcome says both; after a move on this connection the page's word stands in for it. */
 const chatWelcome = computed(() => conn.welcome.value?.way === 'protocol')
-const canAnswer = computed(() => !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))
+const canAnswer = computed(() => !props.tile && !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))
 const verbatim = computed<boolean | undefined>(() => (chatWelcome.value ? !!conn.welcome.value?.verbatim : props.verbatim))
 const opened = ref(new Set<string>())
 const said = ref('')
@@ -137,7 +153,8 @@ watch(
   () => conn.transcriptVersion.value,
   () => {
     const el = scroller.value
-    if (el && !atChatEnd(el)) return
+    // A tile has no scroll of its own to leave the end by: it always shows the end.
+    if (el && !props.tile && !atChatEnd(el)) return
     void nextTick(() => {
       const box = scroller.value
       if (box) box.scrollTop = box.scrollHeight
@@ -153,12 +170,81 @@ function showQuestion() {
   q?.querySelector<HTMLElement>('button:not([disabled])')?.focus({ preventScroll: true })
 }
 defineExpose({ showQuestion })
+
+/**
+ * The oldest open permission request, and whether its card is out of the conversation's view (UX3 R71): then one amber line above the
+ * box says what it asks, with `Show it`, which brings the card back with the focus on its first button. Measured as the person
+ * scrolls, as the chat changes and as the pane is sized; gone once the card is in view or answered.
+ */
+const openAsk = computed(() => {
+  for (const b of blocks.value) {
+    if (b.kind !== 'turn') continue
+    for (const it of b.items) if (it.kind === 'permission' && it.entry.state === 'open') return it.entry
+  }
+  return undefined
+})
+const askAway = ref(false)
+function measureAway() {
+  const el = scroller.value
+  const card = el?.querySelector<HTMLElement>('[data-permission-question][data-permission-state="open"]')
+  if (!el || !card || props.tile) {
+    askAway.value = false
+    return
+  }
+  const r = card.getBoundingClientRect()
+  const s = el.getBoundingClientRect()
+  askAway.value = r.bottom <= s.top || r.top >= s.bottom
+}
+watch(
+  () => conn.transcriptVersion.value,
+  () => void nextTick(measureAway),
+  { flush: 'post' },
+)
+let sized: ResizeObserver | undefined
+onMounted(() => {
+  if (typeof ResizeObserver === 'undefined' || !scroller.value) return
+  sized = new ResizeObserver(() => measureAway())
+  sized.observe(scroller.value)
+})
+onBeforeUnmount(() => sized?.disconnect())
+
+/**
+ * The box takes the cursor as the chat is drawn and once a question is answered, when nothing else holds it (UX3 R4), unless choices
+ * show (their number keys answer) or the question is one the box does not answer (a permission request's own buttons do).
+ */
+const composer = useTemplateRef<{ focus: () => void }>('composer')
+const keysAnswer = computed(() => !!props.asked && (props.asked.choices || !props.asked.reply))
+function takeCursor() {
+  if (!controls.value || keysAnswer.value || typeof document === 'undefined') return
+  const el = document.activeElement
+  if (!el || el === document.body) composer.value?.focus()
+}
+onMounted(() =>
+  void nextTick(() => {
+    if (props.tile && scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight
+    takeCursor()
+  }),
+)
+watch(
+  keysAnswer,
+  (now, was) => {
+    if (was && !now) void nextTick(takeCursor)
+  },
+)
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col bg-default" data-chat-view :data-chat-entries="entries.length" :data-turn-running="running || undefined">
-    <div ref="scroller" class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4" data-chat-scroll>
-      <div class="mx-auto flex max-w-3xl flex-col gap-4">
+  <!-- A tile's form is the same conversation, smaller, behind `inert`: nothing in it takes a press, a key or the focus. -->
+  <div
+    class="flex h-full min-h-0 flex-col bg-default"
+    :data-chat-view="tile ? undefined : ''"
+    :data-chat-tile="tile ? '' : undefined"
+    :data-chat-entries="entries.length"
+    :data-turn-running="running || undefined"
+    :inert="tile || undefined"
+  >
+    <div ref="scroller" class="min-h-0 flex-1 overflow-x-hidden" @scroll.passive="measureAway" :class="tile ? 'overflow-y-hidden px-2.5 py-2 text-xs' : 'overflow-y-auto px-4 py-4'" data-chat-scroll>
+      <div class="mx-auto flex flex-col" :class="tile ? 'gap-2' : 'max-w-3xl gap-4'">
         <ChatNote v-if="note && !noteAfter" :site="note.site" :host="siteHost" @dismiss="emit('dismissNote')" />
         <template v-for="b in blocks" :key="b.key">
           <template v-if="b.kind === 'notice'">
@@ -184,7 +270,11 @@ defineExpose({ showQuestion })
               <span v-if="p.byName && p.by === 'person'" class="text-[11px] text-muted">{{ p.byName }}</span>
               <span v-if="promptLine(p)" class="text-[11px] text-muted" data-chat-prompt-line>{{ promptLine(p) }}</span>
             </div>
-            <div v-if="stepsLine(b)" class="flex flex-col" data-chat-steps>
+            <p v-if="tile && stepsLine(b)" class="flex items-center gap-1.5 text-muted" data-chat-steps data-chat-steps-line>
+              <UIcon v-if="!b.steps.length" name="i-lucide-loader-circle" class="size-3 animate-spin" aria-hidden="true" />
+              <span>{{ stepsLine(b) }}</span>
+            </p>
+            <div v-else-if="stepsLine(b)" class="flex flex-col" data-chat-steps>
               <button type="button" class="flex w-fit items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted hover:bg-elevated hover:text-default" :aria-expanded="opened.has(b.key)" :disabled="!b.steps.length" data-chat-steps-line @click="toggleSteps(b)">
                 <UIcon v-if="b.steps.length" :name="opened.has(b.key) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" class="size-3.5" aria-hidden="true" />
                 <UIcon v-else name="i-lucide-loader-circle" class="size-3.5 animate-spin" aria-hidden="true" />
@@ -205,14 +295,26 @@ defineExpose({ showQuestion })
         </template>
       </div>
     </div>
-    <ChatComposer
-      v-if="controls"
-      class="mx-auto w-full max-w-3xl"
-      placeholder="Write to the agent"
-      :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said }"
-      data-chat-box
-      @send="(text) => send(text)"
-      @stop="stop"
-    />
+    <!-- The chat's foot, in the conversation's column: the card for the agent's question (the page's `ask`) just above the box, so
+         that what it asks and where to answer sit together. The card draws nothing while nothing is asked. -->
+    <div v-if="$slots.ask || controls" class="mx-auto w-full max-w-3xl border-t border-default" data-chat-foot>
+      <div v-if="askAway && openAsk" class="px-3 pt-2.5" data-chat-permission-away>
+        <div class="flex items-center gap-3 rounded-lg border border-warning bg-warning/10 px-3.5 py-2">
+          <span class="size-2 flex-none rounded-full bg-warning" aria-hidden="true" />
+          <p class="min-w-0 flex-1 break-words text-sm text-default"><span class="font-semibold">{{ agentName || 'The agent' }} asks:</span> {{ plainWords(openAsk.plain) }}</p>
+          <UButton label="Show it" size="sm" color="neutral" variant="outline" class="flex-none" data-chat-permission-show @click="showQuestion" />
+        </div>
+      </div>
+      <div v-if="$slots.ask" class="px-3 [&_[data-quick-reply]]:mt-2.5" data-chat-ask><slot name="ask" /></div>
+      <ChatComposer
+        v-if="controls"
+        ref="composer"
+        :agent="{ verbatim, running, canStop: controls && (chatWelcome ? !!conn.welcome.value?.interrupt : true), said, name: agentName, draftKey, asked }"
+        data-chat-box
+        @send="(text) => send(text)"
+        @stop="stop"
+        @answer="(text, question, taken) => emit('reply', text, question, taken)"
+      />
+    </div>
   </div>
 </template>
