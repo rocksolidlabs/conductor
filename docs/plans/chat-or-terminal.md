@@ -3248,6 +3248,34 @@ below.
   declined it."), not put to the operator with Deny only: the session's
   question has no Deny-only form yet. An agent's `$/cancel_request` takes
   its request back, answered `-32800` as the protocol asks.
+- A call that changes closes its card: an update or a repeated
+  announcement that gives a shown field another value or holds a field the
+  client does not read, an update that sets the call running, and a line
+  too long to read (then every open call) withdraw every open request
+  about it, the agent answered `cancelled`; a later request about a
+  changed call, or about a call the client no longer follows, is declined.
+  An option the client does not read declines the request (a field beyond
+  `optionId`, `name` and `kind`, an empty or repeated id, a kind protocol
+  1 does not name, more than one `allow_once`). A request named by an open
+  one's id closes the open one's card. A call's input is built from the
+  agent's own bytes, never through a decode. A raw input whose keys the
+  client was not taught for the agent at its own look
+  (`ACPRawInputKeys`, by adapter: none yet), or one that is not an object,
+  declines the call's requests; the floor also walks every string the call
+  holds (its raw input, locations, content and title), judged as a command
+  line's words from the session's folder and from each folder the call
+  names (`cwd`, `workdir`, `directory`, ...), and as a path where it looks
+  like one, links followed before `..`.
+- A chat's child takes none of a yolo launch's variables, and none of its
+  arguments: an ACP chat of a yolo launch asks, and begins by saying so
+  ("Yolo stays with the terminal: this chat asks before each step.").
+  Claude Code's and Codex's chats of a yolo launch keep their yolo, which
+  their own arguments carry.
+- An ACP or Codex chat's child is marked `CONDUCTOR_PROTOCOL=<its
+  protocol's name>`, which silences the terminal way's hooks and lists no
+  permission tool (listed only for `CONDUCTOR_PROTOCOL=1`, Claude Code's);
+  the permission route answers a request for a chat of another protocol as
+  no call the session is making.
 - `MovesFor(name, adapter)` is the move's word for an agent: for `acp-v1`
   the agent's own (`acpMoves`), for every other protocol its driver's. A
   version is qualified once the identity probe read one; the protocol's
@@ -3270,6 +3298,15 @@ The built-in agents, by their own pages:
 | oh-my-pi | `omp acp` | none | needs a session recipe first |
 | DeepSeek Harness | `dsh --profile acp` ("developer preview") | none | needs a session recipe first |
 | pi, aider, Amp | none of their own | | no Chat: no protocol start the client could speak to |
+
+**Read and stated before each ACP agent is declared, beside its look:**
+what the floor covers for that agent. The floor sees only the calls the
+agent asks about; a call its own configuration runs unasked (an
+auto mode, an allow rule, an allowlist) reaches no floor. Before the
+declaration, one of two: a launch whose agent's own mode asks about nothing
+is kept out of Chat, or the limit is stated for the agent under design 7's
+"What the floor does not promise". The look decides which; and it records
+the raw input's keys the client is taught for the agent.
 
 **Row 11's live looks, one per agent before its declaration** (the real
 program at its current version, in a throwaway repository, a terminal

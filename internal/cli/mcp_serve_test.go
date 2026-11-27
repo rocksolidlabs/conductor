@@ -765,3 +765,21 @@ func TestPermissionToolListedOnlyInProtocol(t *testing.T) {
 		}
 	}
 }
+
+// The permission tool is listed to Claude Code's chat alone
+// (CONDUCTOR_PROTOCOL=1): a chat's child of another protocol, marked by its
+// protocol's name, lists none, its agent asking in its own stream.
+func TestPermissionToolListedOnlyToClaudeCodesChat(t *testing.T) {
+	for _, name := range []string{"codex-app-server", "acp-v1"} {
+		env := sessionEnv("http://127.0.0.1:1", "s1", "agent-tok")
+		other := func(k string) string {
+			if k == protocolEnv {
+				return name
+			}
+			return env(k)
+		}
+		if slices.Contains(listedTools(t, other), permissionTool) {
+			t.Errorf("a %s chat lists permission", name)
+		}
+	}
+}
