@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { SessionWay } from '~/utils/protocol'
-import { RUN_AS_CHAT_LINE, RUN_AS_SIDES, sideForKey } from '~/utils/launchWay'
+import { RUN_AS_SIDES, sideForKey } from '~/utils/launchWay'
 
 /**
  * The Launch agent dialog's Run as: Terminal | Chat (issue 1174), in the order and shape of the header's switch (WaySwitch.vue).
- * One press picks a side, and the arrow keys move between the two; while Chat is picked one line says what a launch as a chat does.
+ * One press picks a side, and the arrow keys move between the two. It shows the choice alone: how a launch as a chat is carried out
+ * is the session's switch's to say, while it waits.
  */
 const way = defineModel<SessionWay>({ default: 'terminal' })
 const group = ref<HTMLElement>()
@@ -41,6 +42,5 @@ function onKey(e: KeyboardEvent) {
         />
       </UFieldGroup>
     </div>
-    <p v-if="way === 'protocol'" class="mt-1.5 text-xs text-muted" data-run-as-line>{{ RUN_AS_CHAT_LINE }}</p>
   </UFormField>
 </template>

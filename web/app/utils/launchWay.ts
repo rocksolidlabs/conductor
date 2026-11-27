@@ -1,18 +1,15 @@
 import type { SessionWay } from './protocol'
 
 // The Launch agent dialog's Run as: Terminal | Chat (issue 1174). A launch as a chat starts in its terminal and moves to Chat by
-// itself at the first moment the move can be made (docs/protocol.md, Moving between ways); the dialog offers it only for an agent
-// whose catalog entry has a protocol, in the order and shape of the header's switch (WaySwitch.vue), and remembers the side each
-// agent was last launched with in this browser.
+// itself at the first moment the move can be made (docs/protocol.md, Moving between ways); the dialog shows the choice alone, offers
+// it only for an agent whose catalog entry has a protocol, in the order and shape of the header's switch (WaySwitch.vue), and
+// remembers the side each agent was last launched with in this browser.
 
 /** The two sides, in the header switch's order. */
 export const RUN_AS_SIDES: ReadonlyArray<{ way: SessionWay; label: string }> = [
   { way: 'terminal', label: 'Terminal' },
   { way: 'protocol', label: 'Chat' },
 ]
-
-/** The one line under the choice while Chat is picked. */
-export const RUN_AS_CHAT_LINE = 'Starts in its terminal, then moves to Chat.'
 
 /** Whether the dialog offers Run as for an agent: one whose catalog entry has a protocol (`AgentInfo.protocol`). */
 export function offersRunAs(agent: { protocol?: { name?: string } } | null | undefined): boolean {
