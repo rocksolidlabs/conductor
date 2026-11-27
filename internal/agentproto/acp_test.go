@@ -259,7 +259,7 @@ func TestACPPermissionOptions(t *testing.T) {
 	perms := waitEvent(t, rec, "permission", 3)
 	for i, v := range []session.Verdict{{Allow: true}, {Message: "no"}, {Cancel: true}} {
 		p := perms[i].perm
-		if p.Call != "c"+itoa(i+1) || p.Tool != "execute" || string(p.Input) != `{"command":"ls"}` {
+		if p.Call != "c"+itoa(i+1) || p.Tool != "execute" || string(p.Input) != `{"kind":"execute","rawInput":{"command":"ls"},"title":"ls"}` {
 			t.Fatalf("request %d: %+v %s", i, p, p.Input)
 		}
 		if err := c.Reply(context.Background(), perms[i].ref, v); err != nil {
@@ -516,5 +516,64 @@ func TestACPFixturesReplay(t *testing.T) {
 				t.Fatalf("events\n%s\nwant\n%s", got, want)
 			}
 		})
+	}
+}
+
+// What the client does not read is declined, never asked without it: a
+// request about a call announced with a field the client does not read, or
+// changed by an update since it was announced, one whose own toolCall holds
+// such a field, and one whose params do. Each is answered at once (never an
+// allow) with a notice, and none reaches the session; a request whose
+// toolCall gives the call's fields its own values is handed over with them,
+// for the session's binding to judge.
+func TestACPWhatTheClientDoesNotReadIsDeclined(t *testing.T) {
+	_, s, rec := begun(t, ACPOptions{})
+	opts := `[{"optionId":"o1","name":"Allow","kind":"allow_once"},{"optionId":"r1","name":"Reject","kind":"reject_once"}]`
+	call := func(id, extra string) {
+		s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"` + id + `","title":"ls","kind":"execute","status":"pending","rawInput":{"command":"ls"}` + extra + `}`))
+	}
+	ask := func(n int, toolCall, extra string) {
+		s.write(`{"jsonrpc":"2.0","id":` + itoa(n) + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":` + toolCall + `,"options":` + opts + extra + `}}`)
+	}
+	call("a1", `,"somethingNew":{"x":1}`)
+	call("a2", "")
+	s.write(acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"a2","status":"in_progress","content":[{"type":"diff","path":"/work/x","oldText":"a","newText":"b"}]}`))
+	call("a3", "")
+	call("a4", "")
+	call("a5", "")
+	ask(61, `{"toolCallId":"a1"}`, "")
+	ask(62, `{"toolCallId":"a2"}`, "")
+	ask(63, `{"toolCallId":"a3","somethingNew":true}`, "")
+	ask(64, `{"toolCallId":"a4"}`, `,"somethingNew":true`)
+	for _, id := range []string{"61", "62", "63", "64"} {
+		got := s.await(`"id":` + id + `,`)
+		if !strings.Contains(got, `"outcome"`) || strings.Contains(got, `"o1"`) {
+			t.Fatalf("request %s answered %s", id, got)
+		}
+	}
+	if n := len(rec.kinds("permission")); n != 0 {
+		t.Fatalf("%d declined requests reached the session", n)
+	}
+	if n := len(rec.kinds("notice")); n != 4 {
+		t.Fatalf("%d notices for 4 declines", n)
+	}
+	ask(65, `{"toolCallId":"a5","rawInput":{"command":"rm -rf /"}}`, "")
+	p := waitEvent(t, rec, "permission", 1)[0].perm
+	if p.Call != "a5" || string(p.Input) != `{"kind":"execute","rawInput":{"command":"rm -rf /"},"title":"ls"}` {
+		t.Fatalf("handed over %+v %s", p, p.Input)
+	}
+}
+
+// A verdict on a request the client no longer holds reaches nobody:
+// ErrNoRequest, so the session records it withdrawn.
+func TestACPAVerdictOnARequestTakenBackReachesNobody(t *testing.T) {
+	c, s, rec := begun(t, ACPOptions{})
+	s.write(acpUpdate(`{"sessionUpdate":"tool_call","toolCallId":"c1","title":"ls","kind":"execute","status":"pending","rawInput":{"command":"ls"}}`))
+	s.write(`{"jsonrpc":"2.0","id":71,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"c1"},"options":[{"optionId":"o1","name":"Allow","kind":"allow_once"}]}}`)
+	p := waitEvent(t, rec, "permission", 1)[0]
+	s.write(`{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":71}}`)
+	waitEvent(t, rec, "permission_withdrawn", 1)
+	if err := c.Reply(context.Background(), p.ref, session.Verdict{Allow: true}); !errors.Is(err, ErrNoRequest) {
+		t.Fatalf("Reply: %v", err)
 	}
 }

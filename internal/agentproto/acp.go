@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +58,9 @@ const (
 	// ACPNoAllowOnceWords is the notice of a request that offered no way to
 	// allow the call once: declined, never allowed for longer.
 	ACPNoAllowOnceWords = "The agent offered no way to allow this call once; Conductor declined it."
+	// ACPDeclinedWords is the notice of a request about more than the
+	// client can show: declined.
+	ACPDeclinedWords = "The agent asked about something a chat cannot show here; Conductor declined it."
 )
 
 var (
@@ -159,6 +163,12 @@ type acpRead struct {
 type acpTool struct {
 	name  string
 	input []byte
+	// fields are the call's fields as announced, by name; unread says the
+	// call held one the client does not read, changed that an update
+	// changed one after it was announced: a request about it is declined.
+	fields  map[string]json.RawMessage
+	unread  bool
+	changed bool
 }
 
 // NewACP is the client of an agent whose input is in and output out.
@@ -375,7 +385,9 @@ func (c *ACP) Reply(_ context.Context, ref string, v session.Verdict) error {
 	}
 	c.mu.Unlock()
 	if r == nil {
-		return nil
+		// Answered, taken back or cancelled already: the verdict reaches no
+		// request.
+		return ErrNoRequest
 	}
 	return c.answerOutcome(r.id, acpOutcome(r.options, v))
 }
@@ -649,8 +661,8 @@ func (c *ACP) update(u map[string]json.RawMessage, e session.ProtocolEvents) {
 		if id == "" {
 			return
 		}
-		name, input, summary := acpStep(u)
-		c.announce(id, name, input, summary, e)
+		name, input, summary, fields, unread := acpStep(u)
+		c.announce(id, acpTool{name: name, input: input, fields: fields, unread: unread}, summary, e)
 		c.toolStatus(id, u, e)
 	case "tool_call_update":
 		var id string
@@ -658,17 +670,59 @@ func (c *ACP) update(u map[string]json.RawMessage, e session.ProtocolEvents) {
 		if id == "" {
 			return
 		}
-		if _, open := c.r.tools[id]; !open {
+		t, open := c.r.tools[id]
+		if !open {
 			return
+		}
+		if acpChanges(t.fields, u) {
+			// What the step was announced with is no longer all it is: a
+			// request about it is declined.
+			t.changed = true
+			c.r.tools[id] = t
 		}
 		c.toolStatus(id, u, e)
 	}
 }
 
+// The fields of a tool call the client reads (protocol 1's ToolCall and
+// ToolCallUpdate): its input is every one of them it was given but its id
+// and its status, whole; a call holding any other, not null, is one the
+// client cannot show whole.
+var (
+	acpShownFields  = []string{"name", "title", "kind", "rawInput", "content", "locations"}
+	acpUpdateFields = []string{"toolCallId", "status", "rawOutput", "sessionUpdate"}
+)
+
+// acpChanges says an update gives one of the shown fields a value other
+// than the one announced.
+func acpChanges(was, u map[string]json.RawMessage) bool {
+	for _, k := range acpShownFields {
+		raw, ok := u[k]
+		if !ok || isNull(raw) {
+			continue
+		}
+		if !jsonEqual(was[k], raw) {
+			return true
+		}
+	}
+	return false
+}
+
+// jsonEqual says a and b are the same JSON value.
+func jsonEqual(a, b json.RawMessage) bool {
+	var x, y any
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		return false
+	}
+	ab, _ := json.Marshal(x)
+	bb, _ := json.Marshal(y)
+	return bytes.Equal(ab, bb)
+}
+
 // acpStep is a tool call's step: its name (the agent's name for the tool,
 // else its kind), its raw input ({} where it gives none) and its title as
 // the one line.
-func acpStep(u map[string]json.RawMessage) (name string, input []byte, summary string) {
+func acpStep(u map[string]json.RawMessage) (name string, input []byte, summary string, fields map[string]json.RawMessage, unread bool) {
 	var title, kind string
 	field(u, "name", &name)
 	field(u, "kind", &kind)
@@ -679,15 +733,34 @@ func acpStep(u map[string]json.RawMessage) (name string, input []byte, summary s
 	if name == "" {
 		name = "other"
 	}
-	input = []byte("{}")
-	if raw, ok := u["rawInput"]; ok && isObject(raw) {
-		input = bytes.Clone(raw)
+	fields = map[string]json.RawMessage{}
+	for _, k := range acpShownFields {
+		if raw, ok := u[k]; ok && !isNull(raw) {
+			fields[k] = bytes.Clone(raw)
+		}
 	}
-	return name, input, title
+	input = acpInput(fields)
+	unread = extraFields(u, append(append([]string{}, acpShownFields...), acpUpdateFields...))
+	return name, input, title, fields, unread
 }
 
-func (c *ACP) announce(id, name string, input []byte, summary string, e session.ProtocolEvents) {
+// acpInput is a call's input as the session keeps it and the person is
+// asked about: every shown field it holds, whole.
+func acpInput(fields map[string]json.RawMessage) []byte {
+	m := map[string]any{}
+	for k, raw := range fields {
+		var v any
+		if json.Unmarshal(raw, &v) == nil {
+			m[k] = v
+		}
+	}
+	b, _ := marshal(m)
+	return b
+}
+
+func (c *ACP) announce(id string, t acpTool, summary string, e session.ProtocolEvents) {
 	r := &c.r
+	name, input := t.name, t.input
 	if _, open := r.tools[id]; open {
 		return
 	}
@@ -696,7 +769,7 @@ func (c *ACP) announce(id, name string, input []byte, summary string, e session.
 		delete(r.tools, r.toolSeq[0])
 		r.toolSeq = r.toolSeq[1:]
 	}
-	r.tools[id] = acpTool{name: name, input: input}
+	r.tools[id] = t
 	e.ToolStarted(session.ToolStep{Ref: id, Name: name, Input: bytes.Clone(input), Summary: summary})
 }
 
@@ -808,6 +881,12 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 		_ = c.answerOutcome(id, acpCancelled())
 		return
 	}
+	if extraFields(p, []string{"sessionId", "toolCall", "options"}) {
+		// A request asking for more than the client reads: declined.
+		_ = c.answerOutcome(id, acpCancelled())
+		e.Notice(NoticeDeclined, ACPDeclinedWords)
+		return
+	}
 	var options []acpOption
 	var raws []json.RawMessage
 	field(p, "options", &raws)
@@ -831,27 +910,44 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 		return
 	}
 	// The call it names, as the stream announced it: its id the call, its
-	// name and input as the step's, the request's own where it gives them,
-	// so that a request about more than the step showed is bound to none.
+	// name and input the step's; what the request's own toolCall gives
+	// beside them goes into that input, so that a request about more than
+	// the step showed is bound to no call. A request about a call holding
+	// what the client does not read, or changed since it was announced, or
+	// whose own toolCall holds a field the client does not read, is
+	// declined.
 	tc := object(p["toolCall"])
 	var call string
 	field(tc, "toolCallId", &call)
 	step, announced := c.r.tools[call]
-	name, input := step.name, step.input
-	if !announced {
-		name, input = "", []byte("{}")
+	if (announced && (step.unread || step.changed)) || tc == nil || extraFields(tc, append(append([]string{}, acpShownFields...), acpUpdateFields...)) {
+		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
+		e.Notice(NoticeDeclined, ACPDeclinedWords)
+		return
+	}
+	fields := map[string]json.RawMessage{}
+	name := "other"
+	if announced {
+		maps.Copy(fields, step.fields)
+		name = step.name
+	}
+	for _, k := range acpShownFields {
+		if raw, ok := tc[k]; ok && !isNull(raw) {
+			fields[k] = bytes.Clone(raw)
+		}
 	}
 	var reqName string
 	field(tc, "name", &reqName)
 	if reqName != "" {
 		name = reqName
+	} else if !announced {
+		var kind string
+		field(tc, "kind", &kind)
+		if kind != "" {
+			name = kind
+		}
 	}
-	if raw, ok := tc["rawInput"]; ok && isObject(raw) {
-		input = bytes.Clone(raw)
-	}
-	if name == "" {
-		name = "other"
-	}
+	input := acpInput(fields)
 	key := idKey(id)
 	c.mu.Lock()
 	if len(c.requests) >= maxACPRequests {

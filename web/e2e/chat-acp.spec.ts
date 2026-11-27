@@ -77,7 +77,7 @@ test('an ACP agent\'s session runs as a chat: its box says what a / may do, a me
     budget(6 * STEP_MS + 3 * LONG_MS)
     const q = chat.locator('[data-permission-question][data-permission-state="open"]')
     await expect(q).toBeVisible({ timeout: LONG_MS })
-    await expect(q.locator('[data-permission-words]')).toHaveText('Use a tool?')
+    await expect(q.locator('[data-permission-words]')).toHaveText('Run a command?')
     await q.locator('[data-permission-allow]').click()
     await expect.poll(() => readStub(own, conv, 'outcome'), { timeout: LONG_MS }).toContain('"optionId":"once"')
     await expect(turnWith(page, 'stub chat: ask')).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })

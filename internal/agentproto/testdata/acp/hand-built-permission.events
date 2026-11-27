@@ -1,7 +1,7 @@
 accepted m1
 turn_started
-tool_started call_5 parent="" execute summary="curl -s https://example.com" input={"command":"curl -s https://example.com"}
-permission acp-req-1 call=call_5 execute cwd="" input={"command":"curl -s https://example.com"}
+tool_started call_5 parent="" execute summary="curl -s https://example.com" input={"kind":"execute","rawInput":{"command":"curl -s https://example.com"},"title":"curl -s https://example.com"}
+permission acp-req-1 call=call_5 execute cwd="" input={"kind":"execute","rawInput":{"command":"curl -s https://example.com"},"title":"curl -s https://example.com"}
 tool_ended call_5 ok exit=none cut=false output="<html>"
 turn_ended limit in=0 out=0 cost=0.00000000
 --- written
