@@ -144,11 +144,12 @@ test('an agent whose prompt the server does not know is offered no message, and 
   await expect(dialog.locator('[data-launch-message] textarea')).toBeVisible()
   await expect(dialog.locator('[data-launch-no-message]')).toHaveCount(0)
   await dialog.locator('[data-launch-message] textarea').fill('say hello')
-  // The catalog's own stub has no prompt shape: no field, and one line under the agent's choice naming those that take one.
+  // The catalog's own stub has no prompt shape: no field, and one line in its place saying where its task goes.
   await pick(dialog, 'Plain (e2e stub)')
   await expect(dialog.locator('[data-launch-message]')).toHaveCount(0)
   const line = dialog.locator('[data-launch-no-message]')
-  await expect(line).toHaveText(`Conductor types a first message only where it knows the agent's prompt: ${UNTRUSTED} and ${PROMPTED} here.`)
+  await expect(line).toHaveText('Plain (e2e stub) starts at its prompt. Type your task in its terminal.')
+  await expect(dialog).not.toContainText('Conductor types a first message')
   await expect((await openMore(dialog)).getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'optional')
   // Launched so, it carries no message: the server would refuse one, and the session is named as any launch is.
   const s = await launchFrom(page, dialog)

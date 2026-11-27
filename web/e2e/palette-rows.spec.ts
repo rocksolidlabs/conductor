@@ -251,7 +251,7 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   await page.unroute('**/api/integrations')
   // Agents: Launch opens the dialog.
   await runRow(page, 'page:launch')
-  await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByLabel('Folder', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
   // Settings in the browser is the server's file and a notice: no Save row that could never act (the desktop app's rows are
   // the app's, under the settings spec's stand-in bridge).
@@ -423,7 +423,7 @@ test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notif
   await expect(page.locator('[data-shortcuts]')).toBeVisible()
   await page.keyboard.press('Escape')
   await runRow(page, 'action:launch', '> launch an agent')
-  await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByLabel('Folder', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
   // The prefixes each pick their kind.
   for (const [prefix, chip] of [['>', 'Actions'], ['#', 'Runs and crews'], [':', 'Files'], ['@', 'People'], ['!', 'Events'], ['?', 'Shortcuts'], ['~', 'History']] as const) {

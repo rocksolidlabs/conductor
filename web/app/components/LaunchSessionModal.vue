@@ -7,7 +7,7 @@ import { splitArgs } from '~/utils/argv'
 import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { accountChoices, accountOfLaunch, capacityKey, modelProblem, type CapacityQuery } from '~/utils/capacity'
-import { launchKey, messageProblem, namePreview, noFirstMessageLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from '~/utils/launch'
+import { chipStep, launchKey, launchRefusal, messageProblem, namePreview, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
 import { effectiveYolo, hasYoloRecipe, yoloUnavailable } from '~/utils/yolo'
 import { offersRunAs, readRunAs, writeRunAs } from '~/utils/launchWay'
 import type { SessionWay } from '~/utils/protocol'
@@ -29,6 +29,8 @@ const loading = ref(false)
 const cachedCatalog = useState<{ agents: AgentInfo[]; yoloDefault: boolean } | null>('launchCatalog', () => null)
 const submitting = ref(false)
 const error = ref('')
+/** The refusal's code, marked on the top alert (data-launch-error-code), never said in its words. */
+const errorCode = ref('')
 const form = ref<HTMLFormElement>()
 const knownHosted = ref<Set<string>>(new Set())
 /** The server's yolo default (GET /api/catalog). */
@@ -104,8 +106,11 @@ watch(offered, (list) => {
 watch([open, launchModal.asked], async ([v]) => {
   if (!v) return
   error.value = ''
+  errorCode.value = ''
+  cwdRefused.value = null
   submitting.value = false
   focusPending = true
+  readDefaultFolder()
   launchAccount.forAgent = ''
   launchAccount.picked = ''
   model.value = ''
@@ -255,10 +260,45 @@ watch(arrived, (s) => {
 /** Whether the arguments' line shows: the agent takes arguments, or it is the source's and its recorded ones are kept in sight. */
 const argsShown = computed(() => (cloning.value ? cloneArgsShown({ allowArgs: !!selected.value?.allowArgs, sameAgent: !!state.agentId && state.agentId === sourceAgent.value, recorded: cloneArgv.value?.argv }) : !!selected.value?.allowArgs))
 
-// More options: the fields a launch rarely changes (Name, Model, Extra arguments), folded; closed, its line names what is set in it.
+// Folder: its placeholder is the folder a launch that names none runs in (the agent's own, else the server's default, which GET
+// /api/paths names for an empty prefix); a refusal of the folder is said under it, and Launch sends nothing until it changes.
+const defaultFolder = ref('')
+function readDefaultFolder() {
+  if (!admin.hasToken.value) return
+  api.listPaths('', 1).then(
+    (r) => (defaultFolder.value = r.dir),
+    () => {},
+  )
+}
+const folderPlaceholder = computed(() => (cloning.value ? `${cloning.value.name}'s directory` : selected.value?.cwd || defaultFolder.value))
+const cwdRefused = ref<(LaunchRefusal & { cwd: string }) | null>(null)
+/** The folder's refusal while the field still holds the folder refused. */
+const folderRefusal = computed(() => (cwdRefused.value && cwdRefused.value.cwd === state.cwd ? cwdRefused.value : null))
+function focusFolder() {
+  void nextTick(() => form.value?.querySelector<HTMLInputElement>('[data-dir-input] input')?.focus())
+}
+
+// The agents as chips: one Tab stop, the arrows within it (chipStep); a press of the pointer hands the cursor back to the task.
+const chipIds = computed(() => offered.value.map((a) => a.id))
+const chipTab = (id: string) => ((chipIds.value.includes(state.agentId) ? state.agentId : chipIds.value[0]) === id ? 0 : -1)
+function onChipKey(e: KeyboardEvent) {
+  const next = chipStep(chipIds.value, state.agentId, e.key)
+  if (!next) return
+  e.preventDefault()
+  state.agentId = next
+  void nextTick(() => form.value?.querySelector<HTMLElement>(`[data-launch-agent="${CSS.escape(next)}"]`)?.focus())
+}
+function pickChip(id: string, e: MouseEvent) {
+  state.agentId = id
+  // A click of the pointer (detail > 0), not Space or Enter on the chip: the cursor goes back where the next keys belong.
+  if (e.detail > 0) void nextTick(() => focusTarget()?.focus())
+}
+
+// More options: the fields a launch rarely changes (Where it runs, Name, Model, Extra arguments), folded; closed, its line names what
+// is set in it.
 const moreOpen = ref(false)
-/** Whether the fold holds anything: Name for a launch on this server, Model where the account is chosen, the arguments shown. */
-const hasMore = computed(() => state.runsOn === 'server' && (!cloning.value || argsShown.value || takesAccount.value))
+/** Whether the fold holds anything: Where it runs when asked; Name on this server, Model where the account is chosen, the arguments. */
+const hasMore = computed(() => runsOnChoice.value || (state.runsOn === 'server' && (!cloning.value || argsShown.value || takesAccount.value)))
 const moreLine = computed(() =>
   optionsSummary({
     name: cloning.value ? '' : state.name,
@@ -287,7 +327,10 @@ let focusPending = false
 function focusTarget(): HTMLElement | null {
   const root = form.value
   if (!root) return null
-  return root.querySelector<HTMLElement>(cloning.value ? 'input[data-clone-name]' : 'textarea[data-launch-message-input]')
+  if (cloning.value) return root.querySelector<HTMLElement>('input[data-clone-name]')
+  if (takesMessage.value) return root.querySelector<HTMLElement>('textarea[data-launch-message-input]')
+  // An agent that takes no task: Launch, in the dialog's footer.
+  return selected.value && state.runsOn === 'server' ? (root.closest('[role="dialog"]')?.querySelector<HTMLElement>('[data-launch-submit]') ?? null) : null
 }
 function placeFocus(): boolean {
   if (!focusPending || !open.value) return false
@@ -302,7 +345,7 @@ function onOpenFocus(e: Event) {
   // Until the field is drawn the focus waits on the dialog itself, never on its close button, where Enter would close it.
   if (!placeFocus()) (e.target as HTMLElement | null)?.focus()
 }
-watch([takesMessage, cloning], () => {
+watch([takesMessage, cloning, selected], () => {
   void nextTick(placeFocus)
 })
 function onFocusIn(e: FocusEvent) {
@@ -349,8 +392,11 @@ async function submit() {
   if (!launchable.value) return
   if (cloning.value) return submitClone(cloning.value)
   if (!state.agentId || state.runsOn !== 'server') return
+  // The folder the server refused, still in the field: nothing is sent, and the cursor goes where it is to be changed.
+  if (folderRefusal.value) return focusFolder()
   submitting.value = true
   error.value = ''
+  errorCode.value = ''
   try {
     const session = await api.create({
       agentId: state.agentId,
@@ -374,7 +420,14 @@ async function submit() {
     model.value = ''
     message.value = ''
   } catch (e) {
-    error.value = e instanceof ApiError ? `${e.message} (${e.code})` : (e as Error).message
+    const r = launchRefusal(e instanceof ApiError ? e.code : '', (e as Error).message)
+    if (r.at === 'folder') {
+      cwdRefused.value = { ...r, cwd: state.cwd }
+      focusFolder()
+    } else {
+      error.value = r.words
+      errorCode.value = e instanceof ApiError ? e.code : ''
+    }
   } finally {
     submitting.value = false
   }
@@ -382,28 +435,37 @@ async function submit() {
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="cloning ? `Clone ${cloning.name}` : 'Launch agent'" :ui="{ content: 'max-w-xl', body: 'p-0' }" :content="{ onOpenAutoFocus: onOpenFocus }">
+  <UModal
+    v-model:open="open"
+    :title="cloning ? `Clone ${cloning.name}` : 'Launch agent'"
+    :description="cloning ? undefined : 'Start an agent in a folder.'"
+    :ui="{ content: 'max-w-xl', body: 'p-0 sm:p-0' }"
+    :content="{ onOpenAutoFocus: onOpenFocus }"
+  >
     <template #body>
-      <form ref="form" class="flex flex-col gap-5 p-5" :data-launch-clone="cloning ? cloning.id : undefined" @submit.prevent="submit" @keydown.capture="onKeydown" @focusin="onFocusIn">
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-launch-error />
+      <form ref="form" class="flex flex-col gap-4 p-5" :data-launch-clone="cloning ? cloning.id : undefined" @submit.prevent="submit" @keydown.capture="onKeydown" @focusin="onFocusIn">
+        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" :data-launch-error-code="errorCode || undefined" data-launch-error />
         <UAlert v-if="missingAgent" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="`${missingAgent}, the agent it was launched with, is not offered on this server: it is gone from the catalog or not installed here. Pick an agent to clone with.`" data-clone-missing-agent />
         <UAlert v-if="cloning?.attempt" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="ATTEMPT_WARNING" data-clone-attempt />
         <UAlert v-if="sharedTree" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="SHARED_TREE_WARNING" data-clone-shared-tree />
 
-        <div class="grid grid-cols-2 gap-2 sm:grid-cols-4" role="radiogroup" aria-label="Agent">
-          <button
-            v-for="a in offered"
-            :key="a.id"
-            type="button"
-            role="radio"
-            :aria-checked="state.agentId === a.id"
-            class="flex flex-col gap-2 rounded-md border p-3 text-left transition-colors"
-            :class="state.agentId === a.id ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-default hover:border-accented'"
-            @click="state.agentId = a.id"
-          >
-            <SessionAvatar :agent-id="a.id" size="md" :solid="state.agentId === a.id" />
-            <span class="text-sm" :class="state.agentId === a.id ? 'font-semibold' : 'font-medium'">{{ a.name }}</span>
-          </button>
+        <!-- The agents as chips: one Tab stop, the arrows within it; each says what it is in its tooltip. -->
+        <div class="grid grid-cols-2 gap-1.5 sm:grid-cols-3" role="radiogroup" aria-label="Agent" data-launch-agents @keydown="onChipKey">
+          <UTooltip v-for="a in offered" :key="a.id" :text="a.description" :disabled="!a.description">
+            <button
+              type="button"
+              role="radio"
+              :aria-checked="state.agentId === a.id"
+              :tabindex="chipTab(a.id)"
+              class="flex min-w-0 items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors max-sm:min-h-11"
+              :class="state.agentId === a.id ? 'border-primary bg-primary/5 font-semibold ring-1 ring-primary' : 'border-default font-medium hover:border-accented'"
+              :data-launch-agent="a.id"
+              @click="pickChip(a.id, $event)"
+            >
+              <SessionAvatar :agent-id="a.id" size="sm" :solid="state.agentId === a.id" />
+              <span class="min-w-0 [overflow-wrap:anywhere]">{{ a.name }}</span>
+            </button>
+          </UTooltip>
           <p v-if="listNote === 'checking'" class="col-span-full flex items-center gap-2 text-sm text-muted" data-agents-checking>
             <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking which agents are installed here…
           </p>
@@ -412,17 +474,6 @@ async function submit() {
             <template v-else>No agents in the catalog.</template>
           </p>
         </div>
-        <!-- The command breaks anywhere (a long path has no space): on a phone it would push the dialog's body sideways. -->
-        <p v-if="selected?.description" class="-mt-2 text-xs text-muted">{{ selected.description }} <code class="font-mono break-all">{{ selected.command.join(' ') }}</code></p>
-        <p v-if="offersMessage && !takesMessage" class="-mt-2 text-xs text-muted" data-launch-no-message>{{ noFirstMessageLine(offered) }}</p>
-
-        <UFormField v-if="runsOnChoice" label="Where it runs" name="runsOn" data-runs-on>
-          <div class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm">
-            <button type="button" class="rounded py-1.5 transition-colors" :class="state.runsOn === 'server' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'" @click="state.runsOn = 'server'">On this server</button>
-            <button type="button" class="rounded py-1.5 transition-colors" :class="state.runsOn === 'local' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'" @click="state.runsOn = 'local'">On this computer</button>
-          </div>
-          <template #hint><span>"this computer" runs a command you paste; the server is where the workbench is served from</span></template>
-        </UFormField>
 
         <!-- A clone, and a launch on this computer, need their Name: it stays on the face, required. -->
         <UFormField v-if="cloning" label="Name" name="name" hint="required" :error="cloneNameMessage" :help="cloneNamed.problem === 'empty' ? 'Give the clone a name no session has' : undefined">
@@ -433,8 +484,11 @@ async function submit() {
         </UFormField>
 
         <template v-if="state.runsOn === 'server'">
-          <UFormField label="Working directory" name="cwd" hint="must be under an allowed root">
-            <DirInput v-model="state.cwd" :placeholder="cloning ? `${cloning.name}'s directory` : selected?.cwd || 'server default'" name="cwd" picker-title="Where the session runs" />
+          <UFormField label="Folder" name="cwd" :error="folderRefusal?.words || undefined" data-launch-folder>
+            <DirInput v-model="state.cwd" :placeholder="folderPlaceholder" name="cwd" picker-title="Where the session runs" />
+            <template v-if="folderRefusal" #error>
+              <span data-launch-folder-refused>{{ folderRefusal.words }}<template v-if="folderRefusal.outside && isDesktop"> <NuxtLink to="/settings?section=folders" class="underline" data-launch-folder-settings @click="open = false">Add it in Settings</NuxtLink></template></span>
+            </template>
           </UFormField>
           <p v-if="accountsUnread" class="text-xs text-muted" data-launch-accounts-unread>No Account or Model to choose: the accounts could not be read ({{ accountsUnread }}). The server picks the account as for a launch that names none.</p>
           <!-- The account, and its usage under it: on the face, never folded. -->
@@ -444,34 +498,15 @@ async function submit() {
             </UFormField>
             <CapacityPanel :query="capacityQuery" :model="takesAccount ? model : undefined" folded read-on-open />
           </div>
-          <UFormField v-if="takesMessage" label="What should it do?" name="message" hint="optional" help="Typed into the agent at its prompt once it is ready. Line breaks are typed as spaces." :error="messageError || undefined" data-launch-message>
-            <UTextarea v-model="message" autoresize :rows="2" :maxrows="6" class="w-full" enterkeyhint="go" data-launch-message-input />
+          <UFormField v-if="takesMessage" label="What should it do?" name="message" hint="optional" :error="messageError || undefined" data-launch-message>
+            <UTextarea v-model="message" autoresize :rows="2" :maxrows="6" placeholder="Typed to the agent once it starts." class="w-full" enterkeyhint="go" data-launch-message-input />
           </UFormField>
-
-          <MoreOptions v-if="hasMore" v-model:open="moreOpen" data-launch-more>
-            <template v-if="showsRunAs" #end><RunAsChoice v-model="runAs" orientation="horizontal" :ui="{ root: 'items-center gap-3', wrapper: 'flex-none' }" /></template>
-            <template v-if="moreLine" #line><code class="font-mono whitespace-pre-wrap [overflow-wrap:anywhere]" data-launch-more-line>{{ moreLine }}</code></template>
-            <UFormField v-if="!cloning" label="Name" name="name" hint="optional">
-              <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
-            </UFormField>
-            <UFormField v-if="takesAccount" label="Model" name="model" hint="empty: the agent chooses, or its arguments do" :error="modelError || undefined" data-launch-model>
-              <UInput v-model="model" placeholder="no model named" class="w-full font-mono" data-launch-model-input />
-            </UFormField>
-            <UFormField
-              v-if="argsShown"
-              label="Extra arguments"
-              name="args"
-              :hint="selected?.allowArgs ? 'appended to the command' : 'this agent takes no extra arguments now'"
-              :help="selected?.allowArgs ? undefined : 'Recorded at its launch: the server refuses a clone with them; clear them to clone without'"
-            >
-              <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" data-launch-args />
-            </UFormField>
-          </MoreOptions>
+          <p v-else-if="offersMessage && selected" class="text-sm text-muted" data-launch-no-message>{{ noTaskLine(selected) }}</p>
         </template>
 
         <template v-else>
           <UFormField v-if="selected?.allowArgs" label="Extra arguments" name="args" hint="appended to the command">
-            <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" />
+            <UInput v-model="state.args" placeholder="--model opus" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" />
           </UFormField>
           <UFormField label="Run this in a terminal on this computer" name="command">
             <CodeBlock :commands="[command]" wrap :disabled="!localReady" copy-title="Command copied" copy-description="It carries your workbench token; keep it private." />
@@ -487,6 +522,34 @@ async function submit() {
           <p class="text-xs leading-relaxed text-muted">The session appears here as <b class="text-default">hosted</b> as soon as it connects, and this dialog closes; your terminal stays attached to it.</p>
           <CapacityPanel :query="capacityQuery" />
         </template>
+
+        <MoreOptions v-if="hasMore" v-model:open="moreOpen" data-launch-more>
+          <template v-if="showsRunAs" #end><RunAsChoice v-model="runAs" orientation="horizontal" :ui="{ root: 'items-center gap-3', wrapper: 'flex-none' }" /></template>
+          <template v-if="moreLine" #line><code class="font-mono whitespace-pre-wrap [overflow-wrap:anywhere]" data-launch-more-line>{{ moreLine }}</code></template>
+          <UFormField v-if="runsOnChoice" label="Where it runs" name="runsOn" data-runs-on>
+            <div class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm">
+              <button type="button" class="rounded py-1.5 transition-colors" :class="state.runsOn === 'server' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'" @click="state.runsOn = 'server'">On this server</button>
+              <button type="button" class="rounded py-1.5 transition-colors" :class="state.runsOn === 'local' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'" @click="state.runsOn = 'local'">On this computer</button>
+            </div>
+          </UFormField>
+          <template v-if="state.runsOn === 'server'">
+            <UFormField v-if="!cloning" label="Name" name="name" hint="optional">
+              <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
+            </UFormField>
+            <UFormField v-if="takesAccount" label="Model" name="model" hint="empty: the agent chooses, or its arguments do" :error="modelError || undefined" data-launch-model>
+              <UInput v-model="model" placeholder="no model named" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" data-launch-model-input />
+            </UFormField>
+            <UFormField
+              v-if="argsShown"
+              label="Extra arguments"
+              name="args"
+              :hint="selected?.allowArgs ? 'appended to the command' : 'this agent takes no extra arguments now'"
+              :help="selected?.allowArgs ? undefined : 'Recorded at its launch: the server refuses a clone with them; clear them to clone without'"
+            >
+              <UInput v-model="state.args" placeholder="--model opus" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" data-launch-args />
+            </UFormField>
+          </template>
+        </MoreOptions>
       </form>
     </template>
     <template #footer>
@@ -494,16 +557,16 @@ async function submit() {
       <div class="flex w-full flex-wrap items-center gap-x-4 gap-y-3">
         <span v-if="localReady" class="flex items-center gap-2 text-xs text-muted"><span class="size-1.5 rounded-full bg-warning animate-pulse" aria-hidden="true" />Waiting for your machine…</span>
         <UTooltip v-else-if="state.runsOn === 'server'" :text="YOLO_TIP">
-          <div class="flex min-w-0 items-center" data-launch-yolo>
+          <div class="flex min-w-0 items-center max-sm:min-h-11" data-launch-yolo>
             <USwitch v-model="yoloShown" :disabled="!!yoloOff" :ui="{ label: 'font-medium' }" data-yolo-switch>
               <template #label>Yolo <span class="font-normal text-muted" data-yolo-words>{{ yoloOff || 'skips permission prompts' }}</span></template>
             </USwitch>
           </div>
         </UTooltip>
         <div class="ms-auto flex items-center gap-2">
-          <UButton label="Cancel" color="neutral" variant="ghost" @click="open = false" />
-          <UButton v-if="cloning" label="Clone" icon="i-lucide-copy" :loading="submitting" :disabled="!state.agentId || !!cloneNamed.problem" data-launch-clone-submit @click="submit" />
-          <UButton v-else-if="state.runsOn === 'server'" label="Launch" icon="i-lucide-play" :loading="submitting" :disabled="!state.agentId || !!messageError" data-launch-submit @click="submit" />
+          <UButton label="Cancel" color="neutral" variant="ghost" class="max-sm:min-h-11" @click="open = false" />
+          <UButton v-if="cloning" label="Clone" icon="i-lucide-copy" :loading="submitting" :disabled="!state.agentId || !!cloneNamed.problem" class="max-sm:min-h-11" data-launch-clone-submit @click="submit" />
+          <UButton v-else-if="state.runsOn === 'server'" label="Launch" icon="i-lucide-play" :loading="submitting" :disabled="!state.agentId || !!messageError" class="max-sm:min-h-11" data-launch-submit @click="submit" />
         </div>
       </div>
     </template>

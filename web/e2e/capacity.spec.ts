@@ -361,6 +361,7 @@ test.describe('on this computer', () => {
     await page.goto(`http://conductor.test:${state.port}/`)
     const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
     await expect(dialog.locator('[data-launch-account]')).toBeVisible()
+    await openMore(dialog)
     await dialog.getByRole('button', { name: 'On this computer' }).click()
     await expect(dialog.locator('[data-launch-account]')).toHaveCount(0)
     await expect(dialog.locator('[data-launch-model]')).toHaveCount(0)
@@ -418,7 +419,8 @@ test.describe('the account a launch is sent with', () => {
     await expect(args).toHaveValue('--model opus')
     const refused = await launch(page, dialog)
     expect(refused.status).toBe(400)
-    await expect(dialog.locator('[data-launch-error]')).toHaveText('the arguments choose a model already: set the model in one place (invalid_request)')
+    await expect(dialog.locator('[data-launch-error]')).toHaveText('Not started: the arguments choose a model already: set the model in one place.')
+    await expect(dialog.locator('[data-launch-error]')).toHaveAttribute('data-launch-error-code', 'invalid_request')
     await expect(dialog.locator('[data-account-select]')).toContainText(work)
     await args.fill('')
     await expect(args).toHaveValue('')
@@ -473,7 +475,8 @@ test.describe('the account a launch is sent with', () => {
     await expect(panel.locator('[data-capacity-account]')).toHaveCount(0)
     await expect(panel).not.toContainText(work)
     // On this computer the command runs with the login there: once the server's view of that launch is shown, the panel says so and
-    // names nothing of the entry's.
+    // names nothing of the entry's. Where it runs is the first item of More options.
+    await openMore(dialog)
     await dialog.getByRole('button', { name: 'On this computer' }).click()
     await expect(panel).toHaveAttribute('data-capacity-state', 'remote')
     await expect(panel).toHaveAttribute('data-capacity-agent', 'own-login')

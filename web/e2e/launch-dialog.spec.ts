@@ -1,12 +1,15 @@
 import type { Locator, Page, Route } from '@playwright/test'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { DAILY, atRest, dayPage, expect, openMore, test } from './fixtures'
-import { noSideways, probeColour } from './layout'
+import { noSideways, probeColour, tapTarget } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 
-// The Launch agent dialog (the six screens' Launch agent, UX3 R26): its face holds the agents, the folder, the account with its usage
-// in one line, `What should it do?` with the cursor in it, More options folded, and Yolo beside Launch. Enter in the task launches,
-// once; Ctrl+Enter launches from any field. On a server of its own, with a copy of the Claude Code stub whose prompt the server knows,
-// so that the dialog offers it a task. Launches are held by a route and refused, so no session is made.
+// The Launch agent dialog (the six screens' Launch agent, UX3 R26 and R26b): its face holds the agents as chips, Folder, the account
+// with its usage in one line, `What should it do?` with the cursor in it, More options folded, and Yolo beside Launch. Enter in the
+// task launches, once; Ctrl+Enter launches from any field; what is wrong is said where it is wrong. On a server of its own, with
+// copies of the Claude Code and Codex stubs whose prompt the server knows, so that the dialog offers them a task. Launches are held by
+// a route, or refused by the server, so no session is made.
 
 let own: OwnServer
 
@@ -15,12 +18,20 @@ test.describe.configure({ mode: 'serial' })
 /** The stub's own prompt, "> " and what is typed after it as the last row: what the server recognises before it types a first message. */
 const STUB_PROMPT = String.raw`(?m)^> ?[^\n]*\s*\z`
 const PROMPTED = 'Claude Code (e2e stub), prompted'
+const PROMPTED_CODEX = 'Codex CLI (e2e stub), prompted-codex'
 const PLAIN = 'Plain (e2e stub)'
+const re = (name: string) => new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)
 
 test.beforeAll(async () => {
   test.setTimeout(120_000)
   // The half dozen agents a person has (the e2e catalog's sixteen would make any dialog scroll).
-  own = await ownServer('launch-dialog', { agents: [{ id: 'prompted', from: 'claude', env: { STUB_TUI: '1' }, promptShape: STUB_PROMPT }], keep: ['claude', 'codex', 'goose', 'plain', 'yolo-login'] })
+  own = await ownServer('launch-dialog', {
+    agents: [
+      { id: 'prompted', from: 'claude', env: { STUB_TUI: '1' }, promptShape: STUB_PROMPT },
+      { id: 'prompted-codex', from: 'codex', env: { STUB_TUI: '1' }, promptShape: STUB_PROMPT },
+    ],
+    keep: ['claude', 'codex', 'plain', 'yolo-login'],
+  })
 })
 
 test.afterAll(async () => {
@@ -190,3 +201,145 @@ test('on a phone the footer wraps, Yolo above the buttons, and nothing scrolls s
   expect(y.y + y.height, 'Yolo sits above the buttons').toBeLessThanOrEqual(l.y + 0.5)
   await noSideways(page, { root: dialog })
 })
+
+test('the dialog says what it is for, its agents are chips with one Tab stop, and a chip pressed hands the cursor back to the task', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openOnPrompted(page)
+  await expect(dialog.locator('[data-slot="description"]')).toHaveText('Start an agent in a folder.')
+  const row = dialog.getByRole('radiogroup', { name: 'Agent' })
+  const chips = row.getByRole('radio')
+  // One Tab stop: the picked chip alone is in the tab order.
+  await expect(row.locator('[role="radio"][tabindex="0"]')).toHaveCount(1)
+  await expect(row.getByRole('radio', { name: re(PROMPTED) })).toHaveAttribute('tabindex', '0')
+  const task = dialog.locator('[data-launch-message-input]')
+  await expect(task).toBeFocused()
+  await page.keyboard.type('say hello')
+  // A chip pressed with the pointer: picked, and the cursor back in the task with its text.
+  const codex = row.getByRole('radio', { name: re(PROMPTED_CODEX) })
+  await codex.click()
+  await expect(codex).toHaveAttribute('aria-checked', 'true')
+  await expect(task).toBeFocused()
+  await expect(task).toHaveValue('say hello')
+  // The arrows move the choice within the row, and the focus with it; it never leaves the row.
+  await codex.focus()
+  const ids = await chips.evaluateAll((els) => els.map((e) => e.getAttribute('data-launch-agent')))
+  const next = ids[(ids.indexOf('prompted-codex') + 1) % ids.length]!
+  await page.keyboard.press('ArrowRight')
+  const moved = row.locator(`[data-launch-agent="${next}"]`)
+  await expect(moved).toHaveAttribute('aria-checked', 'true')
+  await expect(moved).toBeFocused()
+  await expect(moved).toHaveAttribute('tabindex', '0')
+  await page.keyboard.press('ArrowLeft')
+  await expect(codex).toBeFocused()
+  await expect(codex).toHaveAttribute('aria-checked', 'true')
+  // The old card's description line under the row is gone: it is each chip's tooltip now.
+  await expect(dialog.locator('form > p.text-xs')).toHaveCount(0)
+})
+
+test('an agent that takes no task says it starts at its prompt, and the dialog opened on it has the focus on Launch', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  let dialog = await openLaunch(page)
+  await pick(dialog, PLAIN)
+  await expect(dialog.locator('[data-launch-message]')).toHaveCount(0)
+  await expect(dialog.locator('[data-launch-no-message]')).toHaveText(`${PLAIN} starts at its prompt. Type your task in its terminal.`)
+  await expect(dialog).not.toContainText('Conductor types a first message')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dialog).toHaveCount(0)
+  dialog = await openLaunch(page)
+  await atRest(dialog)
+  await expect(dialog.locator('[data-launch-submit]')).toBeFocused()
+  const launches = await holdLaunches(page)
+  await page.keyboard.press('Enter')
+  await expect.poll(() => launches.held.length, { message: 'Enter on Launch sent the launch' }).toBe(1)
+  expect(launches.held[0]!.request().postDataJSON()).toMatchObject({ agentId: 'plain' })
+  await launches.refuse()
+})
+
+test("Folder is named so, shows the folder a launch runs in, and reads a leading ~/ as the server's home", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openOnPrompted(page)
+  await expect(dialog).not.toContainText('Working directory')
+  await expect(dialog).not.toContainText('must be under an allowed root')
+  const folder = dialog.getByLabel('Folder', { exact: true })
+  await expect(folder).toHaveAttribute('placeholder', own.repo)
+  await folder.click()
+  await page.keyboard.type('~/')
+  await expect(folder).toHaveValue(`${own.home}/`)
+})
+
+test('a folder the server refuses is said under Folder in plain words, and Launch sends nothing until it changes', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openOnPrompted(page)
+  const folder = dialog.getByLabel('Folder', { exact: true })
+  const refused = dialog.locator('[data-launch-folder-refused]')
+  const launch = dialog.locator('[data-launch-submit]')
+  let posts = 0
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/sessions') posts++
+  })
+  const file = join(own.root, 'a-file.txt')
+  writeFileSync(file, 'not a folder\n')
+  const cases = [
+    { path: '/', words: "Agents can't use this folder yet." },
+    { path: join(own.root, 'no-such-folder'), words: 'There is no folder at this path.' },
+    { path: file, words: 'This is a file, not a folder.' },
+  ]
+  for (const [i, c] of cases.entries()) {
+    await folder.fill(c.path)
+    // The folder's list closed: the task takes the focus, then Launch is pressed.
+    await dialog.locator('[data-launch-message-input]').click()
+    const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
+    await launch.click()
+    expect((await answered).status(), c.path).toBe(400)
+    await expect(refused, c.path).toHaveText(c.words)
+    await expect(folder).toHaveAttribute('aria-invalid', 'true')
+    await expect(folder).toBeFocused()
+    await expect(dialog.locator('[data-launch-error]'), 'said under Folder alone').toHaveCount(0)
+    // Pressed again with the folder as it was: the cursor goes back to Folder, and nothing is sent.
+    await dialog.locator('[data-launch-message-input]').click()
+    await launch.click()
+    await expect(folder).toBeFocused()
+    expect(posts, c.path).toBe(i + 1)
+  }
+  // Changed, the refusal goes.
+  await folder.fill(own.repo)
+  await expect(refused).toHaveCount(0)
+  await expect(folder).not.toHaveAttribute('aria-invalid', 'true')
+})
+
+test("another refusal is said on top as Not started, in the server's words with no code, and the fields are kept", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openOnPrompted(page)
+  const match = (url: URL) => url.pathname === '/api/sessions'
+  await page.route(match, (route) =>
+    route.request().method() === 'POST' ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'spawn_failed', message: 'could not start the agent process' } }) }) : route.fallback(),
+  )
+  await dialog.locator('[data-launch-message-input]').fill('say hello')
+  await dialog.locator('[data-launch-submit]').click()
+  const alert = dialog.locator('[data-launch-error]')
+  await expect(alert).toHaveText('Not started: could not start the agent process.')
+  await expect(alert).toHaveAttribute('data-launch-error-code', 'spawn_failed')
+  await expect(alert).not.toContainText('spawn_failed')
+  await expect(dialog.locator('[data-launch-message-input]')).toHaveValue('say hello')
+  await page.unroute(match)
+})
+
+for (const size of [DAILY, { width: 1440, height: 810 }]) {
+  test(`at ${size.width} x ${size.height} the closed dialog's body does not scroll`, async ({ browser }) => {
+    const page = await dayPage(browser, { server: own.started, ...size })
+    const dialog = await openOnPrompted(page)
+    await expect(dialog.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'false')
+    await expect(dialog.locator('[data-capacity-panel] [data-capacity-line]')).toBeVisible()
+    const body = dialog.locator('[data-slot="body"]')
+    const overflow = await body.evaluate((el) => el.scrollHeight - el.clientHeight)
+    expect(overflow, "the closed dialog's body does not scroll").toBeLessThanOrEqual(0.5)
+  })
+}
+
+test("on a phone every control of the footer is a touch target", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, path: '/sessions', width: 390, height: 844, touch: true })
+  const dialog = await openOnPrompted(page)
+  const footer = dialog.locator('[data-slot="footer"]')
+  for (const l of [footer.locator('[data-launch-yolo]'), footer.getByRole('button', { name: 'Cancel' }), footer.getByRole('button', { name: 'Launch', exact: true })]) await tapTarget(l)
+})
+
