@@ -14,6 +14,8 @@ export interface ArgWord {
   /** What the word holds, its quotes taken off. */
   text: string
   quote?: '"' | "'"
+  /** Where its closing quote is: what follows it up to the next white space is part of the word (as splitArgs reads it). */
+  close?: number
   /** A quote opened and not closed: the word runs to the line's end. */
   open?: boolean
 }
@@ -31,8 +33,10 @@ export function argWords(line: string): ArgWord[] {
     if (c === '"' || c === "'") {
       const close = line.indexOf(c, i + 1)
       if (close >= 0) {
-        out.push({ start: i, end: close + 1, text: line.slice(i + 1, close), quote: c })
-        i = close + 1
+        let j = close + 1
+        while (j < line.length && !/\s/.test(line[j]!)) j++
+        out.push({ start: i, end: j, text: line.slice(i + 1, close) + line.slice(close + 1, j), quote: c, close })
+        i = j
         continue
       }
       // No closing quote: argv.ts reads a bare word here; while typing, the open quote holds the rest of the line.
@@ -89,8 +93,12 @@ export function argContext(line: string, cursor: number, flags: readonly AgentFl
   const before = words.filter((w) => w !== word && w.end <= (word ? word.start : cursor))
   if (before.some((w) => w.text === '--' && !w.quote)) return { kind: 'none' }
   const inner = word ? word.start + (word.quote ? 1 : 0) : cursor
-  // A closed quote at the cursor: what it holds, without the quote that closes it.
-  const typed = !word ? '' : word.quote && !word.open && cursor >= word.end ? word.text : line.slice(inner, Math.max(cursor, inner))
+  // Past a closed quote: what it holds, without the quote that closes it, and what follows it up to the cursor.
+  const typed = !word
+    ? ''
+    : word.close !== undefined && cursor > word.close
+      ? line.slice(inner, word.close) + line.slice(word.close + 1, cursor)
+      : line.slice(inner, Math.max(cursor, inner))
   const from = word ? word.start : cursor
   const to = word ? word.end : cursor
   // `--flag=part`: a value of that flag, filled in after the `=`.
@@ -276,7 +284,22 @@ export function terminalWords(line: string, flags: readonly AgentFlag[], chat: b
       break
     }
     const name = w.split('=', 1)[0]!
-    if (w.startsWith('-') && flagOf(flags, w)?.keepsTerminal && !out.includes(name)) out.push(name)
+    if (!w.startsWith('-') || out.includes(name)) continue
+    if (flagOf(flags, w)?.keepsTerminal) {
+      out.push(name)
+      continue
+    }
+    // A cluster of short flags (-pc): one a chat refuses keeps the session in its terminal; a letter that takes a value ends it.
+    if (!w.startsWith('--') && w.length > 2 && !flagOf(flags, w)) {
+      for (const c of w.slice(1)) {
+        const f = flagOf(flags, `-${c}`)
+        if (f?.keepsTerminal) {
+          out.push(w)
+          break
+        }
+        if (!f || takesValue(f)) break
+      }
+    }
   }
   return out
 }
@@ -316,9 +339,8 @@ export function folderRows(line: string, ctx: ArgContext, folders: readonly { pa
     // the row would show it, holds a mark a person cannot see.
     const word = valueWord(f.path, ctx.joined)
     if (word === null || UNSEEN.test(f.name)) continue
-    // The cursor stays inside a closing quote, so that a child typed next is part of the same argument.
-    const inside = word.length > f.path.length && /["']$/.test(word) ? 1 : 0
-    rows.push({ key: f.path, label: f.name, text: line.slice(0, ctx.from) + word + line.slice(ctx.to), cursor: ctx.from + word.length - inside })
+    // The cursor goes after the closing quote: a child typed there is part of the same argument (splitArgs), and a space ends it.
+    rows.push({ key: f.path, label: f.name, text: line.slice(0, ctx.from) + word + line.slice(ctx.to), cursor: ctx.from + word.length })
   }
   return rows
 }
