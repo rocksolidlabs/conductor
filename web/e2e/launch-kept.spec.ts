@@ -39,6 +39,10 @@ function noRecord() {
 /** A page in a new browser context: its storage is empty, as the desktop app's page is after a start. */
 async function freshPage(browser: Parameters<typeof dayPage>[0]): Promise<Page> {
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  // The page waits for the server's record as long as this test may run: only a hang bounds the read (the product's 3 s is not the test's).
+  await page.addInitScript((ms) => ((window as Window & { conductorLastLaunchMs?: number }).conductorLastLaunchMs = ms), test.info().timeout)
+  await page.reload()
+  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
   expect(await page.evaluate(() => [localStorage.getItem('conductor.launch.runAs'), localStorage.getItem('conductor-trial')])).toEqual([null, null])
   return page
 }

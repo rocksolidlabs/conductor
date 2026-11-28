@@ -334,10 +334,13 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   once you send or clear the one there ("A message was not sent: it comes
   back here once you send or clear this one.").
 - **/ in the Chat box offers the agent's own commands** (UX3 R11, #1169).
-  Where your box may expand a line, a `/` at its start lists the agent's own
-  commands as it reported them, narrowed as you type; Tab or Enter completes
-  one, and Enter on a whole name sends it. A name the agent does not list is
-  said, and Enter sends it as you typed it. No list on a shared link's page.
+  Where your box may expand a line, a `/` at the start of your own line lists
+  the agent's own commands as it reported them, narrowed as you type; Tab or
+  Enter completes the highlighted one, and the next Enter sends the line. No
+  list while the box answers a question, and none on a shared link's page.
+  When a command makes the agent forget the conversation (Claude Code's
+  `/clear`), the chat says so where it happened: "Cleared. The agent no longer
+  remembers what is above."
 - **Before the agent's first reply the Chat side is dimmed** (UX3 R15). Its
   tooltip says "Chat opens after the agent's first reply.", and a press shows
   the same words for a moment. No line stands above the terminal.

@@ -201,6 +201,7 @@ func TestCodexKeepsItsOwnSettings(t *testing.T) {
 		`profile="fast"`, `profiles.fast.approval_policy="never"`,
 		`mcp_servers.conductor.enabled=false`, `mcp_servers.conductor.command="x"`, `mcp_servers={}`,
 		`mcp_servers.mine.default_tools_approval_mode="approve"`, `mcp_servers."mine".default_tools_approval_mode="approve"`,
+		`mcp_servers.github={command="x",default_tools_approval_mode="approve"}`, `mcp_servers.github.tools={x={approval_mode="approve"}}`,
 	} {
 		for _, args := range [][]string{{"-c", kv}, {"--config", kv}, {"-c" + kv}, {"--config=" + kv}} {
 			var cx *CodexArgError

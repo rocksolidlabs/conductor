@@ -67,6 +67,17 @@ async function pinTop() {
 
 const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()))
 
+// More options closed keeps the form as tall as it was, so that Save trial and Cancel stay where they were: a button that moves away
+// as the fold closes takes no press made then (the pointer goes down on it and comes up beside it). Taken back at each opening.
+watch(
+  moreOpen,
+  (now, was) => {
+    const form = formRef.value
+    if (was && !now && form) form.style.minHeight = `${form.offsetHeight}px`
+  },
+  { flush: 'pre' },
+)
+
 /** Puts the cursor in the element `selector` names once it is drawn (a field of More options is drawn as the fold opens). */
 async function focusWhenDrawn(selector: string) {
   for (let i = 0; i < 120 && open.value; i++) {
@@ -133,6 +144,7 @@ watch(open, (o) => {
     moreOpen.value = false
   }
   const fresh = !kept
+  formRef.value?.style.removeProperty('min-height')
   draft.value = kept ? draftOnOpen(draft.value, props.agents) : fromMemory()
   kept = true
   // A new draft: the server's record of the last trial, which outlasts a restart, is read and taken while nothing was changed.
