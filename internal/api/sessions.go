@@ -250,6 +250,11 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 			return nil, newAPIError(http.StatusBadRequest, "invalid_request", "invalid argument")
 		}
 	}
+	if !req.conductorArgs {
+		if aerr := s.needsValue(agent, req.Args); aerr != nil {
+			return nil, aerr
+		}
+	}
 	cwdInput := req.Cwd
 	if cwdInput == "" {
 		cwdInput = agent.Cwd

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentFlag } from '../composables/useSessions'
-import { argContext, argRows, argWords, flagLabel, folderPrefix, folderRows, holdsYolo, keepsTerminal, listShows, replaceWord, terminalLine, terminalWords, typedAt, valueWord } from './argComplete'
+import { argContext, argRows, argWords, flagLabel, folderPrefix, folderRows, holdsYolo, keepsTerminal, listShows, needsValue, needsValueLine, replaceWord, terminalLine, terminalWords, typedAt, valueWord } from './argComplete'
 import { splitArgs } from './argv'
 
 // The flags of a made-up agent, as GET /api/catalog/{id}/flags answers them: the help's order.
@@ -285,5 +285,20 @@ describe('a short cluster', () => {
     expect(terminalWords('-hc', flags, true)).toEqual(['-hc'])
     expect(terminalLine(terminalWords('-cw', flags, true))).toBe('With -cw, this session stays in its terminal.')
     expect(terminalWords('-hw', flags, true)).toEqual([])
+  })
+})
+
+describe('a last flag that wants a value', () => {
+  it('is said and held, by the help: a required value only, never an optional one or a flag the list does not know', () => {
+    expect(needsValue('--effort', flags)).toBe('--effort')
+    expect(needsValue('--verbose --effort ', flags)).toBe('--effort')
+    expect(needsValueLine(needsValue('--effort', flags))).toBe('--effort needs a value.')
+    expect(needsValue('--effort high', flags)).toBe('')
+    expect(needsValue('--effort=', flags)).toBe('')
+    expect(needsValue('--worktree', flags)).toBe('')
+    expect(needsValue('-w', flags)).toBe('')
+    expect(needsValue('--not-listed', flags)).toBe('')
+    expect(needsValue('-- --effort', flags)).toBe('')
+    expect(needsValue('', flags)).toBe('')
   })
 })

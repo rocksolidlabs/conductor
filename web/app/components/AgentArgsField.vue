@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PathEntry } from '~/composables/useSessions'
-import { argContext, argRows, folderPrefix, folderRows, holdsYolo, listShows, terminalLine, terminalWords, typedAt, type ArgRow } from '~/utils/argComplete'
+import { argContext, argRows, folderPrefix, folderRows, holdsYolo, listShows, needsValue, needsValueLine, terminalLine, terminalWords, typedAt, type ArgRow } from '~/utils/argComplete'
 import { splitArgs } from '~/utils/argv'
 import { DIR_DEBOUNCE_MS, matchingEntries } from '~/utils/dirInput'
 import { argsHoldYolo } from '~/utils/launch'
@@ -108,6 +108,11 @@ const items = computed(() => rows.value.map((r) => ({ ...r, value: r.text })))
 // A session launched with this line stays in its terminal (a flag a chat refuses, or a lone `--` for an agent with a chat way): the
 // judgement the server's move and launch make, kept on the field for what reads it.
 const terminal = computed(() => terminalLine(terminalWords(model.value, flags.value, !!reply.value?.chat)))
+// A last flag that wants a value and has none: said under the field, and handed to the form, which holds its launch (`problem`).
+const lacking = computed(() => needsValueLine(needsValue(model.value, flags.value)))
+const emit = defineEmits<{ problem: [string] }>()
+watch(lacking, (p) => emit('problem', p), { immediate: true })
+onBeforeUnmount(() => emit('problem', ''))
 const yoloTyped = computed(() => holdsYolo(model.value, flags.value) || argsHoldYolo(splitArgs(model.value), props.yoloArgs))
 const placeholder = computed(() => (flags.value.length ? 'Type -- to see its flags' : props.plainPlaceholder || 'Flags, as you would type them in a terminal'))
 
@@ -252,6 +257,7 @@ function onBlur(e: FocusEvent) {
       </template>
     </UInputMenu>
     <p v-if="yoloTyped" class="mt-1 text-xs text-toned" data-args-yolo>Use the Yolo switch for this.</p>
+    <p v-if="lacking" class="mt-1 text-xs text-error" data-args-needs-value>{{ lacking }}</p>
     <p v-if="terminal" class="mt-1 text-xs text-toned" data-args-terminal-line>{{ terminal }}</p>
   </div>
 </template>
