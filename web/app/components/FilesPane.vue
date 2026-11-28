@@ -24,7 +24,8 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ open: [target: FileTarget]; openDiff: [change: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }]; openCommitDiff: [change: CommitChangeRow, commit: { sha: string; short: string; parent: string }] }>()
 
-const section = ref<FilesView>('explorer')
+// The view shown: its own, or the one a page that opens the pane on Changes or Commits binds (the session's Files sheet below xl).
+const section = defineModel<FilesView>('section', { default: 'explorer' })
 const view = computed<InspectorView>({ get: () => section.value, set: (v) => (section.value = v === 'changes' || v === 'commits' ? v : 'explorer') })
 const open = ref(true)
 const repo = useRepoStatus(
