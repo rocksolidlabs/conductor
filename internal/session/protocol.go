@@ -248,9 +248,15 @@ type protocolWay struct {
 	// all theirs (skillRefusedLocked).
 	turnLines  int
 	turnOthers int
-	showing    string
-	under      Attention
-	aside      []asideChange
+	// othersOnTheirWay are the lines not the operator's own written and
+	// not yet taken by the agent, by ref, carried from turn to turn until
+	// it says it took them; othersLost says one past their bound was
+	// written (noteWrittenLocked).
+	othersOnTheirWay map[string]bool
+	othersLost       bool
+	showing          string
+	under            Attention
+	aside            []asideChange
 
 	// commands is the agent's own commands (commands.go): kept with the
 	// chat, gone with it, sent to the operator's own chat connections alone.
@@ -388,7 +394,7 @@ func (s *Local) enterProtocolGroup(ctx context.Context, start ProtocolStart) (in
 		gen: 1, child: child, driver: driver, readDone: make(chan struct{}),
 		ctx: wctx, cancel: cancel, ready: make(chan struct{}), kick: make(chan struct{}, 1),
 		tools: map[string]*openTool{}, texts: map[string]*openText{},
-		announced: make(chan struct{}), asked: map[string]bool{}, resulted: map[string]bool{},
+		announced: make(chan struct{}), asked: map[string]bool{}, resulted: map[string]bool{}, othersOnTheirWay: map[string]bool{},
 	}
 	s.mu.Lock()
 	if s.info.Status.Ended() || s.way.Load() != nil {
@@ -554,10 +560,7 @@ func (s *Local) sendNext(p *protocolWay) bool {
 	p.sending, p.inflight = true, q
 	// Counted for the turn it is written into before it is written: one
 	// whose write fails may have reached the agent.
-	p.turnLines++
-	if !operatorLine(q.sub) {
-		p.turnOthers++
-	}
+	p.noteWrittenLocked(q)
 	d := p.driver
 	s.mu.Unlock()
 	// The sender's credential, taken and asked as the terminal's writer
@@ -1315,7 +1318,7 @@ func (s *Local) endTurnLocked(p *protocolWay, outcome string, u Usage, out *appl
 	p.turnEnds++
 	clear(p.asked)
 	clear(p.resulted)
-	p.turnLines, p.turnOthers = 0, 0
+	p.turnCountsLocked()
 	p.announceLocked()
 	d := s.now().Sub(p.turnAt).Milliseconds()
 	if d < 0 {
@@ -1455,6 +1458,7 @@ func (e protocolEvents) Accepted(ref string) {
 	}
 	s, p := e.s, e.p
 	out := applied{event: "accepted"}
+	p.othersTakenLocked(ref)
 	q := p.inflight
 	switch {
 	case q != nil && q.msg.Ref == ref:
@@ -1750,6 +1754,10 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 	why := ""
 	var call string
 	switch {
+	case s.skillRefusedLocked(p, r.Tool):
+		// Before any other check: refused with no entry, whatever else it
+		// is.
+		why = SkillOwnLineWords
 	case len(r.Input) > MaxTranscriptPart:
 		// Kept whole or not shown: a part past its bound would be cut
 		// under a digest of the whole.
@@ -1761,9 +1769,6 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 		why = TooManyRequestsWords
 	default:
 		call, why = s.bindInStreamLocked(p, r.Call, r.Tool, digest)
-		if why == "" && s.skillRefusedLocked(p, r.Tool) {
-			why = SkillOwnLineWords
-		}
 		if why == "" && walked != "" {
 			why = walked
 		}

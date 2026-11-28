@@ -1071,9 +1071,18 @@ is `PermissionWithdrawn`.
    least one line was written to the agent since the last turn ended and
    every one of them was sent on the operator's own connection (the one
    that answers the chat's questions), relaying nobody; a link's line, a
-   relayed one, and every line Conductor writes itself (a first message,
-   a crew's, Brakeman's, a run's) are not. What the model does next is
-   asked as any call. In the operator's own turn the call is asked as
+   relayed one, every line Conductor writes itself (a first message, a
+   crew's, Brakeman's, a run's), and a people's chat message someone else
+   wrote that the operator sends on (it goes for its author, as written)
+   are not. A line that is not the operator's own and that the agent has
+   not yet said it took (its acknowledgement, by the message's own id) is
+   carried from a turn's end into the next turn's count, however long ago
+   it was written, until the agent says it took it. So that every skill
+   call reaches this check, the floor of a chat that asks holds an ask
+   rule for each skill tool (`"ask": ["Skill"]`), which Claude Code judges
+   before an allow from any source (the folder's, the person's, a
+   launch's, an answer given in the terminal); a yolo chat's floor has
+   none. What the model does next is asked as any call. In the operator's own turn the call is asked as
    "Run a skill?", its line the skill's name, saying once that a skill
    can run the tools its own file allows without asking again; like
    every question it offers Allow once and Deny alone. The operator's
@@ -3173,6 +3182,11 @@ false and no built-in names `codex-app-server` until the look below.
   its approval and replaces the hand-built fixtures; until a recording
   shows a change set is whole when it is announced, a file change's
   approval whose announced item has no changes is declined (as built).
+- Whether Codex has a tool by which the model runs a folder's command or a
+  skill (a skill tool). As built it has none: its skills are files it
+  reads, its reads and commands asked as any other. The look reads its own
+  tool list; one that has such a tool adds its name to
+  `session.SkillTools` before the declaration.
 
 **Row 10's live look, before the declaration** (one session of the real
 Codex at `CodexMinVersion` or later, in a throwaway repository): the
@@ -3329,7 +3343,11 @@ auto mode, an allow rule, an allowlist) reaches no floor. Before the
 declaration, one of two: a launch whose agent's own mode asks about nothing
 is kept out of Chat, or the limit is stated for the agent under design 7's
 "What the floor does not promise". The look decides which; and it records
-the raw input's keys the client is taught for the agent.
+the raw input's keys the client is taught for the agent. And the agent's
+skill tool, if it has one: the client names a call by the agent's `name`,
+else its `kind`, so an adapter may report a skill tool under a name of its
+own; the look records that name, which goes into `session.SkillTools`
+before the declaration.
 
 **Row 11's live looks, one per agent before its declaration** (the real
 program at its current version, in a throwaway repository, a terminal

@@ -9690,7 +9690,12 @@ entry, the agent told `Folder commands and skills run only from the
 operator's own line.`, in a turn that is not the operator's own: one in
 which no line was written to the agent since the last turn ended, or one
 was not sent on the operator's own connection (a link's, a relayed one,
-one Conductor wrote itself). In the operator's own turn it is asked as any
+one Conductor wrote itself, a people's chat message someone else wrote
+that the operator sends with `chat_send`, which goes for its author). A
+line not the operator's own that the agent has not acknowledged is
+counted again in every turn until it does. The floor of a chat that asks
+holds `"ask": ["Skill"]`, so the program asks for every skill call
+whatever another settings source allows; a yolo chat's has no ask rule. In the operator's own turn it is asked as any
 call, `plain` `skill`; the page says under it `A skill can run the tools
 its own file allows without asking again.`
 

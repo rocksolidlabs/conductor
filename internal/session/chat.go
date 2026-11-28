@@ -558,7 +558,13 @@ func (s *Local) ChatSend(ctx context.Context, sub *Subscription, send proto.Chat
 	if !ok || ref.Kind != proto.ChatKindMessage {
 		return ErrChatUnknownRef
 	}
-	res, err := s.Submit(ctx, Submission{Text: AgentText(ref), By: sub})
+	line := Submission{Text: AgentText(ref), By: sub}
+	if ref.By.ID != sub.ID {
+		// A message someone else wrote goes for its author, its sender
+		// the connection whose request it is: never the sender's own line.
+		line = Submission{Text: AgentText(ref), ByName: ref.By.Name, From: sub}
+	}
+	res, err := s.Submit(ctx, line)
 	if err != nil && !errors.Is(err, ErrSubmitPending) {
 		return err
 	}

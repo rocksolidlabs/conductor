@@ -468,14 +468,18 @@ func (s *Local) listedLocked(p *protocolWay, r *openPermission) bool {
 	return false
 }
 
-// skillTools are the agents' own tools by which the model runs a folder's
-// command or a skill (Claude Code's Skill). Codex and the Agent Client
-// Protocol have none: their skills are files the agent reads, its reads
-// and commands asked as any other.
-var skillTools = []string{"skill"}
+// SkillTools are the agents' own tools by which the model runs a folder's
+// command or a skill, as the agent names them (Claude Code's Skill). Codex
+// and the Agent Client Protocol have none: their skills are files the
+// agent reads, its reads and commands asked as any other. A chat's floor
+// asks for each (agents.WriteProtocolFloor), so that every call of one
+// reaches the session's own check.
+var SkillTools = []string{"Skill"}
 
-// skillTool says tool is one of skillTools.
-func skillTool(tool string) bool { return slices.Contains(skillTools, strings.ToLower(tool)) }
+// skillTool says tool is one of SkillTools, in any case.
+func skillTool(tool string) bool {
+	return slices.ContainsFunc(SkillTools, func(t string) bool { return strings.EqualFold(t, tool) })
+}
 
 // operatorLine says a line was the operator's own: sent on the operator's
 // own connection (operatorAnswers: the one that answers the chat's
@@ -492,6 +496,43 @@ func operatorLine(sub Submission) bool {
 // of them the operator's own (operatorLine). The caller holds s.mu.
 func (s *Local) skillRefusedLocked(p *protocolWay, tool string) bool {
 	return skillTool(tool) && (p.turnLines == 0 || p.turnOthers > 0)
+}
+
+// maxOthersOnTheirWay bounds the lines not the operator's own that a way
+// keeps as written and not yet taken; past it, every turn of the way
+// counts one more (othersLost).
+const maxOthersOnTheirWay = 256
+
+// noteWrittenLocked counts a line written for the turn it is written
+// into: one not the operator's own is kept as on its way until the agent
+// says it took it (othersTaken). The caller holds s.mu.
+func (p *protocolWay) noteWrittenLocked(q *queuedMessage) {
+	p.turnLines++
+	if operatorLine(q.sub) {
+		return
+	}
+	p.turnOthers++
+	if len(p.othersOnTheirWay) >= maxOthersOnTheirWay {
+		p.othersLost = true
+		return
+	}
+	p.othersOnTheirWay[q.msg.Ref] = true
+}
+
+// othersTakenLocked is the agent's word that it took the message ref: a
+// line no longer on its way. The caller holds s.mu.
+func (p *protocolWay) othersTakenLocked(ref string) { delete(p.othersOnTheirWay, ref) }
+
+// turnCountsLocked begins a turn's count at a turn's end: every line not
+// the operator's own still on its way (written, its taking not yet said by
+// the agent, however long ago) is carried into it, since the agent may yet
+// take it into the next turn. The caller holds s.mu.
+func (p *protocolWay) turnCountsLocked() {
+	n := len(p.othersOnTheirWay)
+	if p.othersLost {
+		n++
+	}
+	p.turnLines, p.turnOthers = n, n
 }
 
 // permissionWords is the question's plain words, by its tool's.
