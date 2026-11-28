@@ -89,8 +89,10 @@ func TestALoneDoubleDashKeepsATerminal(t *testing.T) {
 		if _, err := ClaudeArgs(ClaudeLaunch{Command: []string{"claude"}, Conversation: "c0ffee-1", HooksDir: hooks, LaunchArgs: args, PermissionHost: true}); !errors.Is(err, ErrOptionsEnd) {
 			t.Errorf("claude %q: %v", args, err)
 		}
+		// Codex's chat refuses any flag it takes no counterpart of, -- among
+		// them; an ACP agent's refuses every word of the terminal's.
 		var cx *CodexArgError
-		if _, _, err := CodexArgs(CodexLaunch{Command: []string{"codex"}, Conversation: "c0ffee-1", LaunchArgs: args}); !errors.As(err, &cx) {
+		if _, _, err := CodexArgs(CodexLaunch{Command: []string{"codex"}, Conversation: "c0ffee-1", LaunchArgs: args}); !errors.As(err, &cx) || cx.Flag != "--" && args[0] == "--" {
 			t.Errorf("codex %q: %v", args, err)
 		}
 		var acp *ACPArgError
@@ -119,22 +121,51 @@ func TestALoneDoubleDashKeepsATerminal(t *testing.T) {
 	}
 }
 
-// What the driver adds after the person's words stays what it is: for
-// Claude Code, every driver flag comes after them and a lone "--" is
-// refused; for Codex, the person's words reach the argv only as the
-// overrides' pairs, whose values never start with a dash; for an ACP
-// agent, none of them reaches it.
-func TestThePersonsWordsLeaveTheDriversOwn(t *testing.T) {
+// What Claude Code's driver adds comes before the person's words, each flag
+// in one word, whatever the person's words are: a last flag that wants a
+// value, a list flag and plain words after it, a tool server of their own.
+// Before them nothing of the person's, after them nothing of the driver's.
+func TestTheDriversOwnFlagsComeFirstEachInOneWord(t *testing.T) {
 	hooks := filepath.Join(t.TempDir(), "hooks")
-	argv, err := ClaudeArgs(ClaudeLaunch{Command: []string{"claude"}, Conversation: "c0ffee-1", HooksDir: hooks, LaunchArgs: []string{"--effort", "high"}, PermissionHost: true})
-	if err != nil {
-		t.Fatal(err)
+	for _, c := range []struct {
+		yolo, noMCP bool
+		own         []string
+	}{
+		{false, false, []string{"--mcp-config=" + filepath.Join(hooks, ClaudeProtocolMCP), "--strict-mcp-config", "--permission-prompt-tool=" + ClaudePermissionTool, "--settings=" + filepath.Join(hooks, ClaudeProtocolSettings)}},
+		{true, false, []string{"--mcp-config=" + filepath.Join(hooks, ClaudeProtocolMCP), "--strict-mcp-config", "--permission-prompt-tool=" + ClaudePermissionTool, "--settings=" + filepath.Join(hooks, ClaudeProtocolYoloSettings)}},
+		{false, true, []string{"--strict-mcp-config", "--settings=" + filepath.Join(hooks, ClaudeProtocolSettings)}},
+		{true, true, []string{"--strict-mcp-config", "--settings=" + filepath.Join(hooks, ClaudeProtocolYoloSettings)}},
+	} {
+		for _, words := range [][]string{
+			nil,
+			{"--effort", "high"},
+			{"--append-system-prompt"},
+			{"--allowedTools", "Bash", "Edit"},
+			{"--allowedTools", "Bash", "Edit", "fix the tests"},
+			{"--mcp-config", "/elsewhere.json", "--append-system-prompt"},
+			{"--add-dirs"},
+		} {
+			l := ClaudeLaunch{Command: []string{"claude"}, Conversation: "c0ffee-1", HooksDir: hooks, LaunchArgs: words, PermissionHost: true, NoMCP: c.noMCP, Yolo: c.yolo, YoloArgs: []string{"--dangerously-skip-permissions"}}
+			argv, err := ClaudeArgs(l)
+			if err != nil {
+				t.Fatalf("%q: %v", words, err)
+			}
+			at := len(argv) - len(words)
+			if !slices.Equal(argv[at:], words) {
+				t.Fatalf("%q: the person's words are not the argv's end: %q", words, argv)
+			}
+			head := argv[:at]
+			if !slices.Equal(head[len(head)-len(c.own):], c.own) {
+				t.Fatalf("yolo %v, no MCP %v, %q: the driver's own flags just before the person's words: %q", c.yolo, c.noMCP, words, argv)
+			}
+		}
 	}
-	tail := argv[len(argv)-7:]
-	want := []string{"--mcp-config", filepath.Join(hooks, ClaudeProtocolMCP), "--strict-mcp-config", "--permission-prompt-tool", ClaudePermissionTool, "--settings", filepath.Join(hooks, ClaudeProtocolSettings)}
-	if !slices.Equal(tail, want) || slices.Index(argv, "high") > slices.Index(argv, "--mcp-config") {
-		t.Fatalf("%q", argv)
-	}
+}
+
+// Codex's chat takes the person's words only as the overrides' pairs, and
+// a value that begins with a dash is refused, so no value of theirs can be
+// read as the next option, or as the end of them.
+func TestCodexOverrideValuesNeverStartWithADash(t *testing.T) {
 	for _, args := range [][]string{{"-c", "--"}, {"-c", "-x"}, {"--config", "--mcp-config"}, {"--enable", "--"}, {"--disable=-x"}, {"-c=--"}} {
 		var cx *CodexArgError
 		if _, _, err := CodexArgs(CodexLaunch{Command: []string{"codex"}, Conversation: "c0ffee-1", LaunchArgs: args}); !errors.As(err, &cx) {
@@ -144,11 +175,43 @@ func TestThePersonsWordsLeaveTheDriversOwn(t *testing.T) {
 	if _, _, err := CodexArgs(CodexLaunch{Command: []string{"codex"}, Conversation: "c0ffee-1", LaunchArgs: []string{"-c", "model_reasoning_effort=high", "--enable", "web"}}); err != nil {
 		t.Errorf("codex's overrides: %v", err)
 	}
-	var acp *ACPArgError
-	if _, err := ACPArgs(ACPLaunch{Command: []string{"agent"}, Protocol: []string{"acp"}, Conversation: "ses_1", LaunchArgs: []string{"--x"}}); !errors.As(err, &acp) {
-		t.Errorf("acp: %v", err)
+}
+
+// An ACP agent's chat takes no word of the terminal's: StaysInTerminal says
+// so for every one, a flag or a plain word.
+func TestAnACPChatTakesNoWordOfTheTerminals(t *testing.T) {
+	for _, w := range []string{"--x", "word", "--"} {
+		var acp *ACPArgError
+		if _, err := ACPArgs(ACPLaunch{Command: []string{"agent"}, Protocol: []string{"acp"}, Conversation: "ses_1", LaunchArgs: []string{w}}); !errors.As(err, &acp) {
+			t.Errorf("acp %q: %v", w, err)
+		}
+		if !StaysInTerminal(ACPv1, w) {
+			t.Errorf("acp %q: not marked", w)
+		}
 	}
-	if !StaysInTerminal(ACPv1, "--model") || StaysInTerminal(ACPv1, "word") {
-		t.Error("acp: a flag not marked, or a plain word marked")
+}
+
+// A setting Codex's chat asks by, fences by or reaches Conductor's tool
+// server by is the driver's: an override of one in the terminal's
+// arguments keeps the session in its terminal; any other is carried over.
+func TestCodexKeepsItsOwnSettings(t *testing.T) {
+	for _, kv := range []string{
+		`approval_policy="never"`, `approval_policy.granular.rules=false`, ` "approval_policy" = "never"`,
+		`sandbox_mode="danger-full-access"`, `sandbox_workspace_write.network_access=true`,
+		`profile="fast"`, `profiles.fast.approval_policy="never"`,
+		`mcp_servers.conductor.enabled=false`, `mcp_servers.conductor.command="x"`, `mcp_servers={}`,
+		`mcp_servers.mine.default_tools_approval_mode="approve"`, `mcp_servers."mine".default_tools_approval_mode="approve"`,
+	} {
+		for _, args := range [][]string{{"-c", kv}, {"--config", kv}, {"-c" + kv}, {"--config=" + kv}} {
+			var cx *CodexArgError
+			if _, _, err := CodexArgs(CodexLaunch{Command: []string{"codex"}, Conversation: "c0ffee-1", LaunchArgs: args}); !errors.As(err, &cx) {
+				t.Errorf("%q: %v", args, err)
+			}
+		}
+	}
+	for _, kv := range []string{`model_reasoning_effort="high"`, `mcp_servers.mine.command="x"`, `features.web_search=true`, `sandbox_extra=1`} {
+		if _, _, err := CodexArgs(CodexLaunch{Command: []string{"codex"}, Conversation: "c0ffee-1", LaunchArgs: []string{"-c", kv}}); err != nil {
+			t.Errorf("%q: %v", kv, err)
+		}
 	}
 }
