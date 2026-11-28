@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { alerting, answerDigit, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, choiceTitle, decisionAnsweredBy, decisionOf, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { alerting, answerDigit, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, choiceTitle, decisionAnsweredBy, decisionOf, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal, markedByPerson } from './attention'
 import type { Attention, Role } from './protocol'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
@@ -77,8 +77,13 @@ describe('a turn held for the terminal', () => {
     expect(waitingHeading({ state: 'needs_input', source: 'submit' }, 'claude')).toBe('Type in the terminal to go on')
     expect(waitingHeading({ state: 'needs_input', source: 'api' }, 'claude')).toBe('claude asks')
     expect(waitingHeading(undefined, 'codex')).toBe('codex asks')
-    // A person's own mark is no question of the agent's.
+    // A person's own mark, with no words of its own, is no question; one with words is a question, whatever its source.
     expect(waitingHeading({ state: 'needs_input', source: 'admin' }, 'claude')).toBe('claude needs you')
+    expect(waitingHeading({ state: 'needs_input', source: 'admin', message: 'Which database?' }, 'claude')).toBe('claude asks')
+    expect(waitingHeading({ state: 'needs_input', source: 'question', message: 'Which database?' }, 'claude')).toBe('claude asks')
+    expect(markedByPerson({ state: 'needs_input', source: 'admin' })).toBe(true)
+    expect(markedByPerson({ state: 'needs_input', source: 'admin', message: 'Which database?' })).toBe(false)
+    expect(markedByPerson({ state: 'needs_input', source: 'api' })).toBe(false)
   })
 })
 
