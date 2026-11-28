@@ -761,7 +761,9 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   settings. A folder of more than 5,000 files or 200 MB is refused with its
   bound. Every other folder with no commit, a repository with no commit yet
   among them, is refused, nothing in it touched: "This folder has no commit
-  yet. Make its first commit yourself, then launch." The trial form says it
+  yet. Make its first commit yourself, then launch." (A `.git` folder git
+  does not read is refused in git's own words; the answer is the same
+  whatever git is installed.) The trial form says it
   under Folder as the folder is picked and holds Save trial, as the crew
   editor's line does; a new folder says nothing there. Only your own launch
   or proposal from the app makes a first commit: an agent's crew, a

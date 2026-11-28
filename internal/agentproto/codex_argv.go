@@ -152,7 +152,11 @@ var codexDriverKeys = []string{"approval_policy", "sandbox_mode", "sandbox_works
 func codexDriverKey(kv string) bool {
 	k, _, _ := strings.Cut(kv, "=")
 	k = strings.ReplaceAll(strings.Trim(strings.TrimSpace(k), `"'`), `"`, "")
-	if k == "mcp_servers" || strings.HasPrefix(k, "mcp_servers.") && strings.HasSuffix(k, ".default_tools_approval_mode") {
+	_, v, _ := strings.Cut(kv, "=")
+	// The servers' table, a server's table set whole (its asking among
+	// what it holds), a table given inline under it, or any server's
+	// asking.
+	if k == "mcp_servers" || strings.HasPrefix(k, "mcp_servers.") && (strings.Count(k, ".") == 1 || strings.HasPrefix(strings.TrimSpace(v), "{") || strings.HasSuffix(k, ".default_tools_approval_mode")) {
 		return true
 	}
 	for _, d := range codexDriverKeys {
