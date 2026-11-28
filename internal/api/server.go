@@ -1291,6 +1291,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/hosts", s.requireAdmin(s.handleHosts))
 	mux.HandleFunc("GET /api/sync", s.requireAdmin(s.handleSyncStatus))
 	mux.HandleFunc("GET /api/launch/last", s.launching(s.handleLastLaunch))
+	mux.HandleFunc("POST /api/launch/chat-noted", s.launching(s.handleChatNoted))
 	mux.HandleFunc("GET /api/ui/{name}", s.requireAdmin(s.handleUIGet))
 	mux.HandleFunc("PUT /api/ui/{name}", s.requireAdmin(s.handleUIPut))
 	mux.HandleFunc("GET /api/signin", s.requireAdmin(s.handleSignIn))

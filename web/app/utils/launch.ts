@@ -1,4 +1,5 @@
-import { MAX_SESSION_NAME, MAX_SUBMIT } from './protocol'
+import { ERR_MOVE_REFUSED, MAX_SESSION_NAME, MAX_SUBMIT } from './protocol'
+import { FOLDER_CANT, outsideWords, type AllowWay } from './folderAllow'
 import { moreLine } from './moreOptions'
 import { accountWords, clockWords, limited, WARN_PERCENT, type CapacityView } from './capacity'
 
@@ -161,23 +162,29 @@ export interface LaunchRefusal {
   /** `folder`: said under Folder, the field marked invalid and given the focus; `top`: the alert above the form. */
   at: 'folder' | 'top'
   words: string
-  /** The folder is outside the folders agents may use: Settings is where that changes. */
+  /** The folder is outside the folders agents may use. */
   outside?: boolean
+  /** A link to Settings' folders follows the words, then `after` (as the folder line draws it). */
+  settings?: boolean
+  after?: string
 }
 
 /**
- * A refusal of POST /api/sessions in the dialog's words. invalid_cwd is the folder's (its kinds as the server's resolveCwd says them:
- * outside the allowed roots, no such folder, a file; any other in the server's words); every other code is said on top as `Not
- * started: <the server's words>.`, the code kept out of the words (the caller marks it on the alert).
+ * A refusal of POST /api/sessions in the dialog's words. invalid_cwd is the folder's, in the words the folder's line says (its kinds
+ * as the server's resolveCwd says them: outside the allowed roots, said with the way on there is from `way`; no such folder; a file;
+ * any other as a folder agents can't use, never the server's words); a launch as a chat its agent cannot run (`move_refused`) says
+ * the server's sentence and the way on; every other code is said on top as `Not started: <the server's words>.`, the code kept out
+ * of the words (the caller marks it on the alert).
  */
-export function launchRefusal(code: string, message: string): LaunchRefusal {
+export function launchRefusal(code: string, message: string, way: AllowWay = 'settings'): LaunchRefusal {
   const said = message.trim().replace(/[.\s]+$/, '')
   if (code === 'invalid_cwd') {
-    if (/outside the allowed roots/i.test(said)) return { at: 'folder', words: "Agents can't use this folder yet.", outside: true }
+    if (/outside the allowed roots/i.test(said)) return { at: 'folder', ...outsideWords(way), outside: true }
     if (/does not exist|no such file/i.test(said)) return { at: 'folder', words: 'There is no folder at this path.' }
     if (/not a directory/i.test(said)) return { at: 'folder', words: 'This is a file, not a folder.' }
-    return { at: 'folder', words: said ? `${said.charAt(0).toUpperCase()}${said.slice(1)}.` : "Agents can't use this folder." }
+    return { at: 'folder', words: FOLDER_CANT }
   }
+  if (code === ERR_MOVE_REFUSED) return { at: 'top', words: `${said ? `Not started: ${said}.` : 'Not started.'} Set Run as to Terminal to launch it.` }
   return { at: 'top', words: said ? `Not started: ${said}.` : 'Not started.' }
 }
 

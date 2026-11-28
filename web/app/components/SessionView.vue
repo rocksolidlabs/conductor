@@ -24,6 +24,7 @@ import { joinTop } from '~/utils/changes'
 import { ApiError } from '~/composables/useApi'
 import { READ_SAID, stripRunOf } from '~/utils/memberStrip'
 import type { TabsState } from '~/utils/editorTabs'
+import { recordWithin } from '~/utils/lastLaunch'
 
 /**
  * A session's whole view (UX3 R72): its header, its terminal or chat, its editor and its inspector, as the session's page draws it and as
@@ -430,21 +431,60 @@ watch(
   { immediate: true },
 )
 /**
- * The note on the vendor's terms (design 11), once in this browser: the first time a person presses Chat. It is drawn in the chat,
- * under the move's notice (ChatView's ChatNote), where it covers nothing, until closed; under its sentence, that the chat has
- * Conductor's tools only.
+ * The note on the vendor's terms (design 11), once: the first time a person presses Chat. It is drawn in the chat, under the move's
+ * notice (ChatView's ChatNote), where it covers nothing, until closed; under its sentence, that the chat has Conductor's tools only.
+ * Marked shown once it was drawn, in this browser and in the server's record of the last launch (which outlasts a restart; in the
+ * desktop app this page's storage does not), never at the press: a move refused or gone back leaves it to show at the next.
  */
 const TERMS_KEY = 'conductor.chatTermsNoted'
 const chatNote = ref<{ site?: string } | null>(null)
-function noteTerms() {
+function termsNotedHere(): boolean {
   try {
-    if (localStorage.getItem(TERMS_KEY) === '1') return
-    localStorage.setItem(TERMS_KEY, '1')
+    return localStorage.getItem(TERMS_KEY) === '1'
   } catch {
-    /* a browser that keeps nothing shows it each time */
+    return false
+  }
+}
+async function noteTerms() {
+  if (termsNotedHere() || chatNote.value) return
+  const rec = await recordWithin(() => api.lastLaunch())
+  if (rec?.chatNoted) {
+    try {
+      localStorage.setItem(TERMS_KEY, '1')
+    } catch {
+      /* a browser that keeps nothing asks the server each time */
+    }
+    return
   }
   chatNote.value = { site: agentInfo.value?.site?.startsWith('https://') ? agentInfo.value.site : undefined }
 }
+let termsMarked = false
+/** Marks the note shown, once it is drawn in the chat. */
+function markTermsDrawn() {
+  if (termsMarked) return
+  termsMarked = true
+  try {
+    localStorage.setItem(TERMS_KEY, '1')
+  } catch {
+    /* kept on the server alone */
+  }
+  void api.chatNoted().catch(() => {})
+}
+watch(
+  [way, chatNote],
+  ([w, n]) => {
+    if (w !== 'protocol' || !n || termsMarked) return
+    // Drawn with the chat: looked for over the next frames, as the chat mounts.
+    let frames = 0
+    const look = () => {
+      if (!chatNote.value || way.value !== 'protocol') return
+      if (document.querySelector('[data-chat-terms]')) return markTermsDrawn()
+      if (++frames < 120) requestAnimationFrame(look)
+    }
+    requestAnimationFrame(look)
+  },
+  { flush: 'post' },
+)
 // A move to Chat noted at the launch (the Launch agent dialog's Run as Chat, issue 1174) and made by itself is a press of Chat made
 // in the dialog: the note on the vendor's terms is shown as for a press, once in this browser.
 watch([way, () => switchFacts.value.noted], ([w], [was, wasNoted]) => {

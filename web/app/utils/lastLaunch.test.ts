@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { AGENTS_KEPT, LAST_LAUNCH_KEY, NAMES_KEPT, SHELL_ID, afterLaunch, readLast, withRecord, writeLast, type LastLaunch } from './lastLaunch'
+import { describe, expect, it, vi } from 'vitest'
+import { AGENTS_KEPT, LAST_LAUNCH_KEY, LAST_LAUNCH_WAIT_MS, NAMES_KEPT, SHELL_ID, afterLaunch, lastLaunchWaitMs, readLast, recordWays, recordWithin, withRecord, writeLast, type LastLaunch } from './lastLaunch'
 
 // What Launch agent remembers of the last launch (UX3 R29): read as the dialog opens, written after a launch the server took.
 
@@ -84,3 +84,30 @@ describe("the server's record of the last launch (R89)", () => {
   })
 })
 
+describe("the wait for the server's record, and each agent's way in it", () => {
+  it('waits LAST_LAUNCH_WAIT_MS, or what the page was given as conductorLastLaunchMs when it is a positive number', () => {
+    expect(lastLaunchWaitMs({})).toBe(LAST_LAUNCH_WAIT_MS)
+    expect(lastLaunchWaitMs({ conductorLastLaunchMs: 120_000 })).toBe(120_000)
+    for (const v of [0, -1, '5000', Number.NaN, Number.POSITIVE_INFINITY]) expect(lastLaunchWaitMs({ conductorLastLaunchMs: v })).toBe(LAST_LAUNCH_WAIT_MS)
+  })
+  it('gives the record, null for a refusal, and null once the wait is over', async () => {
+    expect(await recordWithin(() => Promise.resolve({ v: 1 }))).toEqual({ v: 1 })
+    expect(await recordWithin(() => Promise.reject(new Error('refused')))).toBeNull()
+    vi.useFakeTimers()
+    try {
+      const late = recordWithin(() => new Promise(() => {}))
+      vi.advanceTimersByTime(LAST_LAUNCH_WAIT_MS)
+      expect(await late).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it("reads each agent's way, and leaves out one with none or a way it does not know", () => {
+    const ways = recordWays({ models: { claude: { way: 'protocol' }, codex: { way: 'terminal' }, old: {}, odd: { way: 'elsewhere' } } })
+    expect([...ways]).toEqual([
+      ['claude', 'protocol'],
+      ['codex', 'terminal'],
+    ])
+    expect(recordWays(null).size).toBe(0)
+  })
+})

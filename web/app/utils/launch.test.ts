@@ -138,10 +138,21 @@ describe("the Agent row's keys", () => {
 
 describe('a launch the server refused, in the dialog', () => {
   it("says a folder's refusal under Folder in plain words", () => {
-    expect(launchRefusal('invalid_cwd', 'working directory is outside the allowed roots')).toEqual({ at: 'folder', words: "Agents can't use this folder yet.", outside: true })
+    // A folder outside the folders agents may use, in the line's words for the way on there is: "yet" only where the app presses.
+    const outside = 'working directory is outside the allowed roots'
+    expect(launchRefusal('invalid_cwd', outside, 'press')).toEqual({ at: 'folder', words: "Agents can't use this folder yet.", outside: true })
+    expect(launchRefusal('invalid_cwd', outside, 'settings')).toEqual({ at: 'folder', words: "Agents can't use this folder. Add it to Folders agents can use in", settings: true, after: ', or pick another.', outside: true })
+    expect(launchRefusal('invalid_cwd', outside, 'app').words).toBe("Agents can't use this folder. Allow it in the Conductor app on the computer that runs it.")
+    expect(launchRefusal('invalid_cwd', outside, 'config').words).toBe("Agents can't use this folder. Add it to this server's folders agents can use, or pick another.")
+    for (const way of ['settings', 'app', 'config'] as const) expect(launchRefusal('invalid_cwd', outside, way).words, way).not.toContain('yet')
     expect(launchRefusal('invalid_cwd', 'working directory does not exist')).toEqual({ at: 'folder', words: 'There is no folder at this path.' })
     expect(launchRefusal('invalid_cwd', 'working directory is not a directory')).toEqual({ at: 'folder', words: 'This is a file, not a folder.' })
-    expect(launchRefusal('invalid_cwd', 'invalid working directory')).toEqual({ at: 'folder', words: 'Invalid working directory.' })
+    // Any other: never the server's words.
+    expect(launchRefusal('invalid_cwd', 'invalid working directory')).toEqual({ at: 'folder', words: "Agents can't use this folder. Pick another." })
+  })
+  it('says a launch as a chat the server refuses with its sentence and the way on', () => {
+    expect(launchRefusal('move_refused', "Claude Code's Chat needs its version 2.1 or later.")).toEqual({ at: 'top', words: "Not started: Claude Code's Chat needs its version 2.1 or later. Set Run as to Terminal to launch it." })
+    expect(launchRefusal('move_refused', '').words).toBe('Not started. Set Run as to Terminal to launch it.')
   })
   it("says any other refusal on top as Not started, in the server's words, with no code in them", () => {
     expect(launchRefusal('invalid_request', 'the arguments choose a model already: set the model in one place')).toEqual({ at: 'top', words: 'Not started: the arguments choose a model already: set the model in one place.' })

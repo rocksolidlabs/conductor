@@ -80,6 +80,20 @@ func (s *Server) handleCompareTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("comparison crew created", "crew", saved.ID)
+	// Kept for the next New agent trial, after a restart too
+	// (last_launch.go): its agents, its folder and its Check line alone.
+	agents := make([]string, 0, len(spec.Candidates))
+	for _, c := range spec.Candidates {
+		agents = append(agents, c.AgentID)
+	}
+	var check []string
+	for _, c := range spec.Checks {
+		if c.ID == lastTrialCheckID {
+			check = c.Argv
+			break
+		}
+	}
+	s.noteTrial(agents, spec.Cwd, check)
 	writeJSON(w, http.StatusCreated, crewReply(saved))
 }
 

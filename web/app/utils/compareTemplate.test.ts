@@ -300,8 +300,9 @@ describe('an agent moved to another, and the draft across a close', () => {
 })
 
 describe('what the form says of the folder as it is picked, and of a save the server refused', () => {
-  it("says the server's words for a folder agents may not use, and nothing for any other answer, a new project's among them", () => {
-    expect(trialFolderLine({ code: 'invalid_cwd', message: '/etc is not under an allowed root' })).toBe('/etc is not under an allowed root.')
+  it("leaves a folder agents can't use, a missing one and a file to the folder's own line, says any other refusal of it in its own words, and nothing for any other answer", () => {
+    for (const message of ['/etc is not under an allowed root', 'working directory is outside the allowed roots', 'working directory does not exist', 'working directory is not a directory']) expect(trialFolderLine({ code: 'invalid_cwd', message }), message).toBe('')
+    expect(trialFolderLine({ code: 'invalid_cwd', message: 'invalid working directory' })).toBe("Agents can't use this folder. Pick another.")
     expect(trialFolderLine({ code: 'git_failed', message: 'could not run git' })).toBe('')
     expect(trialFolderLine(null)).toBe('')
   })

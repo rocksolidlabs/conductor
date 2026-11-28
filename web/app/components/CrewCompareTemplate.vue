@@ -18,7 +18,8 @@ import {
   type TrialField,
 } from '~/utils/compareTemplate'
 import { ApiError } from '~/composables/useApi'
-import { checkFor, readTrialMemory, rememberTrial, rememberedAgents, type TrialMemory } from '~/utils/trialMemory'
+import { checkFor, readTrialMemory, rememberTrial, rememberedAgents, trialFromRecord, type TrialMemory } from '~/utils/trialMemory'
+import { recordWithin } from '~/utils/lastLaunch'
 import { effectiveYolo } from '~/utils/yolo'
 
 /**
@@ -90,10 +91,10 @@ function viewerStore(): Storage | null {
 let memory: TrialMemory | null = null
 /** Whether the person typed in Check in this draft: until then it follows the folder, as it was last used there. */
 let checkTyped = false
-/** A new draft, from what was kept of the last trial: its agents still installed, its folder and that folder's check. */
-function fromMemory(): DraftComparison {
+/** A new draft, from what was kept of the last trial (`kept`, else this browser's): its agents still installed, its folder and check. */
+function fromMemory(kept: TrialMemory | null = readTrialMemory(viewerStore())): DraftComparison {
   const d = draftOnOpen(null, props.agents)
-  memory = readTrialMemory(viewerStore())
+  memory = kept
   checkTyped = false
   d.agents = startAgents(d.agents)
   if (memory?.folder) d.folder = memory.folder
@@ -131,11 +132,28 @@ watch(open, (o) => {
     pressed.value = false
     moreOpen.value = false
   }
+  const fresh = !kept
   draft.value = kept ? draftOnOpen(draft.value, props.agents) : fromMemory()
   kept = true
+  // A new draft: the server's record of the last trial, which outlasts a restart, is read and taken while nothing was changed.
+  if (fresh) void takeRecordedTrial()
   error.value = ''
   void pinTop()
 })
+let recordReads = 0
+/** The draft as a person changes it: its agents only once it had some (the catalog's late read gives a draft its first ones). */
+function asTyped(d: DraftComparison, withAgents: boolean): string {
+  return JSON.stringify({ ...d, agents: withAgents ? d.agents.map((a) => [a.agentId, a.args, a.approach]) : [] })
+}
+async function takeRecordedTrial() {
+  const n = ++recordReads
+  const hadAgents = draft.value.agents.length > 0
+  const opened = asTyped(draft.value, hadAgents)
+  const rec = await recordWithin(() => api.lastLaunch())
+  const mem = trialFromRecord(rec?.trial)
+  if (!mem || n !== recordReads || !open.value || asTyped(draft.value, hadAgents) !== opened) return
+  draft.value = fromMemory(mem)
+}
 function cancel() {
   kept = false
   open.value = false
@@ -213,7 +231,7 @@ function fieldTarget(field: TrialField): string {
 
 /** The press: a draft with problems marks them and puts the cursor in the first; one without is posted. */
 async function press() {
-  if (creating.value || folderLine.value) return
+  if (creating.value || folderLine.value || allowBlocked.value) return
   pressed.value = true
   const first = problems.value[0]
   if (first) {
@@ -305,7 +323,7 @@ function onKey(e: KeyboardEvent) {
         </UTooltip>
         <div class="flex-1" />
         <UButton label="Cancel" color="neutral" variant="ghost" :disabled="creating" data-compare-cancel @click="cancel" />
-        <UButton label="Save trial" icon="i-lucide-save" :loading="creating" :disabled="!!folderLine" :aria-busy="creating" data-compare-create @click="press" />
+        <UButton label="Save trial" icon="i-lucide-save" :loading="creating" :disabled="!!folderLine || allowBlocked" :aria-busy="creating" data-compare-create @click="press" />
       </div>
     </template>
   </UModal>

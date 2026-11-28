@@ -94,7 +94,10 @@ describe('Run as', () => {
     // On the face at the right end of the More options row, open or closed (UX3 R26).
     expect(modal).toMatch(/<MoreOptions [^>]*>\s*<template v-if="showsRunAs" #end><RunAsChoice v-model="runAs" [^>]*\/><\/template>/)
     expect(modal.match(/<RunAsChoice /g)).toHaveLength(1)
-    expect(modal).toContain("if (v) runAs.value = agentId ? readRunAs(browserStorage(), agentId) : 'terminal'")
+    expect(modal).toContain("if (v) runAs.value = agentId ? wayOf(agentId) : 'terminal'")
+    // The server's record of each agent's way wins over this browser's, which outlasts no start of the desktop app.
+    expect(modal).toContain('const wayOf = (agentId: string): SessionWay => keptWays.get(agentId) ?? readRunAs(browserStorage(), agentId)')
+    expect(modal).toContain('for (const [id, w] of recordWays(recorded)) keptWays.set(id, w)')
     // Written after the launch's answer, in submit alone: a side pressed and the dialog cancelled is not kept.
     expect(modal.match(/writeRunAs\(/g)).toHaveLength(1)
     expect(modal).toMatch(/const session = await api\.create\(\{[\s\S]*?way: showsRunAs\.value && runAs\.value === 'protocol' \? 'protocol' : undefined,\n {4}\}\)\n {4}if \(showsRunAs\.value\) writeRunAs\(browserStorage\(\), state\.agentId, runAs\.value\)/)
