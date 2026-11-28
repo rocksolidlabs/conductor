@@ -16,11 +16,13 @@ import {
   optionsLine,
   specCriteria,
   startingAgents,
+  trialCheckLine,
   trialFolderLine,
   withAgent,
   type DraftComparison,
   type TrialAgent,
 } from './compareTemplate'
+import { GIT_CAN_WORKTREE, GIT_FIRST_COMMIT } from './dirInput'
 
 const agents: TrialAgent[] = [
   { id: 'shell', name: 'Shell', allowArgs: true },
@@ -189,7 +191,7 @@ describe('what stops the press, field by field', () => {
     unpicked.agents[1]!.agentId = ''
     expect(compareProblems(unpicked, agents)).toEqual([{ field: 'agent-1', words: 'Pick an agent.' }])
     unpicked.agents[1]!.agentId = 'nobody'
-    expect(compareProblems(unpicked, agents)).toEqual([{ field: 'agent-1', words: 'Agent B: nobody is not on this server.' }])
+    expect(compareProblems(unpicked, agents)).toEqual([{ field: 'agent-1', words: 'Agent B: nobody is not on this server. Pick another.' }])
   })
 
   it("marks an agent's arguments with an open quote, or given to an agent that takes none, on that agent's row", () => {
@@ -304,8 +306,19 @@ describe('what the form says of the folder as it is picked, and of a save the se
     expect(trialFolderLine(null)).toBe('')
   })
 
+  it('says the press\'s refusal of a folder the server looked at, and nothing of a folder with a commit or a new folder (#1179)', () => {
+    const refusal = 'This folder has no commit yet. Make its first commit yourself, then launch'
+    expect(trialCheckLine({ message: refusal })).toBe(`${refusal}.`)
+    expect(trialCheckLine({ message: 'git cannot use the working directory\'s repository: fatal: detected dubious ownership' })).toBe("Git cannot use the working directory's repository: fatal: detected dubious ownership.")
+    expect(trialCheckLine({ message: GIT_FIRST_COMMIT })).toBe('')
+    expect(trialCheckLine({ message: GIT_CAN_WORKTREE })).toBe('')
+    expect(trialCheckLine({ message: '' })).toBe('')
+    expect(trialCheckLine(null)).toBe('')
+  })
+
   it("keeps the server's words and says what was kept", () => {
-    expect(notSavedWords('compare: a trial has 2 to 4 candidates, not 1')).toBe('Compare: a trial has 2 to 4 candidates, not 1. What you typed is kept.')
+    expect(notSavedWords('compare: a trial has 2 to 4 candidates, not 1')).toBe('A trial has 2 to 4 candidates, not 1. What you typed is kept.')
+    expect(notSavedWords('crew: compare: a trial has 1 to 12 criteria, not 13')).toBe('A trial has 1 to 12 criteria, not 13. What you typed is kept.')
     expect(notSavedWords('Crews are off here. ')).toBe('Crews are off here. What you typed is kept.')
   })
 })

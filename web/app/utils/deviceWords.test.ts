@@ -39,7 +39,7 @@ describe('the words say this device, never this browser', () => {
     expect(source('utils/inbox.ts')).toContain("taken: the owner's reply to this device's request said so")
     expect(source('utils/inbox.ts')).not.toContain("taken: the owner's reply to this browser's request")
     expect(source('composables/useBrakeman.ts')).not.toContain('This browser holds')
-    expect(source('composables/usePreviewLabel.ts')).toContain("'If no tab opened, it was held back: click Open preview again.'")
+    expect(source('composables/usePreviewLabel.ts')).toContain("'If no tab opened, it was held back: press Open preview again.'")
     expect(source('composables/usePreviewLabel.ts')).not.toContain('the browser held it back')
     expect(source('utils/transport/paste.ts')).toContain("'WebRTC is not available here'")
     expect(source('utils/transport/paste.ts')).not.toContain('this browser has no WebRTC')

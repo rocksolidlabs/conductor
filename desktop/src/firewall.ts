@@ -45,6 +45,8 @@ export interface IceStatus {
   /** The distribution's address packets go to; '' until the server has started. */
   wslAddress: string
   firewall: 'present' | 'missing' | 'unknown'
-  /** Why nothing is forwarded, when it is not. */
+  /** WSL shares Windows' network (mirrored mode): viewers connect straight, nothing to forward, nothing said. */
+  mirrored?: boolean
+  /** Why viewers cannot connect straight yet, when they cannot: the app's own words, never a program's raw text (the log has it). */
   reason?: string
 }

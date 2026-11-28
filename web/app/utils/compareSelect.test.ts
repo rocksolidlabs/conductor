@@ -124,7 +124,7 @@ describe('nothing preselected, the rationale required, the answer final', () => 
 describe("the panel's words", () => {
   it('say when a selection opens, that a closed one is closed and why, and a comparison ended with none', () => {
     expect(selectionPanelWords(comparison({ settled: false }), null)).toBe('The selection opens when every lane has ended. Nothing is selected by default.')
-    expect(selectionPanelWords(comparison({ state: 'ended', settled: true }), null)).toMatch(/^This trial ended with no candidate to select/)
+    expect(selectionPanelWords(comparison({ state: 'ended', settled: true }), null)).toBe('This trial ended with no result to select. Run a new trial to try again.')
     const closed = comparison({ settled: false, selection: { decision: 'dr-9', state: 'superseded', options } })
     expect(selectionPanelWords(closed, record({ state: 'superseded', why: 'approach-a was retried: dr-9 no longer lists what is compared' }))).toBe(
       'dr-9 is closed: approach-a was retried: dr-9 no longer lists what is compared. A new selection opens when every lane has ended; answer that one.',

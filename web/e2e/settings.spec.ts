@@ -191,7 +191,7 @@ test('a "Runs in" field has a folder button that browses the allowed roots and f
 
 // The one-time notice the desktop app hands the workbench (a fresh install's,
 // or an upgrade's): one toast that says sessions are published to a
-// switchyard, that it mints and checks the links, and how to turn it off, with
+// switchyard, that it makes and checks the links, and how to turn it off, with
 // the way to Settings.
 test('the app\'s publishing notice says what is published and leads to Settings', async ({ page, state }) => {
   const form = {
@@ -252,8 +252,11 @@ test('the app\'s publishing notice says what is published and leads to Settings'
   await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
   // The card says what the switchyard is told and what it does.
   await expect(card).toContainText("never its chat, activity or command line")
-  await expect(card).toContainText('It mints and checks the links and decides who joins')
-  await expect(card).toContainText('Publish only to a switchyard whose operator you trust')
+  await expect(card).toContainText('It makes and checks the links and decides who joins')
+  await expect(card).toContainText('Turn this on only for a switchyard whose operator you trust')
+  // The words pass (UX3 WG2): nothing on the page says mints or Publish.
+  await expect(card).not.toContainText('mints')
+  await expect(card).not.toContainText('Publish only')
   // Once only.
   await page.reload()
   await expect(page.locator('[data-switchyard-settings]')).toBeVisible()
@@ -938,7 +941,7 @@ test("in a browser, Brakeman's section is saved by the page's one Save", async (
 // `?section=`; below lg a sticky row of links, nothing else scrolling sideways, and the save bar above the bottom bar. The
 // stand-in bridge is the app's, as above; on win32 with an ICE status the WebRTC section and the WSL fields are laid out too.
 type Platform = 'linux' | 'win32'
-async function standIn(page: Page, state: E2EState, platform: Platform, server?: { state: string; lastError?: string }) {
+async function standIn(page: Page, state: E2EState, platform: Platform, server?: { state: string; lastError?: string }, ice?: object) {
   const form = {
     dataDir: state.data,
     allowedRoots: [state.root],
@@ -955,7 +958,7 @@ async function standIn(page: Page, state: E2EState, platform: Platform, server?:
     noticed: ['publishing'],
   }
   await page.addInitScript(
-    ({ token, form, url, platform, server }) => {
+    ({ token, form, url, platform, server, ice }) => {
       const settings = { ...form }
       const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[]; e2eRestarts: number; e2eAllow: (dir: string) => void }
       w.e2eSets = []
@@ -985,7 +988,7 @@ async function standIn(page: Page, state: E2EState, platform: Platform, server?:
         showLog: async () => {},
         serverState: async () => ({ state: 'running', url, failures: 0, ...server }),
         notice: async () => '',
-        ice: async () => ({ forwarding: true, port: 40001, publicIp: '203.0.113.7', wslAddress: '172.20.0.2', firewall: 'missing' }),
+        ice: async () => ice ?? { forwarding: true, port: 40001, publicIp: '203.0.113.7', wslAddress: '172.20.0.2', firewall: 'missing' },
         allowIceFirewall: async () => 'present',
         versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
         onServerState: () => () => {},
@@ -995,7 +998,7 @@ async function standIn(page: Page, state: E2EState, platform: Platform, server?:
         },
       }
     },
-    { token: state.token, form, url: state.baseURL, platform, server },
+    { token: state.token, form, url: state.baseURL, platform, server, ice },
   )
 }
 
@@ -1486,7 +1489,7 @@ for (const size of [{ width: 2000, height: 810 }, { width: 1440, height: 810 }, 
     await expect(yard.locator('[data-ice-firewall]')).toHaveText('rule missing')
     await expect(page.locator('[data-settings-section="running"]')).not.toContainText('Reach')
     // The switchyard's statement keeps every fact it stated.
-    for (const fact of ["each session's name, agent and folder name, this machine's name, and whether it waits on you", 'never its chat, activity or command line', 'It mints and checks the links and decides who joins', 'through its relay, which can read it', 'Publish only to a switchyard whose operator you trust']) await expect(yard).toContainText(fact)
+    for (const fact of ["each session's name, agent and folder name, this machine's name, and whether it waits on you", 'never its chat, activity or command line', 'It makes and checks the links and decides who joins', 'through its relay, which can read it', 'Turn this on only for a switchyard whose operator you trust']) await expect(yard).toContainText(fact)
     await expect(page.getByText('WebRTC from WSL')).toHaveCount(0)
     // Allow adds the rule: the badge says so, and the button goes.
     await yard.locator('[data-ice-allow]').click()
@@ -1496,6 +1499,27 @@ for (const size of [{ width: 2000, height: 810 }, { width: 1440, height: 810 }, 
 }
 
 // Settings' agents are drawn as the Agents page draws them (UX3 R54): one not installed asks nothing, so it is neither amber nor green.
+// The words pass (UX3 WG1, WG3): Yolo's line ends at the default it sets; the firewall row says when viewers cannot connect straight
+// yet, in the app's own words, and nothing where WSL shares Windows' network (mirrored mode).
+test("Yolo's line, and the firewall row when viewers cannot connect straight yet or need nothing forwarded", async ({ page, state }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await standIn(page, state, 'win32', undefined, { forwarding: false, port: 40001, publicIp: '203.0.113.7', wslAddress: '', firewall: 'unknown', reason: 'the app could not open UDP port 40001' })
+  await page.goto('/settings')
+  await settled(page, 'win32')
+  const yolo = page.locator('[data-settings-section="running"]')
+  await expect(yolo).toContainText('without asking you. The default for new launches.')
+  await expect(yolo).not.toContainText('Changing it restarts the server')
+  const row = page.locator('[data-ice-status]')
+  await expect(row.locator('[data-ice-off]')).toHaveText('Viewers cannot connect straight yet: the app could not open UDP port 40001.')
+  await expect(row).not.toContainText('Nothing is forwarded')
+  const mirrored = await page.context().newPage()
+  await standIn(mirrored, state, 'win32', undefined, { forwarding: false, port: 40001, publicIp: '', wslAddress: '', firewall: 'unknown', mirrored: true })
+  await mirrored.goto('/settings')
+  await settled(mirrored, 'win32')
+  await expect(mirrored.locator('[data-ice-status] [data-ice-off]')).toHaveCount(0)
+  await mirrored.close()
+})
+
 test("Settings' agents: not installed and an identified agent's badge are neither amber nor green", async ({ page, state }) => {
   await standIn(page, state, 'linux')
   await page.goto('/settings?section=agents')

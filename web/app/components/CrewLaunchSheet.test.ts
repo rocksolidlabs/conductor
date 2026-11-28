@@ -282,11 +282,11 @@ describe('the launch sheet', () => {
   })
 
   it("says the run's Yolo in one plain line: the crew's setting, or the server's default now", () => {
-    expect(launchYoloWords(true, false)).toBe("Yolo: on. The members act without asking (the crew's setting)")
-    expect(launchYoloWords(false, false)).toBe("Yolo: off. The members ask before they act (the crew's setting)")
-    expect(launchYoloWords(true, true)).toBe("Yolo: on. The members act without asking (the server's default now)")
-    expect(launchYoloWords(false, true)).toBe("Yolo: off. The members ask before they act (the server's default now)")
-    for (const [y, i] of [[true, true], [true, false], [false, true], [false, false]] as const) expect(launchYoloWords(y, i)).not.toMatch(/Permission prompts/)
+    expect(launchYoloWords(true, false)).toBe("Yolo is on: the members act without asking (the crew's setting).")
+    expect(launchYoloWords(false, false)).toBe("Yolo is off: the members ask before they act (the crew's setting).")
+    expect(launchYoloWords(true, true)).toBe("Yolo is on: the members act without asking (the server's default now).")
+    expect(launchYoloWords(false, true)).toBe("Yolo is off: the members ask before they act (the server's default now).")
+    for (const [y, i] of [[true, true], [true, false], [false, true], [false, false]] as const) expect(launchYoloWords(y, i)).not.toMatch(/Permission prompts|Yolo: /)
   })
 
   it('draws its table a row a member: member, agent, model and account in plain words, the default named once the view says it', () => {

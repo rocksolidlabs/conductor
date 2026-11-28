@@ -655,3 +655,40 @@ func TestFlagsGooseSession(t *testing.T) {
 		t.Errorf("--model: %+v", f)
 	}
 }
+
+// The parse takes maxRowsRead rows and no more: a row past it is not read,
+// and an alias row is joined to its flag only when both were read.
+func TestFlagsRowsReadBound(t *testing.T) {
+	a := builtIn(t, "agy")
+	var help strings.Builder
+	help.WriteString("Usage of x:\n  -b  Short alias for --late\n  --early  w\n  -e  Short alias for --early\n")
+	for i := range maxRowsRead {
+		fmt.Fprintf(&help, "  --f%d  w\n", i)
+	}
+	help.WriteString("  --late  w\n")
+	flags := parse(t, a, help.String())
+	if len(flags) != maxFlags {
+		t.Fatalf("%d rows kept", len(flags))
+	}
+	if f := flagNamed(t, flags, "--early"); !slices.Equal(f.Aliases, []string{"-e"}) {
+		t.Errorf("--early: %+v", f)
+	}
+	if f := flagNamed(t, flags, "-b"); len(f.Aliases) != 0 {
+		t.Errorf("-b joined a flag past the bound: %+v", f)
+	}
+	for _, f := range flags {
+		if f.Name == "--late" {
+			t.Error("a row past the bound was read")
+		}
+	}
+	// A help of nothing but tiny rows, each its own alias row, is read to
+	// the bound alone.
+	var tiny strings.Builder
+	tiny.WriteString("Usage of x:\n")
+	for tiny.Len() < MaxHelp-64 {
+		tiny.WriteString("  -a  Alias for --a\n")
+	}
+	if got := parse(t, a, tiny.String()); len(got) != maxFlags {
+		t.Errorf("%d rows of tiny ones", len(got))
+	}
+}

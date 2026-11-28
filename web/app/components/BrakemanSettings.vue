@@ -379,7 +379,7 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
 
       <fieldset class="flex flex-col gap-2">
         <legend class="mb-1 text-sm font-medium">What it covers</legend>
-        <p class="text-xs text-muted">All of it, unless you pick some: at most {{ BOUNDS.selector }} of a kind.</p>
+        <p class="text-xs text-muted">Everything, unless you pick some: at most {{ BOUNDS.selector }} of a kind.</p>
         <div class="grid gap-3 sm:grid-cols-2">
           <UFormField v-for="f in pickers" :key="f.key" :label="f.label" :error="fieldError(`scope.${f.key}`)">
             <BrakemanScopePicker v-model="scopePicked[f.key]" :listed="f.listed" :label="f.label" :placeholder="f.placeholder" :scope-key="f.key" />

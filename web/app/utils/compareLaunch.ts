@@ -12,7 +12,7 @@ import { checksEachWords, manifestForm, type ManifestForm } from './dispatchPlan
  * What the crews page and a crew's launch sheet say of a comparison's crew (an agent trial, in the app's words), in place of its Launch:
  * the server launches it from a ticket alone.
  */
-export const COMPARISON_LAUNCHES_FROM_A_TICKET = "An agent trial starts from a ticket's approved plan: propose this crew as the ticket's plan, approve it, and launch it there"
+export const COMPARISON_LAUNCHES_FROM_A_TICKET = "An agent trial launches from a ticket in Dispatch: press Propose a plan or New revision, pick this crew, then Propose, Approve and Launch"
 
 /** The attempts a task's runs count before it fails (internal/crew, maxAttemptsPerTask): each one a session of its own. */
 export const COUNTED_ATTEMPTS = 3

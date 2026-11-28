@@ -85,7 +85,7 @@ func (h *extHost) launchOrigin(ctx context.Context, r ext.LaunchRequest) (ext.Ru
 			return crew.LaunchOpts{Origin: origin}, nil
 		})
 	} else {
-		run, c, release, err = h.s.launchSaved(bctx, r.Crew, r.Label, "", h.gone, crew.LaunchOpts{Origin: origin})
+		run, c, release, err = h.s.launchSaved(bctx, r.Crew, r.Label, "", h.gone, crew.LaunchOpts{Origin: origin}, false)
 	}
 	defer release()
 	if errors.Is(err, ledger.ErrOpExists) {

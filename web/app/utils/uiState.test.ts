@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { CREW, MEMBER, RUN_TILES_CREWS } from './runTiles'
+import { RUN_LAYOUTS, SHARES_MAX } from './wall'
 import { describe, expect, it } from 'vitest'
 import { LAYOUT_KEY, SIDE_SPLIT_KEY } from './editorLayout'
 import { SPLIT_KEY } from './editorTabs'
 import { RECENT_MAX, type Recent } from './palette'
 import { SIDEBAR_FOLDS_KEY, SIDEBAR_KEY, SIDEBAR_SIZE_KEY } from './sidebar'
-import { contentOf, CREW_GRAPH_KEY, isKept, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, PROJECT_VIEW_KEY, RUN_TILES_LAST_KEY, RUN_VIEW_KEY, sameContent, TILE_LAYOUTS, type UiLayout } from './uiState'
+import { contentOf, CREW_GRAPH_KEY, isKept, layoutForServer, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, PROJECT_VIEW_KEY, RUN_TILES_LAST_KEY, RUN_VIEW_KEY, sameContent, TILE_LAYOUTS, type UiLayout } from './uiState'
 
 function memory(init: Record<string, string> = {}) {
   const m = new Map(Object.entries(init))
@@ -110,5 +114,32 @@ describe('documents', () => {
     expect(contentOf({ v: 1, runView: 'grid', at: 'x', by: 'y' })).toEqual({ v: 1, runView: 'grid' })
     expect(sameContent({ v: 1, sidebar: { mode: 'rail', width: 2 }, at: 'x' }, { sidebar: { width: 2, mode: 'rail' }, v: 1 })).toBe(true)
     expect(sameContent({ v: 1, runView: 'grid' }, { v: 1, runView: 'tasks' })).toBe(false)
+  })
+})
+
+describe("the run tiles' bounds, the page's and the server's", () => {
+  const GO = readFileSync(fileURLToPath(new URL('../../../internal/api/ui_state.go', import.meta.url)), 'utf8')
+  const goConst = (name: string) => Number(new RegExp(`\\b${name}\\s*=\\s*(\\d+)`).exec(GO)?.[1])
+  const goPattern = (name: string) => new RegExp(`${name}\\s*=\\s*regexp\\.MustCompile\\(\`([^\`]+)\`\\)`).exec(GO)?.[1]
+
+  it('are one table: as many crews, as many shares an axis, the same names and layouts', () => {
+    expect(goConst('uiMaxTileCrews')).toBe(RUN_TILES_CREWS)
+    expect(goConst('uiMaxTileShares')).toBe(SHARES_MAX)
+    expect(goPattern('uiTileCrewPattern')).toBe(CREW.source)
+    expect(goPattern('uiTileMemberPattern')).toBe(MEMBER.source)
+    const layouts = /uiTileLayouts\s*=\s*map\[string\]bool\{([^}]*)\}/.exec(GO)?.[1]?.match(/"([a-z]+)"/g)?.map((x) => x.slice(1, -1))
+    expect(layouts?.sort()).toEqual([...RUN_LAYOUTS].sort())
+  })
+
+  it('a save sends the run tiles as the server takes them, and the rest of the layout as it is', () => {
+    const thirteen = Array.from({ length: SHARES_MAX + 1 }, () => 1 / 13)
+    const l: UiLayout = {
+      v: 1,
+      runView: 'grid',
+      runTiles: { layout: 'large', activity: true, crews: [{ crew: 'refunds', layout: 'rows', activity: false, large: 'Bad Name', sizes: { rows: { rows: thirteen } } }] },
+    }
+    expect(layoutForServer(l)).toEqual({ v: 1, runView: 'grid', runTiles: { layout: 'large', activity: true, crews: [{ crew: 'refunds', layout: 'rows', activity: false }] } })
+    expect(layoutForServer({ v: 1, runTiles: { layout: 'focus' as never } })).toEqual({ v: 1 })
+    expect(layoutForServer({ v: 1, sidebar: { mode: 'rail' } })).toEqual({ v: 1, sidebar: { mode: 'rail' } })
   })
 })

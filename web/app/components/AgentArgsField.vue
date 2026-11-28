@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PathEntry } from '~/composables/useSessions'
-import { argContext, argRows, folderPrefix, folderRows, holdsYolo, listShows, typedAt, type ArgRow } from '~/utils/argComplete'
+import { argContext, argRows, folderPrefix, folderRows, holdsYolo, keepsTerminal, listShows, typedAt, type ArgRow } from '~/utils/argComplete'
 import { splitArgs } from '~/utils/argv'
 import { DIR_DEBOUNCE_MS, matchingEntries } from '~/utils/dirInput'
 import { argsHoldYolo } from '~/utils/launch'
@@ -37,7 +37,7 @@ const props = defineProps<{
   yoloArgs?: readonly string[]
 }>()
 
-const { flags, reading } = useAgentFlags(() => (props.agent ? { id: props.agent.id, version: props.agent.version } : null))
+const { flags, reading, reply } = useAgentFlags(() => (props.agent ? { id: props.agent.id, version: props.agent.version } : null))
 
 const root = useTemplateRef<HTMLElement>('root')
 const menu = useTemplateRef<{ inputRef?: HTMLInputElement; viewportRef?: HTMLElement }>('menu')
@@ -105,6 +105,9 @@ const typed = computed(() => typedAt(model.value, cursor.value, flags.value, bro
 const waiting = computed(() => reading.value && typed.value.startsWith('-'))
 const open = computed(() => focused.value && engaged.value && !dismissed.value && (listShows(rows.value, typed.value) || waiting.value))
 const items = computed(() => rows.value.map((r) => ({ ...r, value: r.text })))
+// A session launched with this line stays in its terminal (a flag a chat refuses, or a lone `--` for an agent with a chat way): the
+// judgement the server's move and launch make, kept on the field for what reads it.
+const terminal = computed(() => keepsTerminal(model.value, flags.value, !!reply.value?.chat))
 const yoloTyped = computed(() => holdsYolo(model.value, flags.value) || argsHoldYolo(splitArgs(model.value), props.yoloArgs))
 const placeholder = computed(() => (flags.value.length ? 'Type -- to see its flags' : props.plainPlaceholder || 'Flags, as you would type them in a terminal'))
 
@@ -209,7 +212,7 @@ function onBlur(e: FocusEvent) {
 </script>
 
 <template>
-  <div ref="root" class="w-full min-w-0" data-args-field @focusin="onFocus" @keydown.capture="onKeydown" @keyup="onCursor" @click="onCursor">
+  <div ref="root" class="w-full min-w-0" data-args-field :data-args-terminal="terminal ? 'true' : undefined" @focusin="onFocus" @keydown.capture="onKeydown" @keyup="onCursor" @click="onCursor">
     <UInputMenu
       ref="menu"
       v-bind="$attrs"

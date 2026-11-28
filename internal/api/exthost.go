@@ -379,7 +379,7 @@ func (h *extHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef, 
 	// The try's end is checked once more as the engine is asked (admit):
 	// a lookup the try's end cut short counts as an answer, and the launch
 	// itself runs on to its end once admitted.
-	run, c, release, err := h.s.launchSaved(bctx, r.Crew, r.Label, "", h.gone, crew.LaunchOpts{})
+	run, c, release, err := h.s.launchSaved(bctx, r.Crew, r.Label, "", h.gone, crew.LaunchOpts{}, false)
 	defer release()
 	if err != nil {
 		if h.gone() != nil {

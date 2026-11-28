@@ -223,13 +223,13 @@ export function validate(s: DesktopSettings, posix = false): string[] {
   const out: string[] = []
   const absolute = (p: string) => (posix ? p.startsWith('/') : isAbsolute(p))
   const kind = posix ? 'an absolute path inside the WSL distribution, such as /home/<user>/code' : 'an absolute path'
-  if (!s.dataDir || !absolute(s.dataDir)) out.push(`the data directory must be ${kind}`)
-  if (!Array.isArray(s.allowedRoots) || s.allowedRoots.length === 0) out.push('at least one allowed root is needed')
-  for (const r of s.allowedRoots ?? []) if (!r || !absolute(r)) out.push(`allowed root ${JSON.stringify(r)} must be ${kind}`)
-  for (const p of s.pressedRoots ?? []) if (!p || typeof p.path !== 'string' || !absolute(p.path)) out.push(`allowed root ${JSON.stringify(p?.path)} must be ${kind}`)
-  if (!s.defaultCwd || !absolute(s.defaultCwd)) out.push(`the default working directory must be ${kind}`)
+  if (!s.dataDir || !absolute(s.dataDir)) out.push(`where Conductor keeps its data must be ${kind}`)
+  if (!Array.isArray(s.allowedRoots) || s.allowedRoots.length === 0) out.push('agents need at least one folder')
+  for (const r of s.allowedRoots ?? []) if (!r || !absolute(r)) out.push(`the folder ${JSON.stringify(r)} must be ${kind}`)
+  for (const p of s.pressedRoots ?? []) if (!p || typeof p.path !== 'string' || !absolute(p.path)) out.push(`the folder ${JSON.stringify(p?.path)} must be ${kind}`)
+  if (!s.defaultCwd || !absolute(s.defaultCwd)) out.push(`the default folder must be ${kind}`)
   // Under a typed folder, as the release before reads it: a file written here always loads there.
-  else if (s.allowedRoots?.length && !s.allowedRoots.some((r) => under(s.defaultCwd, r))) out.push('the default working directory must lie under an allowed root')
+  else if (s.allowedRoots?.length && !s.allowedRoots.some((r) => under(s.defaultCwd, r))) out.push('the default folder must be inside a folder agents can use')
   if (!['auto', 'manual', 'off'].includes(s.reach)) out.push('reach must be auto, manual or off')
   // Off, nothing is published there: a switchyard the server would refuse is kept, and never handed to it (serverEnv).
   if (s.switchyardEnabled && s.switchyardServer) {

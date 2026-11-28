@@ -38,7 +38,7 @@ for (const size of SIZES) {
 
       // The launch sheet says it in the same word.
       await page.locator('[data-launch]').click()
-      await expect(page.locator('[data-crew-launch-yolo]')).toHaveText("Yolo: on. The members act without asking (the crew's setting)", { timeout: MEASURE_WAIT_MS })
+      await expect(page.locator('[data-crew-launch-yolo]')).toHaveText("Yolo is on: the members act without asking (the crew's setting).", { timeout: MEASURE_WAIT_MS })
       await page.locator('[data-crew-launch-cancel]').click()
       await expect(page.locator('[data-crew-launch-confirm]')).toHaveCount(0)
     } finally {

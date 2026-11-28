@@ -7,7 +7,7 @@ import { memberLook } from '~/utils/crewWords'
 import { tileAskOf } from '~/utils/tileAsk'
 import { memberOffer } from '~/utils/runs'
 import { choiceKey } from '~/utils/attention'
-import { evenShares, gutterRange, movedShares, TILE_GAP, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, wallTracks, type RunLayout, type RunWallTile, type WallShares } from '~/utils/wall'
+import { evenShares, gutterAxes, gutterRange, movedShares, TILE_GAP, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, wallTracks, type RunLayout, type RunWallTile, type WallShares } from '~/utils/wall'
 
 /**
  * The run page's Members view: a tile for every member of one run in the run's order (a live terminal where the member has a session,
@@ -154,12 +154,11 @@ function measure() {
   drawn.value = { cols: px(cs.gridTemplateColumns), rows: px(cs.gridTemplateRows) }
 }
 watch([tracks, narrow], () => nextTick(measure), { immediate: true })
-const AXES: Record<RunLayout, Array<'cols' | 'rows'>> = { grid: ['cols', 'rows'], columns: ['cols'], rows: ['rows'], large: ['cols'] }
 const gutters = computed(() => {
   const { cols, rows } = drawn.value
   if (narrow.value || props.tiles.length < 2) return []
   const span = (a: number[]) => a.reduce((x, y) => x + y, 0) + TILE_GAP * Math.max(0, a.length - 1)
-  return AXES[props.layout].flatMap((axis) => {
+  return gutterAxes(props.layout, cols.length, rows.length).flatMap((axis) => {
     const px = axis === 'cols' ? cols : rows
     const floor = axis === 'cols' ? TILE_MIN_WIDTH : TILE_MIN_HEIGHT
     return px.slice(0, -1).map((_, k) => ({

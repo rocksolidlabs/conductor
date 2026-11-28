@@ -276,6 +276,41 @@ test("the last layout and Activity come back from the server when the page's sto
   await expect(page.locator('[data-crew-feed]')).toBeVisible()
 })
 
+/** Goes to `path` inside the app, as a link does: the page is not loaded again, so what it holds in its memory stays. */
+function within(page: Page, path: string) {
+  return page.evaluate((u) => (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { push: (u: string) => Promise<unknown> } } } } }).__vue_app__.config.globalProperties.$router.push(u), path)
+}
+
+test("two windows of one app: a crew's choice made in the second survives a trip and a save in the first", async ({ page, context, api }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  // The first window has a choice of its own when it starts: Activity on for crew one, so its memory holds a list of crews.
+  const one = await open(page, first, 3)
+  await one.toggle.click()
+  await expect(one.toggle).toHaveAttribute('aria-pressed', 'true')
+  // The second window: crew two drawn One large.
+  const second2 = await context.newPage()
+  await second2.setViewportSize({ width: 1440, height: 900 })
+  await open(second2, second, 2)
+  await second2.locator('[data-run-layout-choice="large"]').click()
+  await expect(second2.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'large')
+  const crewTwo = (await api.run(second)).crewId
+  // Back in the first window, without a reload: crew two is One large there too.
+  await within(page, `/runs/${encodeURIComponent(second)}`)
+  await expect(page.locator('[data-run-grid] [data-session-tile]')).toHaveCount(2, { timeout: 30_000 })
+  await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'large')
+  // A save from the first window (its view) keeps crew two's choice, on the server and in the storage the windows share.
+  await page.locator('[data-run-view]').getByRole('tab', { name: 'Graph' }).click()
+  await expect
+    .poll(async () => {
+      const l = await api.ok<{ runView?: string; runTiles?: { crews?: Array<{ crew: string; layout: string }> } }>('GET', '/api/ui/layout')
+      return `${l.runView} ${l.runTiles?.crews?.find((c) => c.crew === crewTwo)?.layout}`
+    }, { timeout: 15_000, message: "the first window's save carries crew two's choice" })
+    .toBe('graph large')
+  const stored = await page.evaluate(() => localStorage.getItem('conductor.runTiles') ?? '')
+  expect((JSON.parse(stored) as { crews: Array<{ crew: string; layout: string }> }).crews.find((c) => c.crew === crewTwo)?.layout).toBe('large')
+  await second2.close()
+})
+
 test("a crew's own layout comes back from the server too, beside a different last choice", async ({ page, api }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   // second: One large, its own; then first: Grid, the last choice made anywhere.
@@ -548,7 +583,7 @@ test('a question without choices says it is answered in its terminal, and an end
   const { grid } = await open(page, second, 2)
   const asking = grid.locator(':scope > [data-member="solo"]')
   await expect(asking.locator('[data-run-tile-question]')).toHaveText('solo asks: Which port should the preview use?')
-  await expect(asking.locator('[data-run-tile-answer="terminal"]')).toHaveText('Answer it in its terminal')
+  await expect(asking.locator('[data-run-tile-answer="terminal"]')).toHaveText('Answer it in its terminal.')
   await expect(asking.locator('[data-run-ask-choice]')).toHaveCount(0)
   const ended = grid.locator(':scope > [data-member="pair"]')
   const resume = ended.getByRole('button', { name: /^(Resume|Relaunch)$/ })

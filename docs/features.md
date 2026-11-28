@@ -259,7 +259,7 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   a turn runs and you may stop it), then Send. Send's tooltip says Enter sends
   and Shift+Enter makes a new line; the standing help lines under the box are
   gone. Only while the line begins with / does one line say what happens to
-  it: "Sent as plain text. To run a command, use the Terminal." The
+  it: "Sent as plain text. To run a command, switch to Terminal." The
   placeholder reads "Message <agent>". The box takes the cursor as the chat
   opens and after a send, when nothing else has it and no question waits for
   its number keys; Escape leaves it. A line you typed for one agent is there
@@ -337,9 +337,9 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   members start, labelled Yolo, with The server's default (now on or off),
   Off: members ask before acting, and On: members act without asking. The
   line beside More options names only what is still folded there, and an
-  edit of it is said as "Yolo edited." The launch sheet reads "Yolo: on. The
-  members act without asking" or "Yolo: off. The members ask before they
-  act", with the crew's setting or the server's default now
+  edit of it is said as "Yolo edited." The launch sheet reads "Yolo is on:
+  the members act without asking" or "Yolo is off: the members ask before
+  they act", with the crew's setting or the server's default now
   (`crews.test.ts`, `CrewLaunchSheet.test.ts`, `designRules.test.ts`;
   `crew-yolo.spec.ts`, `crew-make.spec.ts`).
 
@@ -672,7 +672,7 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   B, What a good result does); a ticket's approved plan starts it, as before.
 - **Every screen says trial** (UX3 R43, R44, R79, #1165). The ticket's launch
   dialog ("This trial starts N candidates"), a plan revision ("Agent trial: N
-  candidates from one base"), the results ("Trial results"), decisions ("A
+  agents, each from the same commit, checked alike"), the results ("Trial results"), decisions ("A
   trial's selection", "a new trial tries them again"), Brakeman's part
   ("Brakeman's summary", "Ask Brakeman for a summary", the request kind "Sum
   up a trial") and the refusals after the pick ("run a new trial") say

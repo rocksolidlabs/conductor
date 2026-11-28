@@ -284,8 +284,8 @@ export function sheetNotice(refused: SheetRefusal | null | undefined, read: 'rea
  * (`yolo`).
  */
 export function launchYoloWords(yolo: boolean, inherited: boolean): string {
-  const what = yolo ? 'on. The members act without asking' : 'off. The members ask before they act'
-  return `Yolo: ${what} (${inherited ? "the server's default now" : "the crew's setting"})`
+  const what = yolo ? 'on: the members act without asking' : 'off: the members ask before they act'
+  return `Yolo is ${what} (${inherited ? "the server's default now" : "the crew's setting"}).`
 }
 
 /** One member's row of the launch sheet's table: member · agent · model · account, in plain words, and the question its usage asks. */

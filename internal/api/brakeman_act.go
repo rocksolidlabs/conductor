@@ -768,7 +768,7 @@ func (s *Server) runAct(ctx context.Context, rec *replyRecorder, ds *dispatch.St
 		guard := &planGuard{admit: func(ctx context.Context, crewID, cwd string) *apiError {
 			return actMakesAdmitted(ctx, o, crewID, cwd)
 		}}
-		s.ticketPropose(ctx, rec, ds, dispatch.Op{Actor: brakemanActor, ID: op, ExpectedRev: body.ExpectedRev, By: brakemanBy}, key, body.Propose, guard)
+		s.ticketPropose(ctx, rec, ds, dispatch.Op{Actor: brakemanActor, ID: op, ExpectedRev: body.ExpectedRev, By: brakemanBy}, key, body.Propose, guard, false)
 	case brakeman.ActRequestRepair:
 		s.runRepair(ctx, rec, ds, key, op, body)
 	}

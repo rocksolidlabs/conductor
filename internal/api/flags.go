@@ -51,13 +51,17 @@ const (
 
 // flagsReply is the route's answer.
 type flagsReply struct {
-	Agent   string      `json:"agent"`
-	Name    string      `json:"name"`
-	Version string      `json:"version,omitempty"`
-	State   string      `json:"state"`
-	Why     string      `json:"why,omitempty"`
-	Flags   []replyFlag `json:"flags"`
-	Models  []string    `json:"models"`
+	Agent   string `json:"agent"`
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+	State   string `json:"state"`
+	// Chat says the agent has a chat way at its installed version: a lone
+	// "--" in a launch's arguments then keeps its session in its terminal,
+	// as the flags marked keepsTerminal do.
+	Chat   bool        `json:"chat,omitempty"`
+	Why    string      `json:"why,omitempty"`
+	Flags  []replyFlag `json:"flags"`
+	Models []string    `json:"models"`
 }
 
 // replyFlag is a flag as the help gives it, and whether a session launched
@@ -106,7 +110,7 @@ func (s *Server) handleCatalogFlags(w http.ResponseWriter, r *http.Request) {
 func (s *Server) flagsOf(ctx context.Context, a catalog.Agent) flagsReply {
 	out := flagsReply{Agent: a.ID, Name: a.Name, Flags: []replyFlag{}, Models: []string{}}
 	none := func(why string) flagsReply {
-		out.State, out.Why, out.Flags, out.Models = flagsNone, why, []replyFlag{}, []string{}
+		out.State, out.Why, out.Flags, out.Models, out.Chat = flagsNone, why, []replyFlag{}, []string{}, false
 		return out
 	}
 	if !a.AllowArgs {
@@ -157,7 +161,8 @@ func (s *Server) flagsOf(ctx context.Context, a catalog.Agent) flagsReply {
 	case err != nil:
 		return none(whyNoFlags)
 	}
-	chat := a.Protocol != nil && !a.Protocol.Off() && agentproto.Moves(a.Protocol.Name) && agentproto.Qualified(a.Protocol.Name, id.Version)
+	chat := a.Protocol != nil && !a.Protocol.Off() && agentproto.MovesFor(a.Protocol.Name, a.Adapter) && agentproto.Qualified(a.Protocol.Name, id.Version)
+	out.Chat = chat
 	for _, f := range flags {
 		rf := replyFlag{Flag: f}
 		if chat {

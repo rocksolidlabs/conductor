@@ -309,11 +309,19 @@ func TestGitCheckAnswersByTheLaunchRules(t *testing.T) {
 	if status, out := check(filepath.Join(root, "repo", "pkg")); status != http.StatusOK || out["inRepo"] != true || out["toplevel"] != filepath.Join(root, "repo") || out["hasCommit"] != true {
 		t.Fatalf("repo: %d %v", status, out)
 	}
-	if _, out := check(filepath.Join(root, "fresh")); out["inRepo"] != true || out["hasCommit"] != false || !strings.Contains(out["message"].(string), "without a commit") {
+	// A new folder is no refusal (the operator's launch makes its first commit); a repository with no commit is refused as the press
+	// refuses it; the check makes nothing in either.
+	if _, out := check(filepath.Join(root, "fresh")); out["inRepo"] != true || out["hasCommit"] != false || out["message"] != "This folder has no commit yet. Make its first commit yourself, then launch" {
 		t.Fatalf("fresh: %v", out)
 	}
-	if _, out := check(filepath.Join(root, "plain")); out["inRepo"] != false || out["hasCommit"] != false || !strings.Contains(out["message"].(string), "not in a git repository") {
+	if _, out := check(filepath.Join(root, "plain")); out["inRepo"] != false || out["hasCommit"] != false || !strings.Contains(out["message"].(string), "makes the folder's first commit") {
 		t.Fatalf("plain: %v", out)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "plain", ".git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the check made a repository in plain: %v", err)
+	}
+	if n := strings.TrimSpace(gitRun(t, filepath.Join(root, "fresh"), "rev-list", "--all", "--count")); n != "0" {
+		t.Fatalf("the check made a commit in fresh: %s", n)
 	}
 	// Empty is the default working directory; outside the roots is refused as a launch would.
 	if _, out := check(""); out["inRepo"] != false {

@@ -295,14 +295,16 @@ func TestMoveRouteRefusesACrewMember(t *testing.T) {
 // goes on and no child is started.
 func TestMoveRefusesArgumentsAChatCannotHold(t *testing.T) {
 	c := newMoveEnv(t, nil, nil)
-	for _, tc := range []struct {
+	cases := []struct {
 		name  string
 		args  []string
 		words string
 	}{
 		{"an added folder", []string{"--add-dir=" + t.TempDir()}, agentproto.AddedFolderWords},
 		{"a flag of the chat's own", []string{"--verbose"}, agentproto.OwnFlagWords("--verbose")},
-	} {
+		{"a lone --", []string{"--", "fix the tests"}, agentproto.OptionsEndWords},
+	}
+	for _, tc := range cases {
 		resp, out := c.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "claude", "args": tc.args})
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("%s: the launch: %d %v", tc.name, resp.StatusCode, out)
@@ -325,7 +327,8 @@ func TestMoveRefusesArgumentsAChatCannotHold(t *testing.T) {
 	if n := len(c.pipeSpecs()); n != 0 {
 		t.Fatalf("%d children started by refused moves", n)
 	}
-	if n := len(c.rt.Asked("StartTerminal")); n != 2 {
+	// One terminal for each launch, and none for a refused move.
+	if n := len(c.rt.Asked("StartTerminal")); n != len(cases) {
 		t.Fatalf("%d terminals started: a refused move stops and starts none", n)
 	}
 }

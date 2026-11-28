@@ -126,6 +126,12 @@ export type GitCheckView = GitCheck & { error?: boolean }
 export const GIT_CAN_WORKTREE = 'a git repository with a commit: a crew with worktrees can launch here'
 
 /**
+ * The git check's message for a new project, a folder with no commit yet or no repository yet: the server's msgFirstCommit. The
+ * operator's launch makes its first commit (internal/crew/firstcommit.go), so it is no refusal, and the line says nothing.
+ */
+export const GIT_FIRST_COMMIT = "no commit yet: the operator's launch makes the folder's first commit"
+
+/**
  * What the crew editor says under the working directory. With worktrees the
  * line is the server's verdict in its words and explains a launch it would
  * refuse (`blocks`, for the launch button's tooltip); without a message (an
@@ -136,6 +142,7 @@ export const GIT_CAN_WORKTREE = 'a git repository with a commit: a crew with wor
 export function gitCheckLine(check: GitCheckView | null, isolation: 'none' | 'worktree'): { text: string; tone: 'success' | 'warning' | 'neutral'; blocks: boolean } {
   if (!check) return { text: '', tone: 'neutral', blocks: false }
   if (check.error) return { text: check.message, tone: 'warning', blocks: false }
+  if (check.message === GIT_FIRST_COMMIT) return { text: '', tone: 'neutral', blocks: false }
   if (isolation === 'worktree') {
     const canLaunch = check.message ? check.message === GIT_CAN_WORKTREE : check.inRepo && check.hasCommit
     if (canLaunch) return { text: check.message || 'A git repository with a commit: worktrees can be made.', tone: 'success', blocks: false }
