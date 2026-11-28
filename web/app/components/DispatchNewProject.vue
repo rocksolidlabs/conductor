@@ -47,6 +47,12 @@ interface LeftDraft {
   policyTouched: boolean
 }
 const left = useState<LeftDraft | null>('dispatch-new-project-left', () => null)
+
+// The dialog's foot stays still while it is open (useStillDialog): the folder's line, which arrives on its own, never moves Make the
+// project or Cancel under a pointer on its way to them; a tracker elsewhere, picked by the person, grows it for its URL's field.
+const formRef = useTemplateRef<HTMLFormElement>('form')
+const still = useStillDialog(formRef, open)
+watch(tracker, () => void still.regrow(), { flush: 'post' })
 function leave() {
   left.value = { key: key.value, name: name.value, cwd: cwd.value, tracker: tracker.value, trackerUrl: trackerUrl.value, closeRequires: [...closeRequires.value], policyTouched: policyTouched.value }
   open.value = false
@@ -64,6 +70,7 @@ watch(open, (o) => {
   closeRequires.value = d ? [...d.closeRequires] : ['acceptance']
   policyTouched.value = d?.policyTouched ?? false
   error.value = ''
+  void still.pin()
 })
 
 /** The folder as the project is made with it, trimmed: the line checks that text. */
@@ -120,7 +127,7 @@ async function submit() {
 <template>
   <UModal v-model:open="open" title="New project" description="A project holds tickets under its key: CND-1, CND-2 and on." :dismissible="!submitting" :close="{ disabled: submitting }" :ui="{ content: 'max-w-lg' }">
     <template #body>
-      <form class="flex flex-col gap-4" data-new-project @submit.prevent="submit">
+      <form ref="form" class="flex flex-col gap-4" data-new-project @submit.prevent="submit">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-new-project-error />
         <div class="grid grid-cols-[8rem_minmax(0,1fr)] gap-3">
           <UFormField label="Key" name="key" :error="keyProblem || undefined">
