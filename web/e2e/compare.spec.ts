@@ -401,7 +401,8 @@ test('a comparison of two stub candidates on the real server: the view shows wha
       await page.goto(`/crews/${crew.id}`)
       await expect(page.locator('[data-launch]')).toBeDisabled({ timeout: LOAD_MS })
       await page.locator('[data-launch]').hover({ force: true })
-      await expect(page.getByText("An agent trial starts from a ticket's approved plan").first()).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('An agent trial launches from a ticket in Dispatch: press Propose a plan or New revision').first()).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText("An agent trial starts from a ticket's approved plan")).toHaveCount(0)
 
       // Answered and applied: the selection's keys once applied are the stub's too.
       const open = real.selection as { decision: string }
