@@ -1,19 +1,20 @@
-import { app, BrowserWindow, dialog, Menu, type Tray } from 'electron'
+import { app, BrowserWindow, dialog, Menu, session, shell, type Tray } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { serverEnv, SERVE_ARGS } from './env'
+import { secretsLine, serverEnv, SERVE_ARGS } from './env'
 import { ensureStableBinary, stableBinaryPath } from './install'
-import { registerIpc } from './ipc'
+import { ownPage, registerIpc } from './ipc'
+import { allowOffered, FolderAllow, keyFor } from './allow'
 import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
-import { ServerSupervisor, StartStopped } from './server'
-import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
+import { ServerSupervisor, StartStopped, trustedOrigin } from './server'
+import { defaultSettings, keepIn, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
-import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
+import { createWindow, fenceLocalPage, followTrusted, type FenceContents, type ShownWindow, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
 import { moveZoom, zoomKey, ZoomStart, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
@@ -107,7 +108,12 @@ async function run() {
   if (failedUpdate) log('main', `updates: ${failedUpdate} was downloaded, and this start is ${app.getVersion()}: it did not install`)
   let updater: StartedUpdater | null = null
   let trayUpdate: ((version: string) => void) | null = null
-  const token = randomBytes(32).toString('hex')
+  // The running server's token and key: made afresh for every start of the server, as the line that hands them over is written
+  // (firstLine), so that each server's are its own. The key is what lets the app alone allow a folder while the server runs
+  // (allow.ts). Both go to the server on its stdin alone, never to an environment, a page, a log line or a file.
+  const mint = () => randomBytes(32).toString('hex')
+  let token = ''
+  let desktopKey = ''
   process.env.CONDUCTOR_DESKTOP_VERSION = app.getVersion()
 
   const source = sourceBinary()
@@ -159,7 +165,7 @@ async function run() {
   const ice: IceStatus = { forwarding: false, port: ICE_UDP_PORT, publicIp: '', wslAddress: '', firewall: 'unknown' }
   let forwarder: UdpForwarder | null = null
   if (launcher instanceof WslLauncher) {
-    if (wslNetworkingMode() === 'mirrored') ice.reason = 'WSL is in mirrored networking mode: nothing to forward'
+    if (wslNetworkingMode() === 'mirrored') ice.mirrored = true
     else {
       ice.publicIp = windowsLanAddress()
       if (!ice.publicIp) ice.reason = 'no LAN address found on this machine'
@@ -171,11 +177,17 @@ async function run() {
     args: SERVE_ARGS,
     beforeStart,
     env: () => {
-      const env = serverEnv(process.env, settings, token, shellPath(), userData)
+      const env = serverEnv(process.env, settings, shellPath(), userData)
       // Inside a WSL distribution the paths are its own: the server's data
       // beside its binary, the Linux home as the root (and the Windows
       // profile under /mnt when asked).
       return wsl ? wsl.linuxEnv(env, settings.wslWindowsHome, process.env.USERPROFILE ?? '', ice.publicIp ? { port: ice.port, publicIp: ice.publicIp } : undefined) : env
+    },
+    // The token and the key, on the server's stdin: in no environment the system shows of it, and in no argument.
+    firstLine: () => {
+      token = mint()
+      desktopKey = keyFor(process.platform, mint)
+      return secretsLine(token, desktopKey)
     },
     log,
   })
@@ -195,7 +207,7 @@ async function run() {
         ice.forwarding = true
       } catch (e) {
         forwarder = null
-        ice.reason = (e as Error).message
+        ice.reason = `the app could not open UDP port ${ice.port}`
         log('main', `udp forwarder: ${(e as Error).message}; WebRTC from WSL is off`)
         return
       }
@@ -210,7 +222,13 @@ async function run() {
   let main: BrowserWindow | null = null
   let tray: Tray | null = null
   let quitting = false
-  const origin = () => supervisor.status.url || 'http://127.0.0.1'
+  // The app's server by the address it bound, while it runs; '' otherwise (trustedOrigin): every gate, every load and the press go by it.
+  const origin = () => trustedOrigin(supervisor.status)
+  /** at is a page of the app's server, '' while none runs. */
+  const at = (path: string) => {
+    const o = origin()
+    return o ? o + path : ''
+  }
 
   // An invite for the open window goes to its page over the bridge, which routes in place: the workbench keeps its terminals.
   const delivery = new InviteDelivery({
@@ -219,7 +237,8 @@ async function run() {
     },
     load: (inv) => {
       log('main', 'invite: the page did not take it; loading the join page')
-      if (main && !main.isDestroyed()) void main.loadURL(origin() + invitePath(inv))
+      const url = at(invitePath(inv))
+      if (url && main && !main.isDestroyed()) void main.loadURL(url)
     },
     ask: () => {
       if (main && !main.isDestroyed()) main.webContents.send('conductor:inviteAsk')
@@ -262,11 +281,24 @@ async function run() {
       if (details.isMainFrame && !details.isSameDocument) delivery.pageLeft()
     })
     main.webContents.on('did-stop-loading', () => delivery.settled())
-    void main.loadURL(origin() + path)
+    const url = at(path)
+    if (url) void main.loadURL(url)
+    else {
+      // Shown while the server restarts: the page loads once it runs again.
+      const w = main
+      const later = (st: { state: string }) => {
+        if (st.state !== 'running') return
+        supervisor.off('state', later)
+        const next = at(path)
+        if (next && !w.isDestroyed()) void w.loadURL(next)
+      }
+      supervisor.on('state', later)
+    }
     return main
   }
   const showLog = () => {
     const w = new BrowserWindow(logWindowOptions(__dirname))
+    fenceLocalPage(w.webContents as unknown as FenceContents, (url) => void shell.openExternal(url))
     void w.loadFile(join(resources, app.isPackaged ? 'static/log.html' : 'static/log.html'))
     const send = (line: string) => w.webContents.send('log-line', line)
     w.webContents.once('did-finish-load', () => {
@@ -278,16 +310,50 @@ async function run() {
 
   // A zoom level kept from before is said once per start, to the first workbench page that asks (ZoomStart).
   const zoomStart = new ZoomStart()
+  // Written first, then taken: a file that cannot be written leaves the settings the app runs with as they were.
+  const keepSettings = keepIn(settingsFile, (s) => {
+    settings = s
+  })
+  // Allow this folder, where the app offers it (on Windows once its switch is on): the server asked over loopback with the token
+  // and the key, following no redirect; the settings kept with no restart; every workbench window told.
+  const folders = allowOffered(process.platform)
+    ? new FolderAllow({
+        get: () => settings,
+        set: keepSettings,
+        server: () => ({ url: origin(), pid: supervisor.status.pid, running: supervisor.status.state === 'running' }),
+        token: () => token,
+        key: () => desktopKey,
+        fetch: (url, init) => fetch(url, init),
+        posix: !!wsl,
+        whenRunning: (ms) =>
+          new Promise((resolve) => {
+            const now = () => ({ url: origin(), pid: supervisor.status.pid, running: supervisor.status.state === 'running' })
+            if (now().running) return resolve(now())
+            const timer = setTimeout(() => {
+              supervisor.off('state', on)
+              resolve(null)
+            }, ms)
+            const on = (st: { state: string }) => {
+              if (st.state !== 'running') return
+              clearTimeout(timer)
+              supervisor.off('state', on)
+              resolve(now())
+            }
+            supervisor.on('state', on)
+          }),
+        told: () => {
+          for (const w of workbenchWindows(BrowserWindow.getAllWindows(), origin())) w.webContents.send('conductor:settings')
+        },
+      })
+    : undefined
   registerIpc({
     origin,
     token: () => token,
     supervisor,
+    folders,
     settings: {
       get: () => settings,
-      set: (s: DesktopSettings) => {
-        settings = s
-        saveSettings(settingsFile, s)
-      },
+      set: keepSettings,
     },
     showLog,
     notice: takeNotice,
@@ -354,14 +420,29 @@ async function run() {
     })
     wc.on('did-finish-load', () => applyZoom(wc))
   })
+  // Every window that shows a page of the server, kept on the server the app trusts (ServerWindows); and no window's page loads
+  // from an address the app does not trust now, a reload or a history step included.
+  const trustedWindows = followTrusted({
+    supervisor,
+    windows: () => BrowserWindow.getAllWindows() as unknown as ShownWindow[],
+    requests: session.defaultSession.webRequest as never,
+    origin,
+  })
   // Built again after each zoom move, for the level it shows.
   function setMenu(zoomLevel: number) {
     Menu.setApplicationMenu(
       buildMenu({
-        settings: () => void show().loadURL(origin() + '/settings'),
-        openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)),
+        settings: () => {
+          const url = at('/settings')
+          if (url) void show().loadURL(url)
+        },
+        openInBrowser: () => {
+          const url = at(`/#token=${encodeURIComponent(token)}`)
+          if (url) void import('electron').then(({ shell }) => shell.openExternal(url))
+        },
         restart: () => void supervisor.restart().catch(() => {}),
         showLog,
+        reload: () => trustedWindows.reload(BrowserWindow.getFocusedWindow() as unknown as ShownWindow | null),
         zoom,
         zoomLevel,
         dev,
@@ -370,14 +451,9 @@ async function run() {
   }
   setMenu(settings.zoomLevel)
   supervisor.on('state', (st) => {
-    if (!main || main.isDestroyed()) return
-    main.webContents.send('conductor:serverState', st)
-    // A restarted server listens on a fresh port: the window follows it, on the same page.
-    const next = st.state === 'running' ? followOrigin(main.webContents.getURL(), origin()) : null
-    if (next) {
-      log('main', `server origin changed; the window follows to ${new URL(next).origin}`)
-      void main.loadURL(next)
-    }
+    // Every window on a page of the server follows the server the app trusts (followTrusted, on the same state event): it shows
+    // nothing while none runs, and goes back to its page on the new origin once one does.
+    if (main && !main.isDestroyed()) main.webContents.send('conductor:serverState', st)
   })
   supervisor.on('gaveUp', (st) => {
     void dialog.showMessageBox({ type: 'error', title: 'Conductor', message: 'The server keeps failing', detail: `${st.lastError ?? ''}\nSee the server log (Server › Server log), then Restart server.` })
@@ -406,7 +482,10 @@ async function run() {
   const inTray = createTray({
     icon: iconPath(),
     show: () => show(),
-    openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)),
+    openInBrowser: () => {
+          const url = at(`/#token=${encodeURIComponent(token)}`)
+          if (url) void import('electron').then(({ shell }) => shell.openExternal(url))
+        },
     restart: () => void supervisor.restart().catch(() => {}),
     showLog,
     quit: () => app.quit(),
@@ -493,15 +572,23 @@ async function showSetup(reason: string) {
   const { ipcMain } = await import('electron')
   const { execFile } = await import('node:child_process')
   const w = new BrowserWindow({ width: 720, height: 560, title: 'Conductor needs WSL', webPreferences: { preload: join(__dirname, 'setup-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } })
+  const page = join(resources, 'static/setup.html')
+  fenceLocalPage(w.webContents as unknown as FenceContents, (url) => void shell.openExternal(url))
+  // The setup page's two calls, answered for that page alone.
+  const mine = (e: Electron.IpcMainInvokeEvent) => {
+    if (!ownPage(e as never, w.webContents as never, page)) throw new Error('refused: not the setup page')
+  }
   ipcMain.removeHandler('conductor:installWsl')
   ipcMain.removeHandler('conductor:retrySetup')
-  ipcMain.handle('conductor:installWsl', () => {
+  ipcMain.handle('conductor:installWsl', (e) => {
+    mine(e)
     execFile('powershell.exe', ['-NoProfile', '-Command', 'Start-Process wsl.exe -ArgumentList "--install" -Verb RunAs'], { windowsHide: true }, () => {})
   })
-  ipcMain.handle('conductor:retrySetup', () => {
+  ipcMain.handle('conductor:retrySetup', (e) => {
+    mine(e)
     app.relaunch()
     app.exit(0)
   })
-  await w.loadFile(join(resources, 'static/setup.html'), { query: { reason } })
+  await w.loadFile(page, { query: { reason } })
   w.on('closed', () => app.quit())
 }

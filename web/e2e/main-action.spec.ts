@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { filledPrimaries } from './contrast'
-import { budget, dayPage, expect, showView, test } from './fixtures'
+import { atRest, budget, dayPage, expect, showView, test } from './fixtures'
 import { MEASURE_WAIT_MS, probeColour } from './layout'
 
 // One colour for the main action, the code font for evidence, amber only where someone must act (the UX review's P16, PR-26), read
@@ -12,7 +12,8 @@ import { MEASURE_WAIT_MS, probeColour } from './layout'
 // - The code font: the sentences (the sidebar run header's subtitle, the run card's meta line, the inspector's People line) are set
 //   in the app's face; the ids (the run card's short run id, a task's id on the run page) stay in the code font.
 // - Amber: Not installed and an identified agent's badge on Agents are neither amber nor green; the Yard's Needs you chip keeps its
-//   amber mark (its text and number are the chip's neutral ink, PR-17's, and not read here).
+//   amber mark (its text and number are the chip's neutral ink, PR-17's, and not read here). The Launch agent dialog's Yolo, turned
+//   on, is the switch's own on colour, never amber (its switch is moved and nothing launched, so the day stays as it was).
 
 const SIZES = [
   { width: 1440, height: 900, touch: false },
@@ -151,6 +152,26 @@ for (const size of SIZES) {
       const glyph = page.locator('[data-yard-filter="needs"] [data-status-mark="needs"] [data-status-glyph]').first()
       await expect(glyph).toBeVisible({ timeout: MEASURE_WAIT_MS })
       expect(await colour(page, glyph), "the Needs you chip's mark is amber").toBe(await probeColour(page, 'var(--ui-warning)'))
+
+      // The Launch agent dialog's Yolo, on: one press beside Launch, never amber, its words the same on and off. Cancelled after.
+      await page.goto('/sessions')
+      await page.getByRole('button', { name: 'Launch agent' }).first().click()
+      const dialog = page.getByRole('dialog')
+      // The dialog opens on the agent launched last, the day's Plain, which has no recipe: its switch is rightly off and disabled.
+      // Claude Code's stub has one; picked, its switch is the one a person turns on.
+      const claude = dialog.getByRole('radiogroup', { name: 'Agent' }).getByRole('radio', { name: /Claude Code \(e2e stub\)$/ })
+      await claude.click()
+      await expect(claude).toHaveAttribute('aria-checked', 'true')
+      const yolo = dialog.locator('[data-slot="footer"] [data-yolo-switch]')
+      await expect(yolo).toBeEnabled({ timeout: MEASURE_WAIT_MS })
+      if ((await yolo.getAttribute('aria-checked')) !== 'true') await yolo.click()
+      await expect(yolo).toHaveAttribute('aria-checked', 'true')
+      await expect(dialog.locator('[data-yolo-words]')).toHaveText('skips permission prompts')
+      await atRest(yolo)
+      expect(await background(page, yolo), 'Yolo on is not amber').not.toBe(await probeColour(page, 'var(--ui-warning)'))
+      expect(await colour(page, dialog.locator('[data-yolo-words]')), "Yolo's words are not in the warning text colour").not.toBe(await probeColour(page, 'var(--ui-warning-text)'))
+      await dialog.getByRole('button', { name: 'Cancel' }).click()
+      await expect(dialog).toHaveCount(0)
     })
   }
 }

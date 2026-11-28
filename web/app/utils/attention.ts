@@ -9,9 +9,29 @@ export function waitsForTerminal(a: Pick<Attention, 'state' | 'source'> | undefi
   return a?.state === 'needs_input' && a.source === 'submit'
 }
 
-/** The heading a reply bar shows for a session that needs input: the terminal's for a held turn, else the agent's. */
-export function waitingHeading(a: Pick<Attention, 'state' | 'source'> | undefined, agentName: string): string {
-  return waitsForTerminal(a) ? 'Type in the terminal to go on' : `${agentName} is waiting on you`
+/** What the card says for a person's own mark, in place of a question's words. */
+export const MARKED_BY_PERSON = 'Marked by a person.'
+
+/**
+ * A person's own mark (More's Mark as Needs you, the palette's row: posted with the workbench's token and no words of its own): no
+ * question to answer. A mark that carries words is a question, whatever its source, and keeps `<agent> asks:` before them.
+ */
+export function markedByPerson(a: Pick<Attention, 'state' | 'source' | 'message'> | undefined): boolean {
+  return a?.state === 'needs_input' && a.source === 'admin' && !a.message
+}
+
+/**
+ * The heading a question's card shows for a session that needs input: the terminal's for a held turn, `<agent> needs you` for a
+ * person's own mark, else `<agent> asks`, before the agent's own question.
+ */
+/** The words a waiting session shows: its question's, or, for a person's own mark (which carries none), `Marked by a person.` */
+export function attentionWords(a: Pick<Attention, 'state' | 'source' | 'message'> | undefined): string {
+  return markedByPerson(a) ? MARKED_BY_PERSON : (a?.message ?? '')
+}
+
+export function waitingHeading(a: Pick<Attention, 'state' | 'source' | 'message'> | undefined, agentName: string): string {
+  if (waitsForTerminal(a)) return 'Type in the terminal to go on'
+  return markedByPerson(a) ? `${agentName} needs you` : `${agentName} asks`
 }
 
 /**
@@ -97,6 +117,16 @@ export const ANSWER_IN_TERMINAL = 'Answer it in the terminal'
  */
 export function choiceKey(o: AttentionOption, i: number): number | undefined {
   return o.mode || i >= 9 ? undefined : i + 1
+}
+
+/**
+ * The number, 1 to 9, a key press gives every place that answers a question by its number key (choiceKey); 0 for any other press.
+ * A key held down (its repeats), a key of a composition (an input method's) and a press with Alt, Ctrl or Meta answer nothing: a
+ * held key would otherwise answer the next question that appears under the same focus with a press meant for the one before.
+ */
+export function answerDigit(e: Pick<KeyboardEvent, 'key' | 'repeat' | 'isComposing' | 'altKey' | 'ctrlKey' | 'metaKey'>): number {
+  if (e.repeat || e.isComposing || e.altKey || e.ctrlKey || e.metaKey || !/^[1-9]$/.test(e.key)) return 0
+  return Number(e.key)
 }
 
 const RECOMMENDED = /\(recommended\)$/i

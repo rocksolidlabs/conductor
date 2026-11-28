@@ -1,6 +1,4 @@
 import { randomBytes } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
 import type { Page, Response, Route } from '@playwright/test'
 import { expect, standingRoute, test, type Api, type Run } from './fixtures'
 
@@ -317,7 +315,7 @@ test("a crew read without a revision holds Launch with words, and so does one Sa
   await expect(s.unrevised).toHaveText(unrevised)
   await expect(s.confirm).toBeDisabled()
   // The crew inherits its yolo setting: the sheet says it is the server's at the launch, and what it is now.
-  await expect(s.yolo).toHaveText(`Permission prompts: ${yoloDefault ? 'skipped: the members act without asking' : 'the members ask before they act'} (the server's default now)`)
+  await expect(s.yolo).toHaveText(`Yolo is ${yoloDefault ? 'on: the members act without asking' : 'off: the members ask before they act'} (the server's default now).`)
   await page.locator('[data-crew-launch-cancel]').click()
   await expect(s.confirm).toHaveCount(0)
   // An edit's Save and launch saves it first, and the save answers no revision; the sheet then reads the crew, which comes without one
@@ -366,9 +364,9 @@ test('nothing that should go is refused: a saved crew, a draft in one go, two la
 })
 
 test("a launch the server refuses stays on the sheet in the server's words, with the run's name kept; Launch again is refused again: no run", async ({ page, api, state }) => {
-  // A crew of worktrees in a folder that is no git working tree: the server refuses its launch 409 not_a_repo, starting nothing.
-  const plain = join(state.root, `launch-plain-${randomBytes(3).toString('hex')}`)
-  mkdirSync(plain, { recursive: true })
+  // A crew of worktrees in the server's home folder, with no repository: the server refuses its launch 409 not_a_repo, starting nothing
+  // (a new project's folder gets its first commit instead; the home folder never does).
+  const plain = state.home
   const name = label('refused')
   const { crew } = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name, goal: '', cwd: plain, where: 'server', isolation: 'worktree', openAfterLaunch: false, yolo: false, members: [{ name: 'lead', agentId: 'claude', prompt: '', start: { when: 'manual' } }] })
   made.crews.push(crew.id)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DesktopSettings } from './desktop'
-import { answer, followSaved, formMove, newer, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
+import { answer, configForm, draftBack, followOutside, followSaved, rootsFollow, StaleRefusal, formMove, newer, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
 
 /** A part that records its call in `calls` and answers `value`, or throws `fail`. */
 function part<T>(calls: string[], name: string, value: T, fail?: string) {
@@ -48,9 +48,9 @@ describe('saveParts', () => {
 
   it("keeps Brakeman's part saved when the app's fails after it", async () => {
     const calls: string[] = []
-    const out = await saveParts({ brakeman: part(calls, 'brakeman', undefined), app: app(calls, 'saved', 'the data directory must be absolute') })
+    const out = await saveParts({ brakeman: part(calls, 'brakeman', undefined), app: app(calls, 'saved', 'where Conductor keeps its data must be an absolute path') })
     expect(calls).toEqual(['brakeman', 'app', 'kept'])
-    expect(out).toEqual({ brakeman: 'saved', app: 'failed', error: 'the data directory must be absolute' })
+    expect(out).toEqual({ brakeman: 'saved', app: 'failed', error: 'where Conductor keeps its data must be an absolute path' })
   })
 
   it("tells a restart that failed after the app kept the settings from a refusal, and one it cannot read from both (Codex's review)", async () => {
@@ -204,10 +204,10 @@ describe('saveWords', () => {
   })
 
   it('says which part was saved and which was not, and that the edits are kept', () => {
-    expect(saveWords({ brakeman: 'saved', app: 'failed', error: 'the data directory must be absolute' })).toEqual({
+    expect(saveWords({ brakeman: 'saved', app: 'failed', error: 'where Conductor keeps its data must be an absolute path' })).toEqual({
       ok: false,
       title: 'Saved in part',
-      description: "Brakeman's settings were saved. The app's settings were not: the data directory must be absolute. Your edits are kept.",
+      description: "Brakeman's settings were saved. The app's settings were not: where Conductor keeps its data must be an absolute path. Your edits are kept.",
     })
     expect(saveWords({ brakeman: 'failed', app: 'held', error: 'Saved elsewhere meanwhile.' })).toEqual({
       ok: false,
@@ -245,5 +245,178 @@ describe('saveWords', () => {
 
   it("says the app's refusal in its own words when Brakeman's part was unchanged, as before", () => {
     expect(saveWords({ brakeman: 'unchanged', app: 'failed', error: 'the server did not start' })).toEqual({ ok: false, title: 'Not saved', description: 'the server did not start' })
+  })
+})
+
+describe('Discard (UX3 R56)', () => {
+  type Conf = { rev: number; reads: number }
+  function harness() {
+    let saved: Conf | null = { rev: 1, reads: 300 }
+    const shown: string[] = []
+    const ctl = configForm<Conf>({
+      generation: () => 0,
+      saved: () => saved,
+      save: async () => {
+        throw Object.assign(new Error('stale'), { stale: true })
+      },
+      read: async () => ({ rev: 2, reads: 500 }),
+      isStale: (e) => (e as { stale?: boolean }).stale === true,
+      current: (f) => f,
+      same: (a, b) => a.reads === b.reads,
+      shown: (_f, fields) => shown.push(String(fields)),
+    })
+    ctl.follow()
+    return { ctl, shown, setSaved: (c: Conf | null) => (saved = c) }
+  }
+
+  it('puts the form back to what is saved, its text fields with it', () => {
+    const { ctl, shown } = harness()
+    ctl.form.value!.reads = 400
+    expect(ctl.dirty.value).toBe(true)
+    expect(ctl.discard()).toBe(true)
+    expect(ctl.form.value).toEqual({ rev: 1, reads: 300 })
+    expect(ctl.dirty.value).toBe(false)
+    expect(ctl.edited.value).toBe(false)
+    expect(shown.at(-1)).toBe('all')
+  })
+
+  it('keeps a stale refusal that waits for its choice, which still reads what is saved now', async () => {
+    const { ctl } = harness()
+    ctl.form.value!.reads = 400
+    await expect(ctl.save({ rev: 1, reads: 400 }, 0)).rejects.toBeInstanceOf(StaleRefusal)
+    expect(ctl.stale.value).toBe(true)
+    ctl.discard()
+    expect(ctl.stale.value).toBe(true)
+    expect(ctl.form.value!.reads).toBe(300)
+    expect(await ctl.readAgain()).toBe(true)
+    expect(ctl.stale.value).toBe(false)
+    expect(ctl.form.value).toEqual({ rev: 2, reads: 500 })
+  })
+
+  it('does nothing before anything was read', () => {
+    const { ctl, setSaved } = harness()
+    setSaved(null)
+    ctl.drop()
+    expect(ctl.discard()).toBe(false)
+  })
+})
+
+describe('a draft kept while another page is open (UX3 R81)', () => {
+  it('brings back each edit, but a setting saved meanwhile wins', () => {
+    const read = { ...settings }
+    const left = { ...settings, yolo: true, reach: 'auto' as const, closeToTray: false }
+    // Meanwhile Reach was saved elsewhere (the palette, another window): it wins; the other edits come back.
+    const now = { ...settings, reach: 'manual' as const }
+    const form = { ...now }
+    expect(draftBack(form, left, read, now)).toEqual(['yolo', 'closeToTray'])
+    expect(form).toEqual({ ...now, yolo: true, closeToTray: false })
+    // A field the draft did not change follows what is saved now.
+    const form2 = { ...now, closeToTray: true }
+    draftBack(form2, { ...read }, read, now)
+    expect(form2).toEqual({ ...now, closeToTray: true })
+  })
+
+  type Conf = { rev: number; reads: number; turns: number }
+  function harness(start: Conf, gen = { now: 0 }) {
+    let saved: Conf | null = start
+    const ctl = configForm<Conf>({
+      generation: () => gen.now,
+      saved: () => saved,
+      save: async () => {
+        throw Object.assign(new Error('stale'), { stale: true })
+      },
+      read: async () => saved!,
+      isStale: (e) => (e as { stale?: boolean }).stale === true,
+      current: (f) => f,
+      same: (a, b) => a.reads === b.reads && a.turns === b.turns,
+      shown: () => {},
+    })
+    ctl.follow()
+    return { ctl, set: (c: Conf) => (saved = c) }
+  }
+
+  it("keeps Brakeman's form only when it holds a change, and brings it back at the revision saved now", () => {
+    const a = harness({ rev: 1, reads: 300, turns: 5 })
+    expect(a.ctl.keep()).toBeNull()
+    a.ctl.form.value!.reads = 400
+    const kept = a.ctl.keep()!
+    expect(kept).toEqual({ form: { rev: 1, reads: 400, turns: 5 }, base: { rev: 1, reads: 300, turns: 5 }, gen: 0, stale: false })
+    // Back on the page, a newer revision saved meanwhile changed the turns: the reads come back, the turns are the saved ones.
+    const b = harness({ rev: 2, reads: 300, turns: 7 })
+    expect(b.ctl.restore(kept)).toBe(true)
+    expect(b.ctl.form.value).toEqual({ rev: 2, reads: 400, turns: 7 })
+    expect(b.ctl.dirty.value).toBe(true)
+    // A revision that changed the reads too: the saved value wins, nothing is left to save.
+    const c = harness({ rev: 3, reads: 350, turns: 5 })
+    c.ctl.restore(kept)
+    expect(c.ctl.form.value).toEqual({ rev: 3, reads: 350, turns: 5 })
+    expect(c.ctl.dirty.value).toBe(false)
+  })
+
+  it('drops a form kept under another token, and keeps a stale choice only while nothing was saved since', async () => {
+    const a = harness({ rev: 1, reads: 300, turns: 5 })
+    a.ctl.form.value!.reads = 400
+    await expect(a.ctl.save({ rev: 1, reads: 400, turns: 5 }, 0)).rejects.toBeInstanceOf(StaleRefusal)
+    const kept = a.ctl.keep()!
+    expect(kept.stale).toBe(true)
+    const same = harness({ rev: 1, reads: 300, turns: 5 })
+    same.ctl.restore(kept)
+    expect(same.ctl.stale.value).toBe(true)
+    const moved = harness({ rev: 2, reads: 300, turns: 5 })
+    moved.ctl.restore(kept)
+    expect(moved.ctl.stale.value).toBe(false)
+    expect(moved.ctl.form.value!.reads).toBe(400)
+    const other = harness({ rev: 1, reads: 300, turns: 5 }, { now: 1 })
+    expect(other.ctl.restore(kept)).toBe(false)
+    expect(other.ctl.form.value!.reads).toBe(300)
+  })
+})
+
+describe('a folder allowed from a dialog while Settings is open (UX3 R62)', () => {
+  const read = { ...settings, allowedRoots: ['/r'] }
+  const allowed = { ...read, allowedRoots: ['/r', '/p'] }
+
+  it('joins an untouched form, which then holds no change', () => {
+    const form = { ...read, allowedRoots: [...read.allowedRoots] }
+    followOutside(form, read, allowed)
+    expect(form.allowedRoots).toEqual(['/r', '/p'])
+    expect(holds(form, allowed)).toBe(true)
+  })
+
+  it('joins a form being edited, its edits kept, the folders list edited too', () => {
+    const form = { ...read, yolo: true, allowedRoots: ['/r', '/mine'] }
+    followOutside(form, read, allowed)
+    expect(form.yolo).toBe(true)
+    expect(form.allowedRoots).toEqual(['/r', '/mine', '/p'])
+    // The next Save sends the list whole: the folder allowed meanwhile with it.
+    expect(form.allowedRoots).toContain('/p')
+    // What Save would change is the edits alone: the folder allowed is saved already.
+    const changed = (Object.keys(form) as Array<keyof typeof form>).filter((k) => JSON.stringify(form[k]) !== JSON.stringify(allowed[k]))
+    expect(changed).toEqual(['allowedRoots', 'yolo'])
+    expect(rootsFollow(['/r', '/mine'], read.allowedRoots, allowed.allowedRoots).filter((r) => !allowed.allowedRoots.includes(r))).toEqual(['/mine'])
+  })
+
+  it('keeps a folder taken out here taken out, and Discard keeps the folder allowed (it was never this form\'s change)', () => {
+    const before = { ...settings, allowedRoots: ['/r', '/s'] }
+    const form = { ...before, allowedRoots: ['/r'] }
+    const now = { ...before, allowedRoots: ['/r', '/s', '/p'] }
+    followOutside(form, before, now)
+    expect(form.allowedRoots).toEqual(['/r', '/p'])
+    // Discard puts the form back to what is saved now: the folder allowed stays.
+    const discarded = { ...form }
+    followSaved(discarded, null, now)
+    expect(discarded.allowedRoots).toEqual(['/r', '/s', '/p'])
+  })
+
+  it('follows a setting saved meanwhile in a field not edited, and keeps one edited', () => {
+    const form = { ...read, closeToTray: false }
+    const now = { ...allowed, closeToTray: true, reach: 'auto' as const }
+    followOutside(form, read, now)
+    expect(form.reach).toBe('auto')
+    expect(form.closeToTray).toBe(false)
+  })
+
+  it('drops a folder taken out of what is saved meanwhile, unless this page added it', () => {
+    expect(rootsFollow(['/r', '/s', '/mine'], ['/r', '/s'], ['/r'])).toEqual(['/r', '/mine'])
   })
 })

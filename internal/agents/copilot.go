@@ -36,5 +36,16 @@ func copilotAdapter() Adapter {
 			return snippetOf(copilotAssets, hooksDir, "copilot.json")
 		},
 		Events: []string{"needs_input", "working", "done", "tool_use", "error"},
+		Flags:  copilotFlags,
 	}
+}
+
+// copilotFlags is how the Copilot CLI's flags are read (`copilot --help`,
+// 1.0.94, and the recipes tier): clap's form, its words on the lines under
+// each row. Besides the yolo recipe's --yolo, these grant every permission
+// or a whole kind of them without asking: --allow-all and the three it
+// stands for.
+var copilotFlags = &FlagsRecipe{
+	Args:  []string{"--help"},
+	Skips: []string{"--allow-all", "--allow-all-tools", "--allow-all-paths", "--allow-all-urls"},
 }

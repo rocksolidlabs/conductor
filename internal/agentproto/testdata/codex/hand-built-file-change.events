@@ -1,0 +1,13 @@
+accepted m1
+turn_started
+tool_started call_fixture_2 parent="" fileChange summary="/work/notes.txt" input={"changes":[{"diff":"@@ -1,2 +1,2 @@\n one\n-two\n+2\n","kind":{"type":"update"},"path":"/work/notes.txt"},{"diff":"hello\nworld\n","kind":{"type":"add"},"path":"/work/new.txt"}]}
+permission codex-req-1 call=call_fixture_2 fileChange cwd="" input={"changes":[{"diff":"@@ -1,2 +1,2 @@\n one\n-two\n+2\n","kind":{"type":"update"},"path":"/work/notes.txt"},{"diff":"hello\nworld\n","kind":{"type":"add"},"path":"/work/new.txt"}]}
+tool_ended call_fixture_2 ok exit=none cut=false output=""
+file_changed tool=call_fixture_2 /work/notes.txt edit +1 -1 diff="@@ -1,2 +1,2 @@\n one\n-two\n+2\n"
+file_changed tool=call_fixture_2 /work/new.txt create +2 -0 diff="hello\nworld\n"
+tool_started call_fixture_3 parent="" commandExecution summary="/bin/bash -lc 'false'" input={"command":"/bin/bash -lc 'false'","cwd":"/work"}
+tool_ended call_fixture_3 error exit=1 cut=false output=""
+text msg_fixture_2 2 call(s) final=true "Done."
+turn_ended done in=3000 out=40 cost=0.00000000
+--- written
+{"id":0,"result":{"decision":"accept"}}

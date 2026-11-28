@@ -1,3 +1,4 @@
+import type { RootCheck } from '~/utils/folderAllow'
 import { type AttemptContextRow, CONTEXT_SHA_HEADER, contextBodyPath } from '~/utils/attemptContext'
 import { itemOf, type InboxItem, type InboxPage, type InboxTrack } from '~/utils/inbox'
 import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, CrewCompare, CrewLaunchBody, OpenEvent, Role } from '~/utils/protocol'
@@ -83,7 +84,7 @@ export interface SessionInfo {
    * an older server). A chat's `cols` and `rows` are 0.
    */
   way?: 'protocol'
-  /** A chat's protocol, of the catalog's closed set (`claude-stream-json`), at most 32 bytes. */
+  /** A chat's protocol, of the catalog's closed set (`claude-stream-json`, `codex-app-server`, `acp-v1`), at most 32 bytes. */
   protocol?: string
   /** A chat's messages reach its agent as written: no `@path` is expanded, no `/command` run. */
   verbatim?: boolean
@@ -209,6 +210,43 @@ export interface AgentInfo {
   browser?: AgentBrowser
   /** The protocol way it may run, read-only: its protocol's name and the arguments added to its command for a chat. Missing: none. */
   protocol?: AgentProtocol
+}
+
+/** A value an agent's help lists for a flag; `set: 'yolo'` for one that turns its questions off. */
+export interface AgentFlagChoice {
+  value: string
+  about?: string
+  set?: 'yolo'
+}
+
+/** One flag of an agent's own help, as GET /api/catalog/{id}/flags reads it (internal/agents ParseFlags). */
+export interface AgentFlag {
+  name: string
+  aliases?: string[]
+  value: 'none' | 'required' | 'optional' | 'unknown'
+  placeholder?: string
+  repeat?: boolean
+  about?: string
+  choices?: AgentFlagChoice[]
+  examples?: string[]
+  kind?: 'choice' | 'model' | 'folder'
+  /** What a launch by Conductor sets itself, which a form does not offer. */
+  set?: 'model' | 'yolo' | 'session' | 'launch' | 'exit'
+  /** A session launched with it stays in its terminal. */
+  keepsTerminal?: boolean
+}
+
+/** GET /api/catalog/{id}/flags: an agent's flags from the help of the version installed on the server. */
+export interface AgentFlags {
+  agent: string
+  name: string
+  version?: string
+  state: 'read' | 'reading' | 'none'
+  /** The agent has a chat way at its installed version: a lone `--` in a launch's arguments keeps its session in its terminal. */
+  chat?: boolean
+  why?: 'no_args' | 'no_recipe' | 'not_installed' | 'not_identified' | 'unreadable' | 'too_long' | 'no_flags'
+  flags: AgentFlag[]
+  models: string[]
 }
 
 /** An agent's protocol way (the catalog's `protocol`): `{}` turns an inherited one off. */
@@ -967,6 +1005,19 @@ export interface CommandCheckReply {
   /** With an adapter in the request: what its probe found the program to be. */
   identity?: Identity
 }
+/** GET /api/launch/last: what the last launch on this server was (UX3 R89), kept by the server in its data directory. */
+export interface LastLaunchRecord {
+  v: number
+  agent?: string
+  folder?: string
+  /** `way`: the way of its last launch, Terminal or Chat (none in a record of an older server). */
+  models: Record<string, { model: string; names: string[]; way?: 'terminal' | 'protocol' }>
+  order?: string[]
+  /** The last new agent trial the server took: its agents, its folder, and each folder's Check line as its words. */
+  trial?: { agents: string[]; folder: string; checks: Array<{ folder: string; check: string[] }> }
+  /** The note on Chat's terms was drawn once. */
+  chatNoted?: boolean
+}
 export interface PathsReply {
   dir: string
   entries: PathEntry[]
@@ -997,7 +1048,7 @@ export function useSessions() {
     /** Starts a new session like a server session (#434): what the body leaves out is the source's launch; the name must be no listed session's. */
     clone: (id: string, body: CloneRequest) => request<SessionInfo>(`/api/sessions/${encodeURIComponent(id)}/clone`, { method: 'POST', body }),
     /** `yolo` overrides the server's default for this launch; left out, the default holds. */
-    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean; account?: string; model?: string; message?: string }) =>
+    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean; account?: string; model?: string; message?: string; way?: 'terminal' | 'protocol' }) =>
       request<SessionInfo>('/api/sessions', { method: 'POST', body }),
     /** Starts an ended session again: resumed with its agent's recipe when it has had a turn, else relaunched (`notice` says why). */
     resumeSession: (id: string) => request<ResumeResult>(`/api/sessions/${encodeURIComponent(id)}/resume`, { method: 'POST' }),
@@ -1030,6 +1081,8 @@ export function useSessions() {
       request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog', { query: { wait: '0' } }).then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),
     /** One agent as the catalog lists it, once the server's checks of it have answered (about 4 s at most; still `checking` past that). */
     catalogAgent: (id: string, signal?: AbortSignal) => request<{ agent: AgentInfo }>(`/api/catalog/${encodeURIComponent(id)}`, { signal }).then((r) => r.agent),
+    /** An agent's own flags and the model names its help gives, read from the help of the version installed (`reading`: ask again). */
+    agentFlags: (id: string, signal?: AbortSignal) => request<AgentFlags>(`/api/catalog/${encodeURIComponent(id)}/flags`, { signal }),
     /** Adds an agent or replaces the one with the same id (a built-in too); the server saves it in its data directory. */
     saveAgent: (a: AgentInput) => request<{ agent: AgentInfo }>('/api/catalog', { method: 'POST', body: a }).then((r) => r.agent),
     /** Makes a copy of the agent `from` under the body's id (#291): what the body leaves out that the form has no control for is the source's, and an env value of `***` is the source's value, copied and never shown; 409 `id_taken` for an id an agent has. */
@@ -1163,7 +1216,11 @@ export function useSessions() {
     revokeRunLink: (runId: string, linkId: string) =>
       request<void>(`/api/runs/${encodeURIComponent(runId)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** OS user running the server; the default display name for admins. */
-    whoami: () => request<{ user: string; host: string; switchyard: boolean; home?: string; version?: string }>('/api/whoami'),
+    /** The last launch on this server: its agent, its folder and each agent's model; `{v: 1, models: {}}` before any. */
+    lastLaunch: () => request<LastLaunchRecord>('/api/launch/last'),
+    /** The note on Chat's terms was drawn: no page draws it again (POST /api/launch/chat-noted). */
+    chatNoted: () => request<void>('/api/launch/chat-noted', { method: 'POST', body: {} }),
+    whoami: () => request<{ user: string; host: string; switchyard: boolean; home?: string; version?: string; folders?: string }>('/api/whoami'),
     /** The server's reach: its public address, the mapped port and the certificate's readiness. */
     reach: () => request<ReachInfo>('/api/reach'),
     /**
@@ -1174,6 +1231,8 @@ export function useSessions() {
     /** `scope: 'any'` lists outside the allowed roots, on a server with paths.browse any (the desktop app's). */
     listPaths: (prefix: string, limit = 50, scope: 'roots' | 'any' = 'roots') =>
       request<PathsReply>('/api/paths', { query: { prefix, limit: String(limit), ...(scope === 'any' ? { scope } : {}) } }),
+    /** Whether agents may use the folder at `path` (the server's default when empty), and why not (GET /api/roots/check, UX3 R30). */
+    checkRoot: (path: string, signal?: AbortSignal) => request<RootCheck>('/api/roots/check', { query: { path }, signal }),
     /** Whether a crew with worktrees could launch in `cwd` (the server's default when empty). A preview: the launch's 409 `not_a_repo` decides. */
     gitCheck: (cwd: string) => request<GitCheck>('/api/git/check', { query: { cwd } }),
     /** Every hook adapter, in a stable order, with its install checked in the server user's home, the server's host name, and its webhooks. */

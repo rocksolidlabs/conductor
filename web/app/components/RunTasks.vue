@@ -329,7 +329,7 @@ async function confirm() {
         <li v-if="row.lane" class="flex min-w-0 flex-wrap items-baseline gap-x-2 px-3 pt-1.5 text-xs" :data-task-lane="row.lane.task" :data-lane-selection="laneLabel(row.lane.task)">
           <span class="flex-none font-medium text-muted">Lane</span>
           <span class="flex-none font-mono font-semibold text-highlighted" data-mono="id">{{ row.lane.task }}</span>
-          <span class="min-w-0 break-words text-muted" data-task-lane-approach>{{ row.lane.approach || 'a candidate of the comparison' }}{{ row.lane.review ? `, reviewed by ${row.lane.review}` : '' }}</span>
+          <span class="min-w-0 break-words text-muted" data-task-lane-approach>{{ row.lane.approach || 'a candidate of the trial' }}{{ row.lane.review ? `, reviewed by ${row.lane.review}` : '' }}</span>
           <span v-if="laneLabel(row.lane.task)" class="flex-none font-medium" :class="laneLabel(row.lane.task) === 'selected' ? 'text-default' : 'text-muted'" data-task-lane-selection>{{ SELECTION_WORDS[laneLabel(row.lane.task)!] }}</span>
         </li>
         <template v-else>

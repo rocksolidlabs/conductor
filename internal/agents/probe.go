@@ -50,6 +50,9 @@ type ProbeResult struct {
 	// watch of its exit failed, and the program was ended. It says nothing
 	// of the program, so it is not kept: the next ask probes again.
 	Retry bool
+	// TooLong says a help read (ProbeProcess.Help) found more than MaxHelp
+	// bytes: the program answered, and none of its help is kept.
+	TooLong bool
 }
 
 const (
@@ -110,6 +113,17 @@ func (r *ProbeProcess) End() {
 	}
 }
 
+// cut ends the program under way and its group, as End does, but leaves the
+// run its own: the run then ends as a program that was killed does (a help
+// read that passed its bound in bytes).
+func (r *ProbeProcess) cut() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cmd != nil {
+		endProbe(r.cmd)
+	}
+}
+
 // endProbe kills cmd's process group and cmd itself (should it have left
 // the group); called under the run's lock, before the reaping.
 func endProbe(cmd *exec.Cmd) {
@@ -119,12 +133,49 @@ func endProbe(cmd *exec.Cmd) {
 
 // Run runs the probe once (RunProbe).
 func (r *ProbeProcess) Run(ctx context.Context, command []string, p Probe, env map[string]string) ProbeResult {
-	if len(command) == 0 {
-		return ProbeResult{Error: "no command"}
-	}
 	timeout := probeTimeout
 	if r.Timeout > 0 {
 		timeout = r.Timeout
+	}
+	var out limitedBuffer
+	out.max = probeMaxOutput
+	res := r.exec(ctx, timeout, command, p.Args, env, func(cmd *exec.Cmd, _ string) (func(), error) {
+		cmd.Stdout, cmd.Stderr = &out, &out
+		return func() {}, nil
+	}, nil)
+	if !res.Ran {
+		return res
+	}
+	text := out.String()
+	if p.Reject != nil && p.Reject.MatchString(text) {
+		res.Impostor = true
+	} else if p.Match != nil {
+		if m := p.Match.FindStringSubmatch(text); m != nil {
+			res.Identified = true
+			if len(m) > 1 {
+				res.Version = strings.TrimSpace(m[1])
+			}
+		}
+	}
+	if !res.Identified {
+		res.Output = firstLine(text)
+	}
+	return res
+}
+
+// exec is one run of a program for a probe or a help read: command, its
+// program resolved, with args after the rest of its argv; argv only, no
+// shell, stdin from nothing, in a temporary directory of its own that is
+// removed after, the probe's spare environment (probeEnv), in a process
+// group of its own that is killed before the program is reaped, within
+// timeout. stdio gives the program its output (a buffer, a file in dir) and
+// returns what to close once the program is reaped; after, when set, reads
+// what the program left in dir, only when it answered (Ran), before dir is
+// removed. The result says only whether the program answered: Ran, or an
+// Error (Retry when the watch failed on the run's own side).
+func (r *ProbeProcess) exec(ctx context.Context, timeout time.Duration, command, args []string, env map[string]string, stdio func(cmd *exec.Cmd, dir string) (func(), error), after func(dir string)) ProbeResult {
+	if len(command) == 0 {
+		return ProbeResult{Error: "no command"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -133,15 +184,17 @@ func (r *ProbeProcess) Run(ctx context.Context, command []string, p Probe, env m
 		return ProbeResult{Error: err.Error()}
 	}
 	defer os.RemoveAll(dir)
-	args := append(append([]string{}, command[1:]...), p.Args...)
-	cmd := exec.Command(command[0], args...)
+	argv := append(append([]string{}, command[1:]...), args...)
+	cmd := exec.Command(command[0], argv...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
 	cmd.Env = probeEnv(env)
 	cmd.WaitDelay = 500 * time.Millisecond
-	var out limitedBuffer
-	out.max = probeMaxOutput
-	cmd.Stdout, cmd.Stderr = &out, &out
+	closeIO, err := stdio(cmd, dir)
+	if err != nil {
+		return ProbeResult{Error: err.Error()}
+	}
+	defer closeIO()
 	probeAttr(cmd)
 	timedOut := ProbeResult{Error: fmt.Sprintf("timeout: the program did not answer within %d s", int(timeout/time.Second))}
 	r.mu.Lock()
@@ -186,7 +239,6 @@ func (r *ProbeProcess) Run(ctx context.Context, command []string, p Probe, env m
 		return ProbeResult{Error: fmt.Sprintf("the exit of %s could not be watched: %v", filepath.Base(command[0]), werr), Retry: true}
 	}
 	err = reap()
-	res := ProbeResult{Ran: true}
 	var exit *exec.ExitError
 	switch {
 	case ended:
@@ -197,24 +249,12 @@ func (r *ProbeProcess) Run(ctx context.Context, command []string, p Probe, env m
 	case err == nil, errors.As(err, &exit):
 		// A non-zero exit is still an answer.
 	default:
-		res.Ran, res.Error = false, err.Error()
-		return res
+		return ProbeResult{Error: err.Error()}
 	}
-	text := out.String()
-	if p.Reject != nil && p.Reject.MatchString(text) {
-		res.Impostor = true
-	} else if p.Match != nil {
-		if m := p.Match.FindStringSubmatch(text); m != nil {
-			res.Identified = true
-			if len(m) > 1 {
-				res.Version = strings.TrimSpace(m[1])
-			}
-		}
+	if after != nil {
+		after(dir)
 	}
-	if !res.Identified {
-		res.Output = firstLine(text)
-	}
-	return res
+	return ProbeResult{Ran: true}
 }
 
 // probeEnv is the environment a probe runs with.

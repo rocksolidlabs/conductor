@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { cutAtWord, firstMessageLine, isLoopbackHost, messageProblem, namePreview, noFirstMessageLine, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
+import { argsHoldYolo, argsNameModel, chipStep, cutAtWord, firstMessageLine, isLoopbackHost, launchKey, launchNote, launchRefusal, messageProblem, namePlaceholderFor, namePreview, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
 
 describe('showsRunsOn', () => {
   it('never asks in the desktop app', () => {
@@ -109,13 +109,133 @@ describe('which agents take a first message', () => {
     expect(takesFirstMessage({ firstMessage: false })).toBe(false)
     expect(takesFirstMessage(undefined)).toBe(false)
   })
-  it('says why another does not, naming those offered that do', () => {
-    const claude = { name: 'Claude Code', firstMessage: true }
-    const codex = { name: 'Codex', firstMessage: true }
-    const aider = { name: 'aider' }
-    expect(noFirstMessageLine([claude, codex, aider])).toBe("Conductor types a first message only where it knows the agent's prompt: Claude Code and Codex here.")
-    expect(noFirstMessageLine([claude, aider])).toBe("Conductor types a first message only where it knows the agent's prompt: Claude Code here.")
-    expect(noFirstMessageLine([{ name: 'A', firstMessage: true }, { name: 'B', firstMessage: true }, codex])).toBe("Conductor types a first message only where it knows the agent's prompt: A, B and Codex here.")
-    expect(noFirstMessageLine([aider])).toBe("Conductor types a first message only where it knows the agent's prompt, and knows none of these agents' prompts.")
+  it('says, in place of the task, that an agent which takes none starts at its prompt, and where its task goes', () => {
+    expect(noTaskLine({ name: 'Plain', allowArgs: true })).toBe('Plain starts at its prompt. Type your task in its terminal.')
+    expect(noTaskLine({ name: 'Shell' })).toBe('Shell starts at its prompt.')
+    // The old line, which explained why, is gone.
+    expect(noTaskLine({ name: 'aider', allowArgs: true })).not.toContain('Conductor types a first message')
   })
 })
+
+describe("the Agent row's keys", () => {
+  const ids = ['claude', 'codex', 'shell']
+  it('moves to the next and the previous chip, round at the ends, and to the first and the last', () => {
+    expect(chipStep(ids, 'claude', 'ArrowRight')).toBe('codex')
+    expect(chipStep(ids, 'claude', 'ArrowDown')).toBe('codex')
+    expect(chipStep(ids, 'shell', 'ArrowRight')).toBe('claude')
+    expect(chipStep(ids, 'claude', 'ArrowLeft')).toBe('shell')
+    expect(chipStep(ids, 'codex', 'ArrowUp')).toBe('claude')
+    expect(chipStep(ids, 'codex', 'Home')).toBe('claude')
+    expect(chipStep(ids, 'codex', 'End')).toBe('shell')
+  })
+  it('starts from the first when nothing offered is picked, and moves nothing for another key or no chips', () => {
+    expect(chipStep(ids, '', 'ArrowRight')).toBe('codex')
+    expect(chipStep(ids, 'claude', 'Tab')).toBeNull()
+    expect(chipStep(ids, 'claude', 'a')).toBeNull()
+    expect(chipStep([], '', 'ArrowRight')).toBeNull()
+  })
+})
+
+describe('a launch the server refused, in the dialog', () => {
+  it("says a folder's refusal under Folder in plain words", () => {
+    // A folder outside the folders agents may use, in the line's words for the way on there is: "yet" only where the app presses.
+    const outside = 'working directory is outside the allowed roots'
+    expect(launchRefusal('invalid_cwd', outside, 'press')).toEqual({ at: 'folder', words: "Agents can't use this folder yet.", outside: true })
+    expect(launchRefusal('invalid_cwd', outside, 'settings')).toEqual({ at: 'folder', words: "Agents can't use this folder. Add it to Folders agents can use in", settings: true, after: ', or pick another.', outside: true })
+    expect(launchRefusal('invalid_cwd', outside, 'app').words).toBe("Agents can't use this folder. Allow it in the Conductor app on the computer that runs it.")
+    expect(launchRefusal('invalid_cwd', outside, 'config').words).toBe("Agents can't use this folder. Add it to this server's folders agents can use, or pick another.")
+    for (const way of ['settings', 'app', 'config'] as const) expect(launchRefusal('invalid_cwd', outside, way).words, way).not.toContain('yet')
+    expect(launchRefusal('invalid_cwd', 'working directory does not exist')).toEqual({ at: 'folder', words: 'There is no folder at this path.' })
+    expect(launchRefusal('invalid_cwd', 'working directory is not a directory')).toEqual({ at: 'folder', words: 'This is a file, not a folder.' })
+    // Any other: never the server's words.
+    expect(launchRefusal('invalid_cwd', 'invalid working directory')).toEqual({ at: 'folder', words: "Agents can't use this folder. Pick another." })
+  })
+  it('says a launch as a chat the server refuses with its sentence and the way on', () => {
+    expect(launchRefusal('move_refused', "Claude Code's Chat needs its version 2.1 or later.")).toEqual({ at: 'top', words: "Not started: Claude Code's Chat needs its version 2.1 or later. Set Run as to Terminal to launch it." })
+    expect(launchRefusal('move_refused', '').words).toBe('Not started. Set Run as to Terminal to launch it.')
+  })
+  it("says any other refusal on top as Not started, in the server's words, with no code in them", () => {
+    expect(launchRefusal('invalid_request', 'the arguments choose a model already: set the model in one place')).toEqual({ at: 'top', words: 'Not started: the arguments choose a model already: set the model in one place.' })
+    expect(launchRefusal('spawn_failed', 'could not start the agent process.')).toEqual({ at: 'top', words: 'Not started: could not start the agent process.' })
+    expect(launchRefusal('', 'Failed to fetch')).toEqual({ at: 'top', words: 'Not started: Failed to fetch.' })
+    expect(launchRefusal('x', '').words).toBe('Not started.')
+    expect(launchRefusal('invalid_request', 'bad').words).not.toContain('invalid_request')
+  })
+})
+
+describe("the closed line of Launch agent's More options", () => {
+  it('names what is set inside, in order, and nothing when all is as it comes', () => {
+    expect(optionsSummary({})).toBe('')
+    expect(optionsSummary({ name: '  ', model: '', args: ' ' })).toBe('')
+    expect(optionsSummary({ model: 'opus' })).toBe('opus')
+    expect(optionsSummary({ name: 'fix the build', model: ' opus ', args: '--add-dir ../shared' })).toBe('"fix the build" · opus · --add-dir ../shared')
+    expect(optionsSummary({ args: '--model opus "two words"' })).toBe('--model opus "two words"')
+  })
+})
+
+describe('the keys that launch from the Launch dialog', () => {
+  const key = (over: Partial<Parameters<typeof launchKey>[0]> = {}) => ({ key: 'Enter', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, repeat: false, ...over })
+  it('Enter in the task box, and Ctrl or Cmd+Enter anywhere', () => {
+    expect(launchKey(key(), true)).toBe(true)
+    expect(launchKey(key(), false)).toBe(false)
+    expect(launchKey(key({ ctrlKey: true }), false)).toBe(true)
+    expect(launchKey(key({ metaKey: true }), false)).toBe(true)
+    expect(launchKey(key({ ctrlKey: true }), true)).toBe(true)
+  })
+  it('never Shift+Enter in the task box, a composing Enter, a held key, Alt, or another key', () => {
+    expect(launchKey(key({ shiftKey: true }), true)).toBe(false)
+    expect(launchKey(key({ isComposing: true }), true)).toBe(false)
+    expect(launchKey(key({ keyCode: 229 }), true)).toBe(false)
+    expect(launchKey(key({ repeat: true }), true)).toBe(false)
+    expect(launchKey(key({ repeat: true, ctrlKey: true }), false)).toBe(false)
+    expect(launchKey(key({ altKey: true }), true)).toBe(false)
+    expect(launchKey(key({ key: 'a', ctrlKey: true }), true)).toBe(false)
+  })
+})
+
+describe("Launch agent's More options, before the press", () => {
+  it('sees a model the arguments name, in each spelling the agents take', () => {
+    expect(argsNameModel(['--model', 'opus'])).toBe(true)
+    expect(argsNameModel(['--model=opus'])).toBe(true)
+    expect(argsNameModel(['-m', 'o3'])).toBe(true)
+    expect(argsNameModel(['--add-dir', '../shared'])).toBe(false)
+    expect(argsNameModel(['--models'])).toBe(false)
+    expect(argsNameModel([])).toBe(false)
+  })
+  it("sees the agent's own yolo arguments typed by hand, and nothing for an agent with no recipe", () => {
+    expect(argsHoldYolo(['--dangerously-skip-permissions'], ['--dangerously-skip-permissions'])).toBe(true)
+    expect(argsHoldYolo(['--add-dir', 'x'], ['--dangerously-skip-permissions'])).toBe(false)
+    expect(argsHoldYolo(['--yolo'], undefined)).toBe(false)
+    expect(argsHoldYolo(['--yolo'], [])).toBe(false)
+  })
+  it("gives Name's placeholder from the task, or the server's name for an agent that takes none", () => {
+    expect(namePlaceholderFor({ name: 'Claude Code' }, true, '')).toBe('Made from the task')
+    expect(namePlaceholderFor({ name: 'Claude Code' }, true, 'fix the build')).toBe(namePreview('fix the build'))
+    expect(namePlaceholderFor({ name: 'Plain' }, false, 'ignored')).toBe('Plain and a number')
+    expect(namePlaceholderFor(undefined, true, 'x')).toBe('')
+    expect(namePlaceholderFor({ name: 'Claude Code' }, true, '')).not.toBe('optional')
+  })
+})
+
+describe("the line under Launch agent's Account", () => {
+  const base = { state: 'ok', windows: [], limits: { source: 'provider' as const }, account: { id: 'work', label: 'Work' } }
+  const agent = { name: 'Claude Code' }
+  const win = (name: string, percent: number, severity: '' | 'normal' | 'warning' | 'critical' = 'normal', resetsAt?: string) => ({ source: 'provider' as const, kind: name, name, percent, severity, resetsAt })
+  it('names the window near its limit, its share and its reset, in the warning colour, the error colour when critical', () => {
+    const near = launchNote({ ...base, windows: [win('5-hour', 30), win('Weekly, all models', 92, 'warning', '2026-11-17T13:30:00Z')] }, agent, 'UTC')
+    expect(near).toEqual({ words: 'Work is near a limit: Weekly, all models 92% used, resets Tue 17 Nov 13:30. The agent may stop before then.', tone: 'warning' })
+    expect(launchNote({ ...base, windows: [win('5-hour', 95)] }, agent)?.words).toBe('Work is near a limit: 5-hour 95% used. The agent may stop before then.')
+    expect(launchNote({ ...base, windows: [win('5-hour', 95, 'warning'), win('Weekly', 60, 'critical')] }, agent)).toMatchObject({ tone: 'error', words: expect.stringContaining('Weekly 60% used') })
+  })
+  it("says a limit reached, in the provider's word, and a login signed out", () => {
+    expect(launchNote({ ...base, limits: { source: 'provider', reached: 'rate_limit_reached' } }, agent)).toEqual({ words: 'Work has reached a limit, its provider says. The agent may stop at once.', tone: 'error' })
+    expect(launchNote({ ...base, state: 'signed_out', account: { id: 'default' } }, agent)).toEqual({ words: 'Claude Code is signed out on Default login. It will ask you to sign in when it starts.', tone: 'warning' })
+  })
+  it('says nothing when all is fine, while nothing is known, or for another state', () => {
+    expect(launchNote({ ...base, windows: [win('5-hour', 12)] }, agent)).toBeNull()
+    expect(launchNote(null, agent)).toBeNull()
+    expect(launchNote({ ...base, state: 'error' }, agent)).toBeNull()
+    expect(launchNote(base, undefined)).toBeNull()
+  })
+})
+

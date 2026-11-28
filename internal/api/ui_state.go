@@ -26,8 +26,9 @@ import (
 // directory's writer id, ui/writer), at most maxUIDoc bytes:
 //
 //   - layout: the editor's layout and splits, the sidebar's mode, width
-//     and folds, the crew graph's switches and the run and project pages'
-//     views: enums, fractions and bounded numbers only;
+//     and folds, the crew graph's switches, the run and project pages'
+//     views and the run page's last layout of its tiles: enums, booleans,
+//     fractions and bounded numbers only;
 //   - palette: the palette's recents, by row key, at most uiMaxRecents;
 //   - pins: the pinned sessions, at most uiMaxPins.
 //
@@ -57,6 +58,8 @@ const (
 	uiMaxPinSession = 64
 	uiMaxPinAgent   = 64
 	uiMaxSidebarRem = 100
+	uiMaxTileCrews  = 30
+	uiMaxTileShares = 12
 	uiWriterFile    = "writer"
 )
 
@@ -92,6 +95,7 @@ type uiLayoutDoc struct {
 	Editor      *uiEditor    `json:"editor,omitempty"`
 	Sidebar     *uiSidebar   `json:"sidebar,omitempty"`
 	CrewGraph   *uiCrewGraph `json:"crewGraph,omitempty"`
+	RunTiles    *uiRunTiles  `json:"runTiles,omitempty"`
 	RunView     string       `json:"runView,omitempty"`
 	ProjectView string       `json:"projectView,omitempty"`
 }
@@ -112,6 +116,84 @@ type uiCrewGraph struct {
 	Direction string `json:"direction,omitempty"` // LR | TB
 	Handoffs  *bool  `json:"handoffs,omitempty"`
 	Members   *bool  `json:"members,omitempty"`
+}
+
+// uiRunTiles is the run page's last choice for its members' tiles, which
+// a crew opened for the first time takes: their layout and whether the
+// Activity column is beside them; and each crew's own choice (crews, the
+// latest first, at most uiMaxTileCrews), so that a crew's layout outlasts
+// a restart and follows the person to their other machines.
+type uiRunTiles struct {
+	Layout   string          `json:"layout,omitempty"` // grid | columns | rows | large
+	Activity *bool           `json:"activity,omitempty"`
+	Crews    []uiRunTileCrew `json:"crews,omitempty"`
+}
+
+// uiRunTileCrew is one crew's choice: its layout, Activity, the member One
+// large draws large, and the shares each layout's tracks were dragged to.
+type uiRunTileCrew struct {
+	Crew     string                  `json:"crew"`
+	Layout   string                  `json:"layout"`
+	Activity bool                    `json:"activity"`
+	Large    string                  `json:"large,omitempty"`
+	Sizes    map[string]uiTileShares `json:"sizes,omitempty"` // by layout
+}
+
+// uiTileShares are one layout's track shares: 2 to uiMaxTileShares
+// fractions an axis, each above 0 and at most 1.
+type uiTileShares struct {
+	Cols []float64 `json:"cols,omitempty"`
+	Rows []float64 `json:"rows,omitempty"`
+}
+
+// uiTileCrewPattern is a crew id as the server writes it; uiTileMemberPattern
+// a member's name as a crew's manifest takes it.
+var (
+	uiTileCrewPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	uiTileMemberPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
+)
+
+// check refuses run tiles past their schema.
+func (t uiRunTiles) check() error {
+	if t.Layout != "" && !uiTileLayouts[t.Layout] {
+		return errors.New("runTiles.layout is grid, columns, rows or large")
+	}
+	if len(t.Crews) > uiMaxTileCrews {
+		return fmt.Errorf("runTiles.crews holds %d crews, more than %d", len(t.Crews), uiMaxTileCrews)
+	}
+	seen := map[string]bool{}
+	for _, c := range t.Crews {
+		switch {
+		case !uiTileCrewPattern.MatchString(c.Crew):
+			return errors.New("a runTiles crew is a crew's id")
+		case seen[c.Crew]:
+			return fmt.Errorf("the crew %s is in runTiles twice", c.Crew)
+		case !uiTileLayouts[c.Layout]:
+			return errors.New("a runTiles crew's layout is grid, columns, rows or large")
+		case c.Large != "" && !uiTileMemberPattern.MatchString(c.Large):
+			return errors.New("a runTiles crew's large is a member's name")
+		}
+		seen[c.Crew] = true
+		for l, sh := range c.Sizes {
+			if !uiTileLayouts[l] {
+				return fmt.Errorf("a runTiles crew's sizes name no layout %q", l)
+			}
+			for _, axis := range [][]float64{sh.Cols, sh.Rows} {
+				if axis == nil {
+					continue
+				}
+				if len(axis) < 2 || len(axis) > uiMaxTileShares {
+					return fmt.Errorf("a runTiles crew's shares are 2 to %d an axis", uiMaxTileShares)
+				}
+				for _, v := range axis {
+					if !(v > 0 && v <= 1) {
+						return errors.New("a runTiles crew's shares are fractions above 0 and at most 1")
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // uiPaletteDoc is the palette document's content: each row key's uses.
@@ -151,6 +233,7 @@ var (
 	uiSections     = map[string]bool{"needs": true, "finished": true, "working": true, "shared": true, "exited": true, "pinned": true}
 	uiRunViews     = map[string]bool{"grid": true, "graph": true, "timeline": true, "tasks": true}
 	uiProjectViews = map[string]bool{"list": true, "board": true, "roadmap": true}
+	uiTileLayouts  = map[string]bool{"grid": true, "columns": true, "rows": true, "large": true}
 )
 
 // fraction reports whether v is absent or a share in [0, 1].
@@ -184,6 +267,11 @@ func (d uiLayoutDoc) check() error {
 	}
 	if g := d.CrewGraph; g != nil && g.Direction != "" && g.Direction != "LR" && g.Direction != "TB" {
 		return errors.New("crewGraph.direction is LR or TB")
+	}
+	if t := d.RunTiles; t != nil {
+		if err := t.check(); err != nil {
+			return err
+		}
 	}
 	if d.RunView != "" && !uiRunViews[d.RunView] {
 		return errors.New("runView is grid, graph, timeline or tasks")

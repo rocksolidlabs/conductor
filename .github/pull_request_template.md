@@ -13,6 +13,7 @@ Fixes #N <!-- or: Part of #N, when the issue stays open -->
 - [ ] Nothing paid hides behind a flag: a paid feature needs its hosted service, through a registered provider (rule 3)
 - [ ] Stop, inspect, revoke, export and required approvals are untouched, or still free and whole (rule 4)
 - [ ] The checks of every affected surface ran and are listed under Verification, one not run named as such; a new dependency has its reason and `make notices` ran (docs/checks.md)
+- [ ] A changed screen was looked at rendered and its main task walked, or Verification says why not, and What changed and why says what was removed, deferred or left to a default (AGENTS.md, UX and UI priorities); or no screen changed
 
 Every commit is signed off by its author (`git commit -s`; CONTRIBUTING.md, Sign-off): the `dco` check proves it.
 

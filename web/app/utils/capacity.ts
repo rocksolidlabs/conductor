@@ -560,3 +560,26 @@ export function modelProblem(model: string): string {
   if (!m || MODEL_PATTERN.test(m)) return ''
   return 'A model is 1 to 100 letters, digits and . _ : / @ -, starting with a letter or a digit'
 }
+
+/** One part of the usage beside Launch agent's Account: its words, and its colour (the text's own, or the warning's or the error's). */
+export interface FacePart {
+  text: string
+  tone: 'default' | 'warning' | 'error'
+}
+
+/**
+ * The usage beside Launch agent's Account, in one line (faceWords): for a reading, each window the provider reported as `5-hour 12%`
+ * (the server's names), a window at warning or past WARN_PERCENT in the warning colour, a critical one in the error colour; for any
+ * other state its title (`Reading…`, `Not read yet`, `Signed out`, …); nothing for an agent no reader knows and for a launch on this
+ * computer, where there is nothing to read; `Reading…` while no view has come.
+ */
+export function faceWords(view: Pick<CapacityView, 'state' | 'windows' | 'words'> | null | undefined): FacePart[] {
+  if (!view) return [{ text: 'Reading…', tone: 'default' }]
+  if (view.state === 'unsupported' || view.state === 'remote') return []
+  if (view.state !== 'ok') return [{ text: capacityStateWords(view).title, tone: 'default' }]
+  if (!view.windows.length) return [{ text: 'No usage reported', tone: 'default' }]
+  return view.windows.map((w) => ({
+    text: `${w.name} ${w.percent}%`,
+    tone: w.severity === 'critical' ? 'error' : w.severity === 'warning' || w.percent >= WARN_PERCENT ? 'warning' : 'default',
+  }))
+}

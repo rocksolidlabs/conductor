@@ -112,7 +112,8 @@ test('a server with nothing on it: the Yard and the Roundhouse draw the one empt
   // At the desktop the line stays the sidebar's: the welcome is the home's, and the Yard's sidebar says the list is empty.
   const desk = await dayPage(browser, { ...DESK, path: '/yard', server: srv.started })
   const line = desk.locator('#dashboard-sidebar-main [data-sidebar-empty]')
-  await expect(line).toHaveText('No sessions yet.')
+  await expect(line).toHaveText('Nothing is running.')
+  await expect(desk.locator('#dashboard-sidebar-main')).not.toContainText('No sessions yet.')
   await uncut(line)
 })
 
@@ -254,7 +255,8 @@ test('the sessions not yet read: every page shows the reading shape, and never a
   for (const [path, then] of [
     ['/yard', () => expect(page.locator('[data-session-tile]').first()).toBeVisible()],
     ['/roundhouse', () => expect(page.locator('[data-page-empty]')).toHaveCount(0)],
-    ['/', () => expect(page).toHaveURL(/\/sessions\/[^/]+$/)],
+    // The home opens the session worth opening: its page, or a crew member's place inside its crew (UX3 R72).
+    ['/', () => expect(page).toHaveURL(/\/sessions\/[^/?]+$|\/runs\/[^/?]+\?session=[^&]+$/)],
     [`/yard?focus=${live!.id}`, () => expect(page.locator('[data-yard-focus] [data-quick-reply], [data-yard-focus] .xterm').first()).toBeVisible()],
   ] as const) {
     held.hold()

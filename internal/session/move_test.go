@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -429,11 +430,14 @@ func TestMoveWaitsForTheTurnsEnd(t *testing.T) {
 	})
 	t.Run("a request open", func(t *testing.T) {
 		s, f, ts, sink := chat(t)
-		f.Permission(PermissionRequest{Ref: "r1", Tool: "Bash", Input: []byte(`{"command":"ls"}`)})
+		f.TurnStarted("t")
+		askInStream(f, "r1", "c1", "Bash", `{"command":"ls"}`)
 		moveWaitFor(t, "the request open", func() bool { why, _ := s.atRestWhy(); return why == RequestWaitsWords })
 		press(t, s, ts, sink, RequestWaitsWords)
 		stays(t, s, ts)
 		f.PermissionWithdrawn("r1")
+		stays(t, s, ts)
+		f.TurnEnded("done", Usage{})
 		made(t, s, ts, sink)
 	})
 	t.Run("background work", func(t *testing.T) {
@@ -719,4 +723,47 @@ func TestMoveFailureTriesBackOnce(t *testing.T) {
 			t.Fatalf("the activity holds no %q: %+v", want, s.Activity())
 		}
 	})
+}
+
+// liveNotices are the words of the notice entries a viewer was sent live,
+// in order.
+func liveNotices(t *testing.T, sink *chanSink) []string {
+	t.Helper()
+	var out []string
+	for i := range sink.count() {
+		f, err := proto.Decode(sink.frame(i))
+		if err != nil || f.Type != proto.TypeTranscript {
+			continue
+		}
+		var m proto.TranscriptEntryMsg
+		if json.Unmarshal(f.Payload, &m) != nil || m.T != "entry" {
+			continue
+		}
+		var e TranscriptEntry
+		if json.Unmarshal(m.Entry, &e) == nil && e.Kind == EntryNotice {
+			out = append(out, e.Words)
+		}
+	}
+	return out
+}
+
+// A page that stays attached through Chat, the terminal and Chat again is
+// sent each move's notice as it is made, the move to the terminal's among
+// them.
+func TestAPageAttachedThroughTheMovesIsSentEachNotice(t *testing.T) {
+	s, _ := movable(t, 0)
+	sub, sink := attachAs(t, s, AttachOptions{Role: RoleControl, Name: "Ada", Owner: true, ViewerSocket: true, Cols: 80, Rows: 24})
+	ts := &terminals{}
+	ts.cleanup(t)
+	toChat(t, s, sessiontest.NewFakeProtocol(), ts)
+	if _, err := s.SwapWay(WayTerminal, MoveStarts{Terminal: ts.start}); err != nil {
+		t.Fatal(err)
+	}
+	settled(t, s)
+	toChat(t, s, sessiontest.NewFakeProtocol(), ts)
+	drainedSub(t, sub)
+	want := []string{MovedToChatWords, MovedToTerminalWords, MovedToChatWords}
+	if got := liveNotices(t, sink); !slices.Equal(got, want) {
+		t.Fatalf("sent live %q, want %q", got, want)
+	}
 }

@@ -1,0 +1,9 @@
+accepted m1
+turn_started
+tool_started call_fixture_4 parent="" commandExecution summary="/bin/bash -lc 'curl -s https://example.com'" input={"command":"/bin/bash -lc 'curl -s https://example.com'","cwd":"/work"}
+permission codex-req-1 call=call_fixture_4 commandExecution cwd="/work" input={"command":"/bin/bash -lc 'curl -s https://example.com'","cwd":"/work"}
+tool_ended call_fixture_4 denied exit=none cut=false output=""
+text msg_fixture_3 2 call(s) final=true "I could not fetch"
+turn_ended interrupted in=0 out=0 cost=0.00000000
+--- written
+{"id":7,"result":{"decision":"decline"}}

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sessionPlace } from '~/utils/memberStrip'
 import type { ResumeResult, SessionInfo } from '~/composables/useSessions'
 import { resumeLabel } from '~/utils/yolo'
 import { memberOffer, sessionResumeOffered } from '~/utils/runs'
@@ -29,7 +30,7 @@ async function go() {
     if (r.notice) toast.add({ title: `${r.session.name} started anew`, description: r.notice, icon: 'i-lucide-rotate-ccw', color: 'neutral' })
     else toast.add({ title: `${r.session.name} resumed`, icon: 'i-lucide-history', color: 'success' })
     emit('resumed', r)
-    if (!props.stay) await navigateTo(`/sessions/${r.session.id}`)
+    if (!props.stay) await navigateTo(sessionPlace(r.session, r.session.id))
   } catch (e) {
     toast.add({ title: 'It did not start', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {

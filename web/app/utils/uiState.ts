@@ -8,6 +8,7 @@ import { SPLIT_KEY } from './editorTabs'
 import { RECENT_MAX, type Recent } from './palette'
 import { SIDEBAR_FOLDS_KEY, SIDEBAR_KEY, SIDEBAR_SIZE_KEY, type SectionKey, type SidebarMode } from './sidebar'
 import type { Pin } from './pins'
+import { crewsForDoc, crewsOf, type RunTilesRecord } from './runTiles'
 
 export type UiName = 'layout' | 'palette' | 'pins'
 export const UI_NAMES: readonly UiName[] = ['layout', 'palette', 'pins']
@@ -26,12 +27,17 @@ export const UI_WRITE_DELAY = 1000
 export type RunView = 'grid' | 'graph' | 'timeline' | 'tasks'
 export type ProjectView = 'list' | 'board' | 'roadmap'
 export type GraphDirection = 'LR' | 'TB'
+/** How a run's member tiles are laid out. */
+export type TileLayout = 'grid' | 'columns' | 'rows' | 'large'
+export const TILE_LAYOUTS: readonly TileLayout[] = ['grid', 'columns', 'rows', 'large']
 
 export interface UiLayout {
   v: 1
   editor?: { layout?: EditorLayout; split?: number; sideSplit?: number }
   sidebar?: { mode?: SidebarMode; width?: number; folds?: Partial<Record<SectionKey, boolean>> }
   crewGraph?: { direction?: GraphDirection; handoffs?: boolean; members?: boolean }
+  /** The run page's last choice for its members' tiles, which a crew opened for the first time takes, and each crew's own (runTiles.ts). */
+  runTiles?: { layout?: TileLayout; activity?: boolean; crews?: RunTilesRecord['crews'] }
   runView?: RunView
   projectView?: ProjectView
 }
@@ -52,6 +58,7 @@ export type Stamped<T> = T & { at?: string; by?: string }
 /** The keys the layout's settings live under in local storage. */
 export const CREW_GRAPH_KEY = 'conductor.crewGraph'
 export const RUN_VIEW_KEY = 'conductor.runView'
+export const RUN_TILES_LAST_KEY = 'conductor.runTilesLast'
 export const PROJECT_VIEW_KEY = 'conductor.dispatchView'
 
 type Read = Pick<Storage, 'getItem'> | null
@@ -122,6 +129,14 @@ export function layoutFromStorage(storage: Read): UiLayout {
     if (typeof graph.members === 'boolean') g.members = graph.members
     if (Object.keys(g).length) out.crewGraph = g
   }
+  const tiles = jsonOf(get(storage, RUN_TILES_LAST_KEY))
+  if (tiles) {
+    const t: NonNullable<UiLayout['runTiles']> = {}
+    if (TILE_LAYOUTS.includes(tiles.layout as TileLayout)) t.layout = tiles.layout as TileLayout
+    if (typeof tiles.activity === 'boolean') t.activity = tiles.activity
+    if (Array.isArray(tiles.crews)) t.crews = crewsOf(tiles.crews)
+    if (Object.keys(t).length) out.runTiles = t
+  }
   const run = get(storage, RUN_VIEW_KEY)
   if (RUN_VIEWS.includes(run as RunView)) out.runView = run as RunView
   const project = get(storage, PROJECT_VIEW_KEY)
@@ -140,8 +155,24 @@ export function layoutToStorage(storage: Write, l: UiLayout): void {
   if (sb?.width !== undefined) set(storage, SIDEBAR_SIZE_KEY, String(sb.width))
   if (sb?.folds) set(storage, SIDEBAR_FOLDS_KEY, JSON.stringify(sb.folds))
   if (l.crewGraph) set(storage, CREW_GRAPH_KEY, JSON.stringify(l.crewGraph))
+  if (l.runTiles) set(storage, RUN_TILES_LAST_KEY, JSON.stringify(l.runTiles))
   if (l.runView) set(storage, RUN_VIEW_KEY, l.runView)
   if (l.projectView) set(storage, PROJECT_VIEW_KEY, l.projectView)
+}
+
+/**
+ * The layout as it is sent to the server: its run tiles read by the server's own bounds (a layout it names, a boolean Activity, the
+ * crews through crewsForDoc), so a save never carries what the server refuses and one refused part never holds back the next save.
+ */
+export function layoutForServer(l: UiLayout): UiLayout {
+  const t = l.runTiles
+  if (!t) return l
+  const tiles: NonNullable<UiLayout['runTiles']> = {}
+  if (TILE_LAYOUTS.includes(t.layout as TileLayout)) tiles.layout = t.layout
+  if (typeof t.activity === 'boolean') tiles.activity = t.activity
+  if (t.crews) tiles.crews = crewsForDoc(t.crews)
+  const { runTiles: _, ...rest } = l
+  return Object.keys(tiles).length ? { ...rest, runTiles: tiles } : rest
 }
 
 /** The layout with `patch` laid over it, each part merged one level deep. */
@@ -150,6 +181,7 @@ export function patchLayout(l: UiLayout, patch: Omit<Partial<UiLayout>, 'v'>): U
   if (patch.editor) out.editor = { ...l.editor, ...patch.editor }
   if (patch.sidebar) out.sidebar = { ...l.sidebar, ...patch.sidebar }
   if (patch.crewGraph) out.crewGraph = { ...l.crewGraph, ...patch.crewGraph }
+  if (patch.runTiles) out.runTiles = { ...l.runTiles, ...patch.runTiles }
   if (patch.runView) out.runView = patch.runView
   if (patch.projectView) out.projectView = patch.projectView
   return out

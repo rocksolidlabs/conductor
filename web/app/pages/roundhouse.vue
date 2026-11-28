@@ -7,6 +7,8 @@ import { followJump, type RoutedEvent } from '~/utils/events'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 import { pageState } from '~/utils/pageState'
 import { sessionStatus } from '~/utils/status'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 // The Roundhouse is the Yard's second view (the UX review's P12): its header says Yard, its tab names the view.
 useHead({ title: 'Yard · Roundhouse' })
@@ -461,7 +463,7 @@ usePalette().registerPage(() => ({
                 </div>
                 <div class="ml-auto flex items-center gap-2">
                   <UBadge v-if="holdingId === item.id && jumpedAt" color="warning" variant="subtle" size="sm" icon="i-lucide-hand" :label="`Jumped here ${relativeTime(jumpedAt, now)} ago · holding ${holdLeft}s more`" />
-                  <UButton label="Open page" icon="i-lucide-square-terminal" size="sm" color="neutral" variant="outline" :to="`/sessions/${item.id}`" />
+                  <UButton label="Open page" icon="i-lucide-square-terminal" size="sm" color="neutral" variant="outline" :to="placeOf(item.id)" />
                 </div>
               </div>
               <div class="relative flex-1 min-h-0 rounded-lg" :class="typing && index === selected ? 'ring-[3px] ring-primary ring-offset-2 ring-offset-default' : ''">

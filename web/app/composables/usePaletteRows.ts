@@ -138,6 +138,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   const palette = usePalette()
   const router = useRouter()
   const api = useSessions()
+  // Every row that opens a session opens its place: a crew's member inside its crew (UX3 R72).
+  const placeOf = useSessionPlace()
   const toast = useToast()
   const copy = useCopy()
   const quick = useQuickReply()
@@ -180,7 +182,8 @@ export function usePaletteRows(ctx: PaletteContext) {
 
   function go(to: string) {
     ctx.close()
-    void router.push(to)
+    // An address of a session (the History rows' are the server's) goes to the session's place; the place already open moves nothing.
+    void router.push(placeOf.address(to))
   }
   // History (Program item HS1): the `~` mode's groups and the plain search's History group, from the server per query.
   const historyRows = usePaletteHistory({ go, token: ctx.token })
@@ -208,7 +211,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       const r = s.crew ? await api.resumeRunMember(s.crew.runId, s.crew.member) : await api.resumeSession(s.id)
       if (r.notice) toast.add({ title: `${r.session.name} started anew`, description: r.notice, icon: 'i-lucide-rotate-ccw', color: 'neutral' })
       else toast.add({ title: `${r.session.name} resumed`, icon: 'i-lucide-history', color: 'success' })
-      go(`/sessions/${r.session.id}`)
+      go(placeOf(r.session.id, {}, r.session))
     } catch (e) {
       toast.add({ title: 'It did not start', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
     }
@@ -288,8 +291,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   }
   async function signal(s: SessionInfo, state: 'needs_input' | 'working' | 'clear') {
     try {
-      await api.setAttention(s.id, state, state === 'needs_input' ? 'flagged from the workbench' : undefined)
-      toast.add({ title: state === 'clear' ? `${s.name}: signal cleared` : `${s.name} marked as ${state === 'needs_input' ? 'needs input' : 'working'}`, icon: 'i-lucide-check', color: 'neutral' })
+      await api.setAttention(s.id, state, undefined)
+      toast.add({ title: state === 'clear' ? `${s.name}: mark cleared` : `${s.name} marked as ${state === 'needs_input' ? 'needs you' : 'working'}`, icon: 'i-lucide-check', color: 'neutral' })
     } catch (e) {
       fail('Signal')(e)
     }
@@ -301,7 +304,8 @@ export function usePaletteRows(ctx: PaletteContext) {
       const skipped = res.skipped?.length ?? 0
       toast.add({ title: `Sent to ${sent}${skipped ? `, ${skipped} skipped` : ''}`, description: skipped ? res.skipped.map((m) => `${m.member}: ${skipWords(m.reason)}`).join(' · ') : undefined, icon: 'i-lucide-megaphone', color: skipped ? 'warning' : 'success' })
     } catch (e) {
-      fail('Broadcast')(e)
+      // The run bar's own word for a line that reached nobody.
+      toast.add({ title: 'Not sent', description: (e as Error).message, color: 'error' })
     }
   }
   // A crew's launch opens its sheet on the crew's page (useCrewLaunch): only the sheet's Launch starts the run.
@@ -350,7 +354,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       page.showView(view)
       return
     }
-    go(`/sessions/${s.id}?tab=${tab}`)
+    go(placeOf(s.id, { tab }, s))
   }
 
   /**
@@ -371,7 +375,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const own = rowActions(
       sessionTarget(s, live),
       {
-        open: () => go(`/sessions/${s.id}`),
+        open: () => go(placeOf(s.id, {}, s)),
         openRun: () => s.crew && go(`/runs/${encodeURIComponent(s.crew.runId)}`),
         share: () => ctx.share({ sessionId: s.id, sessionName: s.name }),
         yard: () => go(`/yard?focus=${encodeURIComponent(s.id)}`),
@@ -411,10 +415,10 @@ export function usePaletteRows(ctx: PaletteContext) {
       status: sessionStatus(s, now),
       session: s,
       prompt: rowPrompt(row),
-      run: () => go(`/sessions/${s.id}`),
+      run: () => go(placeOf(s.id, {}, s)),
       actions: [...own.filter((a) => a.id !== 'open'), ...more],
       field: live ? { placeholder: `A line for ${s.name}…`, button: 'Type', submit: (text: string) => say(s, text), draft: sayDrafts.get(s.id) } : undefined,
-      href: `/sessions/${s.id}`,
+      href: placeOf(s.id, {}, s),
       yardId: s.id,
       runId: s.crew?.runId,
       ...extra,
@@ -439,7 +443,7 @@ export function usePaletteRows(ctx: PaletteContext) {
           for (const s of g.sessions) quick.choose(s, o, { question: s.attention?.id }).catch((e) => toast.add({ title: `${s.name}: not answered`, description: (e as Error).message, color: 'error' }))
           toast.add({ title: `Answered ${g.sessions.length}: ${o.label}`, description: names, icon: 'i-lucide-reply-all', color: 'success' })
         },
-        run: () => go(`/sessions/${g.sessions[0]!.id}`),
+        run: () => go(placeOf(g.sessions[0]!.id, {}, g.sessions[0])),
       }
     })
   }
@@ -480,7 +484,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     ).flat()
     const more: Action[] = []
     if (r && live) {
-      more.push({ id: 'broadcast', kind: 'run', target: r.id, label: 'Broadcast…', icon: 'i-lucide-megaphone', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
+      more.push({ id: 'broadcast', kind: 'run', target: r.id, label: 'Message the crew…', icon: 'i-lucide-megaphone', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
       if (runOffer(r).add) more.push({ id: 'add-agent', kind: 'run', target: r.id, label: 'Add agent…', icon: 'i-lucide-user-plus', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
     }
     if (r && !live) more.push({ id: 'resume-run', kind: 'run', target: r.id, label: 'Resume as new run', icon: 'i-lucide-history', run: () => void resumeRun(r) })
@@ -600,11 +604,11 @@ export function usePaletteRows(ctx: PaletteContext) {
     const marked = Object.keys(events.marks.value)
     out.push({ key: 'action:clear-marks', label: `Clear the new-event badges${marked.length ? ` · ${marked.length}` : ''}`, icon: 'i-lucide-bell-off', disabled: !marked.length, keepOpen: true, run: () => marked.forEach((id) => events.clearMark(id)) })
     out.push({ key: 'action:alerts', label: 'Alerts…', detail: 'The switches and where each kind of event goes', icon: 'i-lucide-bell', run: () => alertsPanel.show() })
-    out.push({ key: 'action:notifications', label: 'Browser notifications', icon: 'i-lucide-bell', on: settings.settings.value.notifications, run: () => settings.setNotifications(!settings.settings.value.notifications) })
+    out.push({ key: 'action:notifications', label: 'Notifications on this device', icon: 'i-lucide-bell', on: settings.settings.value.notifications, run: () => settings.setNotifications(!settings.settings.value.notifications) })
     out.push({ key: 'action:chime', label: 'Chime when a session needs you', icon: 'i-lucide-bell-ring', on: settings.settings.value.chime, run: () => settings.setChime(!settings.settings.value.chime) })
     const needs = events.routes.value.needs_input
     for (const k of ['badge', 'browser', 'wall', 'feed'] as const) {
-      const words: Record<typeof k, string> = { badge: 'the sidebar badge', browser: 'a browser alert', wall: 'the Roundhouse jump', feed: 'the feed in History' }
+      const words: Record<typeof k, string> = { badge: 'the sidebar badge', browser: 'an alert on this device', wall: 'the Roundhouse jump', feed: 'the feed in History' }
       out.push({ key: `action:route:${k}`, label: `Needs input → ${words[k]}`, icon: 'i-lucide-route', on: needs[k], run: () => events.setRoute('needs_input', k, !needs[k]) })
     }
     for (const i of integrations.value.filter((i) => i.installable && !i.installed)) out.push({ key: `action:install:${i.id}`, label: `Install hooks for ${i.name}`, icon: 'i-lucide-plug', run: () => void installHooks(i.id, i.name) })
@@ -775,8 +779,8 @@ export function usePaletteRows(ctx: PaletteContext) {
       detail: `${h.sessionName} · ${fileOpWords(h.op)}${h.tool ? ` with ${h.tool}` : ''} · ${feedTime(h.at)}${h.count > 1 ? ` · ${h.count} times` : ''}`,
       words: [h.sessionName, h.tool, h.path],
       icon: 'i-lucide-file-clock',
-      run: () => (page?.sessionId === h.sessionId ? openFile(h.path) : go(`/sessions/${encodeURIComponent(h.sessionId)}?open=${encodeURIComponent(h.path)}`)),
-      href: page?.sessionId === h.sessionId ? undefined : `/sessions/${encodeURIComponent(h.sessionId)}?open=${encodeURIComponent(h.path)}`,
+      run: () => (page?.sessionId === h.sessionId ? openFile(h.path) : go(placeOf(h.sessionId, { open: h.path }))),
+      href: page?.sessionId === h.sessionId ? undefined : placeOf(h.sessionId, { open: h.path }),
     }))
   }
 
@@ -804,7 +808,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   function eventModeGroups(): PaletteGroup<PaletteItem>[] {
     const rows: PaletteItem[] = [...events.entries.value].reverse().slice(0, 200).map((e) => {
       const run = e.event === 'handoff' ? attention.sessions.value.find((s) => s.id === e.sessionId)?.crew?.runId : undefined
-      const to = e.event === 'needs_input' ? `/sessions/${e.sessionId}` : run ? `/runs/${encodeURIComponent(run)}` : e.link ? e.link : `/sessions/${e.sessionId}`
+      const to = e.event === 'needs_input' ? placeOf(e.sessionId) : run ? `/runs/${encodeURIComponent(run)}` : e.link ? e.link : placeOf(e.sessionId)
       return {
         key: `event:${e.sessionId}:${e.seq}`,
         label: `${e.sessionName}: ${e.detail || e.event}`,
@@ -909,7 +913,7 @@ export function usePaletteRows(ctx: PaletteContext) {
         if (!r) return null
         const typed = r.members.filter((m) => m.status === 'running' && !m.needsInput)
         const skipped = r.members.filter((m) => m.status !== 'running' || m.needsInput)
-        return { key: `verb:broadcast:${r.id}`, label: `Broadcast to ${v.target.name}: “${v.text}”`, detail: `Send to ${typed.length}${skipped.length ? ` · skipped: ${skipped.map((m) => m.name).join(', ')}` : ''}`, icon: 'i-lucide-megaphone', disabled: !typed.length, run: () => broadcast(r, v.text) }
+        return { key: `verb:broadcast:${r.id}`, label: `Message to ${v.target.name}: “${v.text}”`, detail: `Send to ${typed.length}${skipped.length ? ` · skipped: ${skipped.map((m) => m.name).join(', ')}` : ''}`, icon: 'i-lucide-megaphone', disabled: !typed.length, run: () => broadcast(r, v.text) }
       }
       case 'launch':
         return { key: `verb:launch:${v.target.id}`, label: `Launch ${v.target.name}${v.dir ? ` in ${v.dir}` : ''}`, detail: 'Opens the Launch dialog, filled in', icon: 'i-lucide-play', agentId: v.target.id, run: () => ctx.launch({ agentId: v.target.id, cwd: v.dir }) }

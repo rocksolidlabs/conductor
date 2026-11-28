@@ -223,6 +223,22 @@ func runHook(f func()) {
 	}
 }
 
+// operatorOf reports whether r is the operator's own request: requireAdmin
+// admitted it for an admin principal (the workbench token, or an identity
+// provider's principal with the admin grant). An agent's token, a link, a
+// host token, a Brakeman turn, a principal with the decide grant alone and
+// the make of a plan revision Brakeman drafted are not the operator.
+func operatorOf(r *http.Request) bool {
+	p, ok := r.Context().Value(principalKey{}).(principal)
+	drafted, _ := r.Context().Value(draftMakeKey{}).(bool)
+	return ok && p.admin && !drafted
+}
+
+// draftMakeKey marks the request a make of a draft plan revision sends to
+// the propose route as the operator (proposeAsOperator): what Brakeman
+// drafted is not the operator's own proposal (operatorOf).
+type draftMakeKey struct{}
+
 // principalKey is the request context's key of requireAdmin's principal.
 type principalKey struct{}
 

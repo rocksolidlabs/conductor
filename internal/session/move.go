@@ -32,13 +32,22 @@ const (
 	HostedStaysWords     = "Sessions on another machine stay in their terminal."
 	MovingWords          = "The session is moving; try again in a moment."
 	MovedToTerminalWords = "Moved to the terminal."
-	MovedToChatWords     = "Moved to Chat. Turns made in the terminal are not shown here. What the agent left running in its terminal was ended."
+	MovedToChatWords     = "Moved to Chat. Earlier terminal messages are not shown here, and commands left running in the terminal were stopped."
+	// ClearedWords is the notice of a chat whose agent took up a new
+	// conversation (its /clear): what the transcript holds above it is no
+	// longer the agent's.
+	ClearedWords = "Cleared. The agent no longer remembers what is above."
+	// AfterFirstReplyWords is a move to Chat noted at the launch (NoteWay)
+	// while the agent's first reply has not ended: the plan has no sentence
+	// for a move noted before a turn (issue 1174).
+	AfterFirstReplyWords = "Moves to Chat after the agent's first reply."
 
 	// The move's own words where the plan gives none.
 	OldNotGoneWords     = "The agent's earlier process did not end; the session ended."
 	ChatNotStartedWords = "The chat did not start."
 	TermNotStartedWords = "The terminal did not start."
 	noticeMoved         = "moved"
+	noticeCleared       = "cleared"
 	noticeMoveFailed    = "move_failed"
 	moveStopWait        = 5 * time.Second
 	moveGroupWait       = ext.StopKillWait
@@ -165,6 +174,53 @@ func (s *Local) SwapWay(to string, m MoveStarts) (MoveState, error) {
 	return MoveState{Way: from, Moving: true}, nil
 }
 
+// NoteWay notes, at a launch, a move to the way to (the Launch agent
+// dialog's Run as Chat, issue 1174), with m's starts. Nothing starts here:
+// the session runs in its terminal (I21), and the noted move's own path
+// (tryNoted) makes the move at the first moment all of design 9's conditions
+// hold, judged then (atRestLocked): the agent's first reply ended, nothing
+// open or held, the conversation known and resumable. Until then its
+// sentence says why it waits; a press to the way the session runs takes it
+// back (SwapWay). Refused (MoveRefusal) for a crew member, a hosted
+// session and starts missing, as SwapWay refuses them; ErrMoving;
+// ErrSessionEnded.
+func (s *Local) NoteWay(to string, m MoveStarts) (MoveState, error) {
+	if to != WayTerminal && to != WayProtocol {
+		return MoveState{}, errors.New("session: no such way")
+	}
+	s.mu.Lock()
+	from := s.wayLocked()
+	st := MoveState{Way: from, Noted: s.noted, Why: s.notedWhy}
+	var err error
+	switch {
+	case s.info.Status.Ended():
+		err = ErrSessionEnded
+	case s.moveDone != nil:
+		st.Moving, err = true, ErrMoving
+	case to == from:
+		st = MoveState{Way: from}
+	case s.info.Crew != nil:
+		err = moveRefused(CrewStaysWords)
+	case s.info.Kind != KindServer:
+		err = moveRefused(HostedStaysWords)
+	case to == WayProtocol && m.Protocol == nil, to == WayTerminal && m.Terminal == nil:
+		err = moveRefused(CannotMoveWords)
+	}
+	if err != nil || to == from {
+		s.mu.Unlock()
+		return st, err
+	}
+	why, rest := s.atRestLocked()
+	s.noted, s.notedWhy, s.notedStarts = to, why, m
+	s.hasNoted.Store(true)
+	s.broadcastWayLocked()
+	s.mu.Unlock()
+	if rest {
+		s.tryNoted()
+	}
+	return MoveState{Way: from, Noted: to, Why: why}, nil
+}
+
 // wayLocked is Way under the lock.
 func (s *Local) wayLocked() string {
 	if s.way.Load() != nil {
@@ -208,12 +264,24 @@ func (s *Local) atRestLocked() (string, bool) {
 		}
 		return "", true
 	}
+	// A move to Chat, judged again at the moment of the move (design 9):
+	// one noted at the launch (NoteWay) waits for the first reply's end
+	// and for the launch's first message to be typed, and every noted one
+	// for a session that became a crew member meanwhile or whose
+	// conversation is not known and resumable yet.
 	att := s.info.Attention
+	as := s.info.AgentSession
 	switch {
+	case s.info.Crew != nil:
+		return CrewStaysWords, false
+	case !s.info.FirstTurn || s.info.FirstMessage == "waiting":
+		return AfterFirstReplyWords, false
 	case att.State == AttentionNeedsInput:
 		return RequestWaitsWords, false
 	case att.State != AttentionDone || !ReportsTurn(att.State, att.Source) || s.held != nil || len(s.submitting) > 0:
 		return MovesToChatWords, false
+	case as == nil || as.ID == "" || !as.Resumable:
+		return CannotMoveWords, false
 	}
 	return "", true
 }
@@ -227,10 +295,11 @@ func (s *Local) clearNotedLocked() {
 // beginMoveLocked marks the session moving. The caller holds s.mu.
 func (s *Local) beginMoveLocked() { s.moveDone = make(chan struct{}) }
 
-// wayFrameLocked is the way message as the session stands. The caller
+// wayFrameLocked is the way message as the session stands, expands its
+// word to the operator's own chat connection (Way.Expands). The caller
 // holds s.mu.
-func (s *Local) wayFrameLocked(why string) []byte {
-	m := proto.Way{Way: s.wayLocked(), Noted: s.noted}
+func (s *Local) wayFrameLocked(why string, expands bool) []byte {
+	m := proto.Way{Way: s.wayLocked(), Noted: s.noted, Expands: expands}
 	if p := s.way.Load(); p != nil {
 		m.Protocol = p.name
 	}
@@ -248,7 +317,41 @@ func (s *Local) wayFrameLocked(why string) []byte {
 
 // broadcastWayLocked tells every viewer the way and the noted move. The
 // caller holds s.mu.
-func (s *Local) broadcastWayLocked() { s.hub.Broadcast(s.wayFrameLocked("")) }
+func (s *Local) broadcastWayLocked() { s.sendWayLocked("") }
+
+// standingChangedLocked tells every viewer of a chat its way again after
+// the session's standing changed (a crew formed around it): the way
+// message's expand as it now is, to each connection. The caller holds s.mu.
+func (s *Local) standingChangedLocked() { s.sendWayLocked("") }
+
+// sendWayLocked tells every viewer the way, the noted move and why, and,
+// on a chat whose driver has a mark, the operator's own chat connection
+// alone that its typed line goes for the agent to expand (Way.Expands,
+// I19): said again after a move, so its page never stands in with a word
+// of its own; on a chat, that connection is sent the agent's commands
+// after it. The caller holds s.mu.
+func (s *Local) sendWayLocked(why string) {
+	plain := s.wayFrameLocked(why, false)
+	p := s.way.Load()
+	if p == nil {
+		s.hub.Broadcast(plain)
+		return
+	}
+	own := s.wayFrameLocked(why, p.verbatim)
+	// The agent's own commands follow the way to a chat, to the operator's
+	// own chat connection alone (commands.go).
+	commands := s.commandsFrameLocked(p)
+	s.hub.Each(func(sub *Subscription) {
+		if s.operatorChatLocked(sub) {
+			sub.send(own)
+			if commands != nil {
+				sub.send(commands)
+			}
+		} else {
+			sub.send(plain)
+		}
+	})
+}
 
 // tryNoted makes the noted move once the session is at rest, or tells
 // viewers the new reason it waits: called after the events that may end
@@ -302,7 +405,7 @@ func (s *Local) move(from, to string, m MoveStarts, cause string) {
 		done := s.moveDone
 		s.moveDone, s.moveCancel = nil, nil
 		if !ended && !s.info.Status.Ended() {
-			s.hub.Broadcast(s.wayFrameLocked(why))
+			s.sendWayLocked(why)
 		}
 		p := s.way.Load()
 		s.mu.Unlock()
@@ -611,6 +714,9 @@ func (s *Local) renewTerminalLocked() {
 func (s *Local) moved(to, why string) {
 	var out applied
 	out.event = "moved"
+	// Sent to every viewer as it is made, after a move to the terminal too:
+	// a page that stays attached has it live, as a read of the transcript.
+	out.anyWay = true
 	s.mu.Lock()
 	words := MovedToTerminalWords
 	if to == WayProtocol {

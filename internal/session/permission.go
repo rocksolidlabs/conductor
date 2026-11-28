@@ -45,13 +45,19 @@ const (
 
 // The words of the permission request (the plan's, design 13).
 const (
-	FloorWords              = "Conductor keeps agents out of its own files."
+	FloorWords = "Conductor keeps agents out of its own files."
+	// SkillOwnLineWords is the refusal of a skill call in a turn that is
+	// not the operator's own.
+	SkillOwnLineWords       = "Folder commands and skills run only from the operator's own line."
 	NobodyAnsweredWords     = "Nobody answered in time."
 	NotACallWords           = "Not a call this session is making."
 	AlreadyAskedWords       = "Already asked."
 	NotExactWords           = "Conductor cannot show this call exactly."
 	WithdrawnElsewhereWords = "Withdrawn: answered elsewhere."
 	TooLargeWords           = "This call's input is too large for Conductor to show it whole."
+	// TooMuchToCheckWords is the refusal of a call past the bounds of the
+	// floor's walk of its strings.
+	TooMuchToCheckWords = "This call holds too much for Conductor to check; ask the agent for smaller steps."
 	// NotDeliveredWords is the activity line of an operator's answer
 	// recorded and then not delivered: its request had gone.
 	NotDeliveredWords = "The answer was not delivered: the request was lost."
@@ -281,6 +287,13 @@ func (s *Local) RequestPermission(ctx context.Context, a PermissionAsk, reply fu
 
 	var out applied
 	out.event = "permission"
+	if s.skillRefusedLocked(p, a.Tool) {
+		// A skill in a turn not all the operator's: refused, nothing put
+		// to anyone and no entry, the agent told why.
+		s.mu.Unlock()
+		deny(SkillOwnLineWords)
+		return
+	}
 	entry := s.permissionEntryLocked(p, ref, a.Tool, a.Input, digest, "")
 	if s.flooredLocked(a.Tool, a.Input) {
 		// Conductor's own files: denied before any question.
@@ -455,9 +468,131 @@ func (s *Local) listedLocked(p *protocolWay, r *openPermission) bool {
 	return false
 }
 
+// SkillTools are the agents' own tools by which the model runs a folder's
+// command or a skill, as the agent names them (Claude Code's Skill). Codex
+// and the Agent Client Protocol have none: their skills are files the
+// agent reads, its reads and commands asked as any other. A chat's floor
+// asks for each (agents.WriteProtocolFloor), so that every call of one
+// reaches the session's own check.
+var SkillTools = []string{"Skill"}
+
+// skillTool says tool is one of SkillTools, in any case.
+func skillTool(tool string) bool {
+	return slices.ContainsFunc(SkillTools, func(t string) bool { return strings.EqualFold(t, tool) })
+}
+
+// operatorLine says a line was the operator's own: sent on the operator's
+// own connection (operatorAnswers: the one that answers the chat's
+// questions), relaying nobody. A line Conductor wrote itself (a first
+// message, a crew's, Brakeman's, a run's), a link's, and one relayed are
+// not; nor is one whose sender is not known.
+func operatorLine(sub Submission) bool {
+	return sub.From == nil && sub.By != nil && operatorAnswers(sub.By)
+}
+
+// skillRefusedLocked says a call of tool is refused without a question: a
+// skill tool's, in a turn that is not the operator's own, which is a turn
+// with at least one line written since the last turn ended and every one
+// of them the operator's own (operatorLine). The caller holds s.mu.
+func (s *Local) skillRefusedLocked(p *protocolWay, tool string) bool {
+	return skillTool(tool) && (p.turnLines == 0 || p.turnOthers > 0)
+}
+
+// maxOthersOnTheirWay bounds the lines not the operator's own that a way
+// keeps; past it, the next turn's end counts one more (othersLost).
+const maxOthersOnTheirWay = 256
+
+// otherLine is how a line not the operator's own counts at a turn's end:
+// on its way (written, its taking not yet said by the agent: carried into
+// the next turn's count, however long ago it was written), carried once
+// more and then let go (said taken while a turn ran, or by no name, or one
+// that can no longer be said taken), or let go (said taken while no turn
+// ran: the turn it opens counts it).
+type otherLine uint8
+
+const (
+	otherOnItsWay otherLine = iota
+	otherOnceMore
+	otherTaken
+)
+
+// noteWrittenLocked counts a line written for the turn it is written
+// into: one not the operator's own is kept on its way. The caller holds
+// s.mu.
+func (p *protocolWay) noteWrittenLocked(q *queuedMessage) {
+	p.turnLines++
+	if operatorLine(q.sub) {
+		return
+	}
+	p.turnOthers++
+	if len(p.othersOnTheirWay) >= maxOthersOnTheirWay {
+		p.othersLost++
+		return
+	}
+	p.othersOnTheirWay[q.msg.Ref] = otherOnItsWay
+}
+
+// othersTakenLocked is the agent's word that it took the message ref, by
+// its name or (named false) as the oldest written: one said taken while a
+// turn runs may be kept for the next turn, and one taken by no name may be
+// another, so either is carried once more; one said taken while no turn
+// runs opens the turn that counts it. The caller holds s.mu.
+func (p *protocolWay) othersTakenLocked(ref string, named bool) {
+	if _, ok := p.othersOnTheirWay[ref]; !ok {
+		return
+	}
+	if p.inTurn || !named {
+		p.othersOnTheirWay[ref] = otherOnceMore
+		return
+	}
+	p.othersOnTheirWay[ref] = otherTaken
+}
+
+// othersOnceMoreLocked marks the line ref, whose taking can no longer be
+// said (its write failed, or the session no longer follows it), to be
+// carried once more and then let go. The caller holds s.mu.
+func (p *protocolWay) othersOnceMoreLocked(ref string) {
+	if st, ok := p.othersOnTheirWay[ref]; ok && st == otherOnItsWay {
+		p.othersOnTheirWay[ref] = otherOnceMore
+	}
+}
+
+// othersToNewChildLocked is a restart's: the lines written to the child
+// that ended can be said taken no more; each, carried into the new child's
+// first turn (the conversation it resumes may hold it), is let go at that
+// turn's end. The caller holds s.mu.
+func (p *protocolWay) othersToNewChildLocked() {
+	for ref := range p.othersOnTheirWay {
+		p.othersOnTheirWay[ref] = otherTaken
+	}
+}
+
+// turnCountsLocked begins a turn's count at a turn's end: every line not
+// the operator's own on its way, or to be carried once more, is carried
+// into it; one carried once more and one said taken are let go. The caller
+// holds s.mu.
+func (p *protocolWay) turnCountsLocked() {
+	n := p.othersLost
+	p.othersLost = 0
+	for ref, st := range p.othersOnTheirWay {
+		switch st {
+		case otherOnItsWay:
+			n++
+		case otherOnceMore:
+			n++
+			delete(p.othersOnTheirWay, ref)
+		default:
+			delete(p.othersOnTheirWay, ref)
+		}
+	}
+	p.turnLines, p.turnOthers = n, n
+}
+
 // permissionWords is the question's plain words, by its tool's.
 func permissionWords(plain string) string {
 	switch plain {
+	case "skill":
+		return "Run a skill?"
 	case "command":
 		return "Run a command?"
 	case "file":
@@ -599,6 +734,19 @@ func strictCanonical(input []byte) ([]byte, bool) {
 	return bytes.TrimSuffix(b.Bytes(), []byte{'\n'}), true
 }
 
+// StrictCanonical is strictCanonical, for a driver that judges a line or a
+// value as the session does: false for what does not decode cleanly.
+func StrictCanonical(input []byte) ([]byte, bool) { return strictCanonical(input) }
+
+// KeysOnce says input, one JSON value, gives no object a key twice, its
+// nesting within maxInputDepth.
+func KeysOnce(input []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(input))
+	dec.UseNumber()
+	_, err := strictValue(dec, 0)
+	return err == nil
+}
+
 // maxInputDepth bounds the nesting of a request's input.
 const maxInputDepth = 256
 
@@ -729,8 +877,22 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 	}
 	switch plainOf(tool) {
 	case "command":
-		return commandNamesDenied(commandText(fields), deny, s.info.Cwd)
+		// A command that names its own folder (Codex's) is run there: a
+		// folder under the list is the list's.
+		// Its line's relative words are judged from that folder too (made
+		// absolute against the session's when it is relative).
+		text := commandText(fields)
+		if cwd, ok := fields["cwd"].(string); ok && cwd != "" && s.runsInDenied(text, cwd, deny) {
+			return true
+		}
+		return commandNamesDenied(text, deny, s.info.Cwd)
 	case "file", "read":
+		// A change of several files (Codex's file change: its changes'
+		// paths, and the root it asks to write under) is the list's when
+		// any of them is.
+		if changesDenied(fields, func(p string) bool { return s.pathDenied(p, deny) }) {
+			return true
+		}
 		for _, k := range []string{"file_path", "notebook_path", "path", "pattern"} {
 			v, ok := fields[k].(string)
 			if !ok || v == "" {
@@ -752,6 +914,273 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 			if s.pathDenied(v, deny) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// runsInDenied says a command run in the folder cwd reaches the deny list:
+// the folder is under it, or the command line's relative words name a place
+// of it from that folder (made absolute against the session's when it is
+// relative), as the folder is spelled and as its links lead. One judgement
+// for every driver whose call names the folder it runs in. The caller holds
+// s.mu.
+func (s *Local) runsInDenied(text, cwd string, deny []string) bool {
+	if s.pathDenied(cwd, deny) {
+		return true
+	}
+	from := filepath.Clean(cwd)
+	if !filepath.IsAbs(from) {
+		if s.info.Cwd == "" {
+			return false
+		}
+		from = filepath.Join(s.info.Cwd, from)
+	}
+	if commandNamesDenied(text, deny, from) {
+		return true
+	}
+	linked, ok := linksFirst(from)
+	if !ok {
+		return true
+	}
+	if real, err := evalExisting(linked); err == nil && real != from && commandNamesDenied(text, deny, real) {
+		return true
+	}
+	return false
+}
+
+// callFolderKeys are the names under which an agent's call names the folder
+// it runs in.
+var callFolderKeys = []string{"cwd", "workdir", "directory", "dir", "working_directory", "workingDirectory", "working_dir"}
+
+// Bounds of the walk of an in-stream call's strings (streamFloored): a call
+// past one is refused (TooMuchToCheckWords).
+const (
+	// maxWalkStrings is the most strings a call's walk judges.
+	maxWalkStrings = 4096
+	// maxWalkPath is the longest string judged as a path as written (the
+	// system opens no longer one, PATH_MAX): a longer one is judged by its
+	// cleaned letters when they are within it, else as words alone.
+	maxWalkPath = 4096
+	// maxLinkSteps is the most parts linksFirst walks, its links' own parts
+	// counted.
+	maxLinkSteps = 8192
+)
+
+// streamFloored is the floor's walk of a call that came in an agent's
+// stream: a call whose input holds its raw input, its locations, its
+// content or its title (an ACP agent's tool call: rawInput, locations,
+// content's diffs, title) names a place of the deny list anywhere in them,
+// whatever the call's kind. Every string they hold but the text a file is
+// to hold (writtenText) is judged as a command line's words, from the session's folder and from each folder the raw input says
+// the call runs in (each folder judged once, before the walk: under the
+// list, as it is spelled, and as its links lead), and, where it looks like a
+// path, as a path; a file URI as its path. Past a bound (maxWalkStrings, a
+// path's maxLinkSteps) the call is refused with TooMuchToCheckWords. The
+// answer is the refusal's words, "" for none. It reads the session's
+// folder, which does not change, and the deny list, computed at each call
+// (it only grows), so the caller holds no lock: the walk is the driver's,
+// before the session's lock is taken.
+func (s *Local) streamFloored(input []byte) string {
+	deny := s.fileDeny()
+	if len(deny) == 0 {
+		return ""
+	}
+	var fields map[string]any
+	if json.Unmarshal(input, &fields) != nil {
+		return ""
+	}
+	_, hasRaw := fields["rawInput"]
+	_, hasLoc := fields["locations"]
+	_, hasContent := fields["content"]
+	_, hasTitle := fields["title"]
+	if !hasRaw && !hasLoc && !hasContent && !hasTitle {
+		return ""
+	}
+	// The folders the words are read from: the session's, and each the raw
+	// input names, as spelled and as its links lead.
+	bases := []string{s.info.Cwd}
+	if raw, ok := fields["rawInput"].(map[string]any); ok {
+		for _, k := range callFolderKeys {
+			f, ok := raw[k].(string)
+			if !ok || f == "" {
+				continue
+			}
+			if denied, bounded := s.pathJudged(f, deny); bounded {
+				return TooMuchToCheckWords
+			} else if denied {
+				return FloorWords
+			}
+			from := filepath.Clean(f)
+			if !filepath.IsAbs(from) {
+				if s.info.Cwd == "" {
+					continue
+				}
+				from = filepath.Join(s.info.Cwd, from)
+			}
+			bases = append(bases, from)
+			linked, ok := linksFirst(from)
+			if !ok {
+				return TooMuchToCheckWords
+			}
+			if real, err := evalExisting(linked); err == nil && real != from {
+				bases = append(bases, real)
+			}
+		}
+	}
+	strs := 0
+	why := ""
+	var walk func(v any)
+	walk = func(v any) {
+		if why != "" {
+			return
+		}
+		switch t := v.(type) {
+		case string:
+			if t == "" {
+				return
+			}
+			if strs++; strs > maxWalkStrings {
+				why = TooMuchToCheckWords
+				return
+			}
+			for _, b := range bases {
+				if commandNamesDenied(t, deny, b) {
+					why = FloorWords
+					return
+				}
+			}
+			if p, ok := strings.CutPrefix(t, "file://"); ok {
+				t = p
+			}
+			if looksLikePath(t) && len(t) > maxWalkPath {
+				// Longer than the system opens as written: judged where a
+				// writer that cleans it first opens it.
+				t = filepath.Clean(t)
+			}
+			if len(t) <= maxWalkPath && looksLikePath(t) {
+				if denied, bounded := s.pathJudged(t, deny); bounded {
+					why = TooMuchToCheckWords
+				} else if denied {
+					why = FloorWords
+				}
+			}
+		case []any:
+			for _, x := range t {
+				walk(x)
+			}
+		case map[string]any:
+			for k, x := range t {
+				if writtenText(k, x, t) {
+					continue
+				}
+				walk(x)
+			}
+		}
+	}
+	for _, k := range []string{"rawInput", "locations", "content", "title"} {
+		walk(fields[k])
+	}
+	return why
+}
+
+// writtenTextKeys name the text a call is to write (a diff's old and new
+// text, an edit's strings, a file's text), never judged as words.
+var writtenTextKeys = []string{"oldText", "newText", "old_string", "new_string", "old_str", "new_str", "file_text"}
+
+// writtenText says the value v under the key k of the object m is text a
+// file is to hold, or bytes, which the walk does not judge: a diff's
+// oldText and newText and an edit's old and new strings, a write's content
+// when it is a string, an embedded resource's text (an object with a uri),
+// and a blob or data. What can name a place or a command is judged: a title,
+// a location's path, a diff's path, a uri, a text block's text, the other
+// values of the raw input.
+func writtenText(k string, v any, m map[string]any) bool {
+	if slices.Contains(writtenTextKeys, k) || k == "blob" || k == "data" {
+		return true
+	}
+	if _, ok := v.(string); ok && k == "content" {
+		return true
+	}
+	_, hasURI := m["uri"]
+	return k == "text" && hasURI
+}
+
+// looksLikePath says a string may name a place: one line, with a slash, or
+// starting with ~.
+func looksLikePath(v string) bool {
+	return !strings.ContainsAny(v, "\n\x00") && (strings.Contains(v, "/") || strings.HasPrefix(v, "~"))
+}
+
+// linksFirst is an absolute path with its links followed one part at a time
+// before any ".." after them is applied, so that "link/../x" is the place
+// the link's ".." reaches; parts that do not exist are kept as written. At
+// most 40 links are followed; false past maxLinkSteps parts, its links'
+// own counted (the caller floors the path).
+func linksFirst(p string) (string, bool) {
+	if !filepath.IsAbs(p) {
+		return p, true
+	}
+	parts := strings.Split(p, string(filepath.Separator))
+	cur := string(filepath.Separator)
+	hops, steps := 0, 0
+	for i := 0; i < len(parts); i++ {
+		if steps++; steps > maxLinkSteps {
+			return "", false
+		}
+		part := parts[i]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		// cur is clean and part a plain name: joined without a Clean.
+		next := cur + string(filepath.Separator) + part
+		if cur == string(filepath.Separator) {
+			next = cur + part
+		}
+		fi, err := os.Lstat(next)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 || hops >= 40 {
+			cur = next
+			continue
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			cur = next
+			continue
+		}
+		hops++
+		if !filepath.IsAbs(target) {
+			// Joined as the system joins it, not cleaned by its letters: a
+			// link inside the target is followed before the ".." after it.
+			target = cur + string(filepath.Separator) + target
+		}
+		// The link's target, its own parts walked the same way, then the
+		// rest.
+		rest := append(strings.Split(target, string(filepath.Separator)), parts[i+1:]...)
+		parts, i, cur = rest, -1, string(filepath.Separator)
+	}
+	return cur, true
+}
+
+// changesDenied says a file change's input names a path denied says is
+// under the deny list: one of its changes' paths or the place it moves the
+// file to, or the root it asks to write under.
+func changesDenied(fields map[string]any, denied func(string) bool) bool {
+	if root, ok := fields["grantRoot"].(string); ok && root != "" && denied(root) {
+		return true
+	}
+	changes, _ := fields["changes"].([]any)
+	for _, c := range changes {
+		m, _ := c.(map[string]any)
+		if p, ok := m["path"].(string); ok && p != "" && denied(p) {
+			return true
+		}
+		kind, _ := m["kind"].(map[string]any)
+		if p, ok := kind["move_path"].(string); ok && p != "" && denied(p) {
+			return true
 		}
 	}
 	return false
@@ -786,8 +1215,16 @@ func literalPrefix(pattern string) string {
 }
 
 // pathDenied reports whether path, relative to the session's folder when it
-// is not absolute, is under the deny list, its links followed.
+// is not absolute, is under the deny list, its links followed; a path past
+// the bound of its walk is denied too.
 func (s *Local) pathDenied(path string, deny []string) bool {
+	denied, bounded := s.pathJudged(path, deny)
+	return denied || bounded
+}
+
+// pathJudged is pathDenied's judgement, bounded saying the path's walk went
+// past maxLinkSteps (the path is not judged).
+func (s *Local) pathJudged(path string, deny []string) (denied, bounded bool) {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			path = filepath.Join(home, path[2:])
@@ -795,15 +1232,29 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 	}
 	if !filepath.IsAbs(path) {
 		if s.info.Cwd == "" {
-			return false
+			return false, false
 		}
 		path = filepath.Join(s.info.Cwd, path)
 	}
+	// Its links followed before its "..", as the system follows them, and
+	// as its letters read.
+	linked, ok := linksFirst(path)
+	if !ok {
+		return false, true
+	}
+	if linked != filepath.Clean(path) {
+		if insideAny(linked, deny) {
+			return true, false
+		}
+		if real, err := evalExisting(linked); err == nil && insideAny(real, deny) {
+			return true, false
+		}
+	}
 	path = filepath.Clean(path)
 	if real, err := evalExisting(path); err == nil && insideAny(real, deny) {
-		return true
+		return true, false
 	}
-	return insideAny(path, deny)
+	return insideAny(path, deny), false
 }
 
 // CommandNamesDenied reports whether a command's text names a path of the

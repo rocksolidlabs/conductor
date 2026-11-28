@@ -48,6 +48,8 @@ async function answered(page: Page, id: string, word: string) {
   await expect.poll(async () => (await own.api.session(id)).attention?.state ?? '', { timeout: LONG_MS }).not.toBe('needs_input')
   const answer = page.locator('[data-chat-prompt-answer]')
   await expect(answer).toHaveText(word)
+  // Received as the question's answer, never as a message: no message bubble holds the words.
+  await expect(page.locator('[data-chat-prompt-text]').filter({ hasText: word })).toHaveCount(0)
   await expect(answer).toHaveAttribute('data-answer-own', 'true')
   await expect(page.locator('[data-chat-answer-line]')).toHaveText(OWN_LINE)
   await expect(page.locator('[data-quick-reply]')).toHaveCount(0)
@@ -62,6 +64,55 @@ test("a choice pressed in the reply bar is the person's answer in a chat: the qu
     await bar.getByRole('button', { name: /Plums/ }).click()
     await answered(page, id, 'Plums')
   } finally {
+    await page.context().close()
+  }
+})
+
+test('a typed answer to a question with choices ends it: the box leaves the cursor to the number keys, and its Send reads Answer', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const { id } = await asked(page, 'e2e chat choice typed')
+    budget(4 * STEP_MS)
+    const box = page.locator('[data-chat-view] [data-chat-box] textarea')
+    await expect(box).toHaveAttribute('placeholder', 'Pick an answer above, or type your own')
+    // Drawn anew while the choices show, the box does not take the cursor: 1 and 2 are the choices' keys.
+    await page.reload()
+    await expect(page.locator('[data-quick-reply] [data-quick-reply-message]')).toHaveText('Pears or plums?', { timeout: LONG_MS })
+    await expect(box).toBeVisible()
+    await expect(box).not.toBeFocused()
+    await box.fill('Plums, please')
+    await expect(page.locator('[data-chat-view] [data-chat-send]')).toHaveText('Answer')
+    await box.press('Enter')
+    await answered(page, id, 'Plums, please')
+    await expect(box).toHaveValue('')
+  } finally {
+    await page.context().close()
+  }
+})
+
+test('a line begun before the question came stays a message: its Send stays Send, and another page reads it', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  const other = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const { s } = await launch(own.api, sessions, 'e2e chat choice before')
+    const view = await openSession(page, s.id)
+    await firstTurn(page, own.api, s.id)
+    await toChat(own.api, s.id, view)
+    budget(3 * LONG_MS + 6 * STEP_MS)
+    const box = page.locator('[data-chat-view] [data-chat-box] textarea')
+    const send = page.locator('[data-chat-view] [data-chat-send]')
+    await box.fill('a line from before')
+    await expect(send).toHaveText('Send')
+    // The question comes while the line waits in the box: asked from another page.
+    await openSession(other, s.id, 'protocol')
+    await say(other, 'a question choices please')
+    await expect(page.locator('[data-quick-reply] [data-quick-reply-message]')).toHaveText('Pears or plums?', { timeout: LONG_MS })
+    await expect(box).toHaveValue('a line from before')
+    await expect(send).toHaveText('Send')
+    await box.press('Enter')
+    await expect(other.locator('[data-chat-prompt-text]').filter({ hasText: 'a line from before' })).toBeVisible({ timeout: LONG_MS })
+  } finally {
+    await other.context().close()
     await page.context().close()
   }
 })

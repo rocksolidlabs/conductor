@@ -158,6 +158,9 @@ test('the session page: the views show and never hide, Share, Copy a view link, 
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('working')
   await runRow(page, 'page:mark-needs')
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('needs_input')
+  // A person's own mark is no question of the agent's: its card says the agent needs you, marked by a person.
+  await expect(page.locator('[data-quick-reply-message]')).toHaveText('Marked by a person.', { timeout: 15_000 })
+  await expect(page.locator('[data-quick-reply-message]')).toHaveAttribute('data-heading', / needs you\. $/)
   await runRow(page, 'page:mark-clear')
   await expect.poll(async () => (await api.session(s.id)).attention?.state ?? '', { timeout: 15_000 }).not.toBe('needs_input')
   // Two files open: a tab row brings its tab to the front; Fold folds the editor and brings it back.
@@ -251,7 +254,7 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   await page.unroute('**/api/integrations')
   // Agents: Launch opens the dialog.
   await runRow(page, 'page:launch')
-  await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByLabel('Folder', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
   // Settings in the browser is the server's file and a notice: no Save row that could never act (the desktop app's rows are
   // the app's, under the settings spec's stand-in bridge).
@@ -280,9 +283,15 @@ test("the run page: the broadcast field, the views, the run's chat, Share, Stop"
   await page.goto(`/runs/${encodeURIComponent(run.id)}`)
   await expect(page.locator('[data-palette]')).toBeHidden()
   await expect(page.locator('[data-run-chat-button]')).toBeVisible({ timeout: 30_000 })
-  // Broadcast takes a line in the row (Enter opens the field; nothing is sent without a line).
+  // Message the crew takes a line in the row (Enter opens the field; nothing is sent without a line). Its old word is gone. The row
+  // sends to whom the message bar does, and is off while nobody can get a line (lead still starting, its prompt not yet typed): wait
+  // until the page holds lead as one who gets it, the bar's chip ticked, which is the selection the row reads.
+  budget(4) // lead's start: its prompt typed, at most four of a step's caps
+  await expect(page.locator('[data-message-bar] [data-message-chip="lead"]')).toHaveAttribute('data-chip-state', 'on', { timeout: 4 * STEP_MS })
   let palette = await enterRow(page, 'page:broadcast')
   await expect(palette.locator('[data-palette-row="page:broadcast"] [data-palette-field] input')).toBeFocused()
+  await expect(palette.locator('[data-palette-row="page:broadcast"]')).toContainText('Message the crew…')
+  await expect(palette.locator('[data-palette-row="page:broadcast"]')).not.toContainText('Broadcast')
   await closePalette(page)
   // The views read as on once run.
   await runRow(page, 'page:view:graph')
@@ -423,7 +432,7 @@ test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notif
   await expect(page.locator('[data-shortcuts]')).toBeVisible()
   await page.keyboard.press('Escape')
   await runRow(page, 'action:launch', '> launch an agent')
-  await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByLabel('Folder', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
   // The prefixes each pick their kind.
   for (const [prefix, chip] of [['>', 'Actions'], ['#', 'Runs and crews'], [':', 'Files'], ['@', 'People'], ['!', 'Events'], ['?', 'Shortcuts'], ['~', 'History']] as const) {

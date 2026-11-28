@@ -677,7 +677,7 @@ func checkRequest(raw, typ, origin string) error {
 			continue
 		}
 		if origin != OriginCompare || o.Subject.Kind != "candidate" {
-			return invalid("an option's subject is a comparison's, a candidate")
+			return invalid("an option's subject is a trial's, a candidate")
 		}
 		if err := checkSubject(o.Subject); err != nil {
 			return err
@@ -720,16 +720,16 @@ func checkRequest(raw, typ, origin string) error {
 	// operator's choice between its options' candidates, recommending none
 	// and resting on no evidence (its options name the exact commits).
 	if (origin == OriginCompare) != (r.Subject.Kind == "comparison") {
-		return invalid("a comparison's selection, and only it, has a comparison subject")
+		return invalid("a trial's selection, and only it, has a comparison subject")
 	}
 	if origin == OriginCompare {
 		switch {
 		case r.Recommendation == nil || *r.Recommendation != -1:
-			return invalid("a comparison's selection recommends no option: its recommendation is -1")
+			return invalid("a trial's selection recommends no option: its recommendation is -1")
 		case len(r.Evidence) > 0:
-			return invalid("a comparison's selection cites no evidence: its options name their candidates")
+			return invalid("a trial's selection cites no evidence: its options name their candidates")
 		case r.For != nil && r.For.Label == "grant:decide":
-			return invalid("a comparison's selection is the operator's: it is never given to the decide grant")
+			return invalid("a trial's selection is the operator's: it is never given to the decide grant")
 		}
 	}
 	return nil
@@ -1116,10 +1116,10 @@ func checkOpening(d DecisionRow) error {
 	case OriginCompare:
 		// Opened by Yardmaster for the run: no asker, no gate.
 		if d.Type != DecisionApproval {
-			return invalid("a comparison's selection is an approval, not a %s", d.Type)
+			return invalid("a trial's selection is an approval, not a %s", d.Type)
 		}
 		if d.TaskID != "" || d.Attempt != 0 || d.SessionID != "" || d.Member != "" || d.Gate != "" {
-			return invalid("a comparison's selection has no asking task, attempt, session or member and no gate")
+			return invalid("a trial's selection has no asking task, attempt, session or member and no gate")
 		}
 	default:
 		return invalid("origin %q", d.Origin)
@@ -1293,7 +1293,7 @@ func (t *Tx) RouteFor(n int64, request string) error {
 	if cur.Origin == OriginCompare {
 		// Whom a selection is for is written at its opening alone: it is
 		// the operator's, and never routed to a person or the grant.
-		return invalid("%s is a comparison's selection, the operator's: it is not routed", cur.ID())
+		return invalid("%s is a trial's selection, the operator's: it is not routed", cur.ID())
 	}
 	if err := checkRequest(request, cur.Type, cur.Origin); err != nil {
 		return err
@@ -1734,7 +1734,7 @@ func (t *Tx) Hold(run, task string, n int64) error {
 		return fmt.Errorf("%w: %s is %s", ErrDecisionState, d.ID(), d.State)
 	}
 	if d.Origin == OriginCompare {
-		return invalid("%s is a comparison's selection: it holds no task", d.ID())
+		return invalid("%s is a trial's selection: it holds no task", d.ID())
 	}
 	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO decision_holds (run_id, task_id, decision, released_at) VALUES (?, ?, ?, '')
 		ON CONFLICT(run_id, task_id, decision) DO UPDATE SET released_at = ''`, run, task, n)

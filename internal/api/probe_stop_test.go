@@ -381,3 +381,56 @@ func TestProbesAfterCloseRunNothing(t *testing.T) {
 		t.Fatal("a probe not run was kept as an answer")
 	}
 }
+
+// A help read under way when the server stops (GET /api/catalog/{id}/flags)
+// is ended by the stop and waited for, as a version probe is: its program
+// answers --version at once and holds on --help, with a helper in its
+// group; both are gone when the stop returns, and its folder is removed.
+func TestShutdownEndsTheHelpReadUnderWay(t *testing.T) {
+	dir := t.TempDir()
+	h := &heldProbe{tmpdir: filepath.Join(dir, "tmp"), fifo: filepath.Join(dir, "release"), late: filepath.Join(dir, "late")}
+	if err := os.Mkdir(h.tmpdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", h.tmpdir)
+	if err := syscall.Mkfifo(h.fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	started := filepath.Join(dir, "started")
+	prog := filepath.Join(dir, "held-agent")
+	wait := "read line < " + shellQuote(h.fifo) + "; echo late >> " + shellQuote(h.late)
+	body := "#!/bin/sh\n" +
+		"if [ \"$1\" = --version ]; then echo '2.1.287 (Claude Code)'; exit 0; fi\n" +
+		"sh -c " + shellQuote(wait) + " &\n" +
+		"echo $$ $! > " + shellQuote(started+".new") + " && mv " + shellQuote(started+".new") + " " + shellQuote(started) + "\n" +
+		wait + "\n"
+	if err := os.WriteFile(prog, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.e = newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{
+		{ID: "held", Name: "Held", Command: []string{prog}, Adapter: "claude", AllowArgs: true},
+	})
+	h.e.srv.probes.timeout = time.Hour
+	h.e.srv.probes.wait = 10 * time.Millisecond
+	// Asked until the help read has begun: the identity probe answers
+	// first, then the read starts and holds.
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		h.e.do("GET", "/api/catalog/held/flags", adminToken, nil)
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the help read never began")
+		}
+	}
+	pids := readPids(t, started)
+	h.pid, h.helper = pids[0], pids[1]
+	t.Cleanup(func() { _ = syscall.Kill(-h.pid, syscall.SIGKILL) })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	h.e.srv.Shutdown(ctx)
+	if ctx.Err() != nil {
+		t.Fatal("the stop ran past its bound")
+	}
+	h.endedBy(t, "the stop")
+}

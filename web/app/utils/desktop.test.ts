@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
-import { asDesktopCapture, frameOrigin, previewRect, asDesktopZoom, zoomWords, plainCopy, desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
+import { FOLDER_WORDS, folderProblems, foldersHeld, underRoot, asDesktopCapture, frameOrigin, previewRect, asDesktopZoom, zoomWords, plainCopy, desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
 
 describe('desktop bridge', () => {
   it('is absent in a browser', () => {
@@ -149,5 +149,49 @@ describe("the preview's screenshot in the desktop app", () => {
     expect(frameOrigin('http://127.0.0.1:5173/app?x=1#token=abc', 'http://127.0.0.1:4312/')).toBe('http://127.0.0.1:5173')
     expect(frameOrigin('/sessions', 'http://127.0.0.1:4312/preview')).toBe('http://127.0.0.1:4312')
     for (const src of ['about:blank', 'data:text/html,x', 'javascript:1', 'file:///etc/passwd', 'http://']) expect(frameOrigin(src, 'http://127.0.0.1:4312/'), src).toBe('')
+  })
+})
+
+describe('the folder checks Settings makes as a folder is picked (UX3 R55)', () => {
+  const ok = { allowedRoots: ['/home/me/code', '/home/me/work/'], defaultCwd: '/home/me/code/app', dataDir: '/home/me/.local/share/conductor' }
+
+  it('finds nothing in good settings', () => {
+    expect(folderProblems(ok)).toEqual({})
+    expect(foldersHeld(folderProblems(ok))).toBe(false)
+  })
+
+  it('reads a folder under a root as validate does, a trailing slash aside', () => {
+    expect(underRoot('/home/me/work/x', '/home/me/work/')).toBe(true)
+    expect(underRoot('/home/me/work', '/home/me/work')).toBe(true)
+    expect(underRoot('/home/me/workshop', '/home/me/work')).toBe(false)
+  })
+
+  it('holds Save with no folder left, and says so', () => {
+    const p = folderProblems({ ...ok, allowedRoots: [] })
+    expect(p.roots).toBe('Agents need at least one folder.')
+    expect(foldersHeld(p)).toBe(true)
+  })
+
+  it('holds Save for a default folder outside every folder agents can use', () => {
+    const p = folderProblems({ ...ok, defaultCwd: '/srv/elsewhere' })
+    expect(p.defaultCwd).toBe('Pick a folder inside one that agents can use.')
+    expect(foldersHeld(p)).toBe(true)
+  })
+
+  it('says a data folder inside a folder agents can use, and does not hold Save', () => {
+    const p = folderProblems({ ...ok, dataDir: '/home/me/code/data' })
+    expect(p.dataDir).toBe('Keep this outside the folders agents can use.')
+    expect(foldersHeld(p)).toBe(false)
+  })
+
+  it("holds exactly what the app's own validate refuses", () => {
+    const app = readFileSync(new URL('../../../desktop/src/settings.ts', import.meta.url), 'utf8')
+    // validate refuses no root and a default folder outside them, and says nothing of the data folder's place.
+    expect(app).toContain("out.push('agents need at least one folder')")
+    expect(app).toContain("out.push('the default folder must be inside a folder agents can use')")
+    // A refused Save names the page's own fields (UX3 WG6), never the old words.
+    expect(app).not.toMatch(/allowed root|default working directory|the data directory must/)
+    expect(app).not.toMatch(/data directory must (not )?lie/)
+    expect(Object.keys(FOLDER_WORDS)).toEqual(['lastRoot', 'defaultOutside', 'dataInside'])
   })
 })

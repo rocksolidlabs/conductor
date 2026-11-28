@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,8 @@ type event struct {
 	out  string
 	use  session.Usage
 	code string
+	perm session.PermissionRequest
+	cmds []session.Command
 }
 
 func (r *recorder) add(e event) {
@@ -81,7 +84,7 @@ func (r *recorder) FileChanged(f session.FileChange) {
 	r.add(event{kind: "file_changed", ref: f.Tool, file: f})
 }
 func (r *recorder) Permission(p session.PermissionRequest) {
-	r.add(event{kind: "permission", ref: p.Ref})
+	r.add(event{kind: "permission", ref: p.Ref, perm: p})
 }
 func (r *recorder) PermissionWithdrawn(ref string) {
 	r.add(event{kind: "permission_withdrawn", ref: ref})
@@ -91,6 +94,9 @@ func (r *recorder) TurnEnded(outcome string, u session.Usage) {
 	r.add(event{kind: "turn_ended", out: outcome, use: u})
 }
 func (r *recorder) Notice(code, words string) { r.add(event{kind: "notice", code: code, text: words}) }
+func (r *recorder) Commands(list []session.Command) {
+	r.add(event{kind: "commands", cmds: slices.Clone(list)})
+}
 
 // render is the events as lines, a text's deltas joined into one line per
 // run of the same ref.
@@ -127,6 +133,14 @@ func (r *recorder) render() string {
 			fmt.Fprintf(&b, "notice %s %q\n", e.code, e.text)
 		case "turn_started":
 			b.WriteString("turn_started\n")
+		case "permission":
+			fmt.Fprintf(&b, "permission %s call=%s %s cwd=%q input=%s\n", e.ref, e.perm.Call, e.perm.Tool, e.perm.Cwd, compact(e.perm.Input))
+		case "commands":
+			fmt.Fprintf(&b, "commands %d", len(e.cmds))
+			for _, c := range e.cmds {
+				fmt.Fprintf(&b, " /%s", c.Name)
+			}
+			b.WriteByte('\n')
 		default:
 			fmt.Fprintf(&b, "%s %s\n", e.kind, e.ref)
 		}
@@ -176,7 +190,7 @@ func (d *discard) String() string {
 // gave them, under refs the tests name m<N>.
 var fixtureSends = func() []pendingSend {
 	var out []pendingSend
-	for _, n := range []int{1, 2, 3, 7, 4, 5, 6, 101, 201} {
+	for _, n := range []int{1, 2, 3, 7, 4, 5, 6, 101, 201, 301, 302, 303, 304} {
 		out = append(out, pendingSend{uuid: fmt.Sprintf("c0ffee00-0000-4000-8000-%012d", n), ref: "m" + strconv.Itoa(n)})
 	}
 	return out

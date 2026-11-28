@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ENDS_TERMINAL_WORK, FIRST_REPLY, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, firstReplyOf, pressFor, refusalStands, switchState, type Refusal, type SwitchFacts } from './switchState'
+import { ENDS_TERMINAL_WORK, FIRST_REPLY, MEMBER_TERMINAL, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, firstReplyOf, pressFor, refusalStands, switchState, type Refusal, type SwitchFacts } from './switchState'
 
 const at = (f: Partial<SwitchFacts>): SwitchFacts => ({
   hasProtocol: true, way: 'terminal', noted: '', why: '', canMove: true, firstReply: true, qualified: true, inTurn: false, moving: false, ...f,
@@ -9,9 +9,13 @@ describe('switchState: which sentence the switch shows', () => {
   it('shows no switch for an agent with no protocol', () => {
     expect(switchState(at({ hasProtocol: false })).shown).toBe(false)
   })
-  it('before the first reply: Chat waits for it, and is not pressable', () => {
+  it('before the first reply: Chat waits for it, not pressable, with no line at rest: the sentence is the dimmed side\'s (UX3 R15)', () => {
     const s = switchState(at({ firstReply: false }))
-    expect(s).toMatchObject({ shown: true, selected: 'terminal', pressable: false, line: FIRST_REPLY })
+    expect(s).toMatchObject({ shown: true, selected: 'terminal', pressable: false, line: '', held: FIRST_REPLY })
+    // During its first turn too.
+    expect(switchState(at({ firstReply: false, inTurn: true }))).toMatchObject({ pressable: false, line: '', held: FIRST_REPLY })
+    // A move to Chat noted at the launch says it moves, and Terminal may be pressed to take it back: nothing held.
+    expect(switchState(at({ firstReply: false, noted: 'protocol' }))).toMatchObject({ pressable: true, held: '' })
     expect(FIRST_REPLY).toBe("Chat opens after the agent's first reply.")
   })
   it('an unqualified version stays in its terminal', () => {
@@ -39,6 +43,20 @@ describe('switchState: which sentence the switch shows', () => {
   })
   it("a link's viewer: a label of the way, no action, no line", () => {
     expect(switchState(at({ canMove: false, way: 'protocol', noted: 'terminal' }))).toMatchObject({ shown: true, selected: 'protocol', pressable: false, line: '', noted: '' })
+  })
+  it("a crew's member (UX3 R13): both sides shown, its way selected, the other held with why, no line, no press", () => {
+    for (const f of [{}, { firstReply: false }, { inTurn: true }, { noted: 'protocol' as const }, { why: 'Claude Code did not start a chat.' }]) {
+      const s = switchState(at({ member: true, ...f }))
+      expect(s).toMatchObject({ shown: true, selected: 'terminal', pressable: false, line: '', noted: '', held: MEMBER_TERMINAL })
+      expect(pressFor(s, 'protocol')).toBeNull()
+      expect(pressFor(s, 'terminal')).toBeNull()
+    }
+    expect(MEMBER_TERMINAL).toBe('Crew members stay in their terminals.')
+    // An ended member is a label of its way, as any ended session; one of an agent with no protocol has no switch.
+    expect(switchState(at({ member: true, canMove: false }))).toMatchObject({ shown: true, pressable: false, held: '' })
+    expect(switchState(at({ member: true, hasProtocol: false })).shown).toBe(false)
+    // Any other session holds nothing.
+    expect(switchState(at({})).held).toBe('')
   })
   it('at rest after a turn, to Chat: pressable, and the line says what the move ends', () => {
     expect(switchState(at({}))).toMatchObject({ pressable: true, line: ENDS_TERMINAL_WORK })
@@ -68,17 +86,17 @@ describe('firstReplyOf: the offer is the route\'s own fact', () => {
   it('a first line entered (the conversation resumable) is not the first reply ended: no Chat, the sentence stays', () => {
     const entered = { agentSession: { resumable: true } }
     expect(firstReplyOf(entered, 'terminal')).toBe(false)
-    expect(switchState(at({ firstReply: firstReplyOf(entered, 'terminal'), inTurn: true }))).toMatchObject({ pressable: false, line: FIRST_REPLY })
+    expect(switchState(at({ firstReply: firstReplyOf(entered, 'terminal'), inTurn: true }))).toMatchObject({ pressable: false, line: '', held: FIRST_REPLY })
   })
   it('the first turn ended: Chat offered at rest, the sentence gone', () => {
     const ended = { firstTurn: true, agentSession: { resumable: true } }
     expect(firstReplyOf(ended, 'terminal')).toBe(true)
-    expect(switchState(at({ firstReply: firstReplyOf(ended, 'terminal') }))).toMatchObject({ pressable: true, line: ENDS_TERMINAL_WORK })
+    expect(switchState(at({ firstReply: firstReplyOf(ended, 'terminal') }))).toMatchObject({ pressable: true, line: ENDS_TERMINAL_WORK, held: '' })
   })
   it('an older server sends no firstTurn: no move offered, nothing worse', () => {
     expect(firstReplyOf({}, 'terminal')).toBe(false)
     expect(firstReplyOf(undefined, 'terminal')).toBe(false)
-    expect(switchState(at({ firstReply: firstReplyOf({}, 'terminal') }))).toMatchObject({ shown: true, pressable: false, line: FIRST_REPLY })
+    expect(switchState(at({ firstReply: firstReplyOf({}, 'terminal') }))).toMatchObject({ shown: true, pressable: false, line: '', held: FIRST_REPLY })
   })
   it('a chat is past its first reply', () => {
     expect(firstReplyOf({}, 'protocol')).toBe(true)

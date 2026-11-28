@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -109,6 +110,81 @@ func serveConfig(path string) (*config.Config, error) {
 	return cfg, err
 }
 
+// secretsSwitchyardWords refuse --secrets-stdin to a switchyard.
+const secretsSwitchyardWords = "--secrets-stdin is the desktop app's way to start its own server; a switchyard takes no secrets on stdin"
+
+// maxSecretsLine bounds the line --secrets-stdin reads, its newline
+// included.
+const maxSecretsLine = 4096
+
+// secretsWait bounds the wait for that line: the app writes it as it
+// starts the server.
+var secretsWait = 60 * time.Second
+
+// stdinSecrets is the line the desktop app writes first on the server's
+// standard input (serve --secrets-stdin): the workbench token, and the key
+// with which the app alone may allow a folder while the server runs. Both
+// reach the server here alone, never through its environment or its
+// command line.
+type stdinSecrets struct {
+	WorkbenchToken string `json:"workbenchToken"`
+	DesktopKey     string `json:"desktopKey,omitempty"`
+}
+
+// readSecrets reads the first line of stdin, byte by byte so that what
+// follows stays for --exit-on-stdin-close, as one JSON object, unknown
+// fields refused. No error repeats a byte of the line.
+func readSecrets(ctx context.Context, stdin io.Reader) (stdinSecrets, error) {
+	type read struct {
+		line []byte
+		err  error
+	}
+	got := make(chan read, 1)
+	go func() {
+		var line []byte
+		b := make([]byte, 1)
+		for len(line) < maxSecretsLine {
+			n, err := stdin.Read(b)
+			if n == 1 {
+				if b[0] == '\n' {
+					got <- read{line: line}
+					return
+				}
+				line = append(line, b[0])
+			}
+			if err != nil {
+				got <- read{err: errors.New("--secrets-stdin: stdin ended before the line of secrets")}
+				return
+			}
+		}
+		got <- read{err: fmt.Errorf("--secrets-stdin: the line of secrets is longer than %d bytes", maxSecretsLine)}
+	}()
+	var r read
+	select {
+	case r = <-got:
+	case <-time.After(secretsWait):
+		return stdinSecrets{}, fmt.Errorf("--secrets-stdin: no line of secrets on stdin within %s", secretsWait)
+	case <-ctx.Done():
+		return stdinSecrets{}, ctx.Err()
+	}
+	if r.err != nil {
+		return stdinSecrets{}, r.err
+	}
+	var s stdinSecrets
+	dec := json.NewDecoder(bytes.NewReader(r.line))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&s); err != nil || dec.More() {
+		return stdinSecrets{}, errors.New("--secrets-stdin: the line of secrets is not one JSON object {workbenchToken, desktopKey?}")
+	}
+	if s.WorkbenchToken == "" {
+		return stdinSecrets{}, errors.New("--secrets-stdin: the line of secrets holds no workbench token")
+	}
+	if s.DesktopKey != "" && !config.DesktopKeyForm(s.DesktopKey) {
+		return stdinSecrets{}, errors.New("--secrets-stdin: the desktop key must be 32 to 256 characters of A-Z, a-z, 0-9, _ and -")
+	}
+	return s, nil
+}
+
 // envName is the form of an environment variable's name --token-env takes.
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -138,7 +214,18 @@ func tokenFromEnv(name string) (string, error) {
 }
 
 func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	return runServeAs(ctx, "serve", args, stdin, stdout, stderr)
+}
+
+// runSwitchyard is conductor switchyard: serve as a switchyard. It takes no
+// secrets on stdin: that is the desktop app's way to start its own server,
+// and the app never starts a switchyard.
+func runSwitchyard(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return runServeAs(ctx, "switchyard", append([]string{"--switchyard"}, args...), stdin, stdout, stderr)
+}
+
+func runServeAs(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to a JSON config file")
 	listen := fs.String("listen", "", "listen address (overrides config)")
@@ -149,6 +236,10 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	printListen := fs.Bool("print-listen", false, "print one JSON line to stdout once listening: {listen, publicUrl, pid, version, workbenchToken?, tlsListen?} (for a parent process such as the desktop app)")
 	exitOnStdinClose := fs.Bool("exit-on-stdin-close", false, "shut down when stdin closes (a parent process that dies takes the server with it)")
 	switchyard := fs.Bool("switchyard", false, "coordinate hosted sessions and launch nothing: no sessions, crews, runs or catalog of its own (env CONDUCTOR_SWITCHYARD=1; conductor switchyard)")
+	secretsStdin := new(bool)
+	if name == "serve" {
+		secretsStdin = fs.Bool("secrets-stdin", false, "read the workbench token, and the desktop app's key, from the first line of stdin, one JSON object {workbenchToken, desktopKey?}, before anything else: they take the place of a configured token and of a generated one, and reach the server through no environment variable or argument (the desktop app starts its server so)")
+	}
 	tokenEnv := fs.String("token-env", "", "take the workbench token from the environment variable `NAME`: its value takes the place of a configured token (workbenchToken, CONDUCTOR_WORKBENCH_TOKEN) and of a generated one; a name that is no variable's name, or a variable unset or empty, stops the server, and the value is printed, logged and kept nowhere")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -162,13 +253,33 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	log := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 
+	// A --token-env given, whatever its value (the empty one included), is the token's one source: never the flag's absence.
+	tokenEnvGiven := false
+	fs.Visit(func(f *flag.Flag) { tokenEnvGiven = tokenEnvGiven || f.Name == "token-env" })
+	if *switchyard && *secretsStdin {
+		return 2, errors.New(secretsSwitchyardWords)
+	}
+	if tokenEnvGiven && *secretsStdin {
+		return 2, errors.New("--secrets-stdin and --token-env each name the workbench token's one source: give one")
+	}
+	// The secrets on stdin are read before anything else is read, written or bound.
+	var secrets stdinSecrets
+	if *secretsStdin {
+		s, err := readSecrets(ctx, stdin)
+		if err != nil {
+			return 2, err
+		}
+		secrets = s
+	}
 	cfg, err := serveConfig(*configPath)
 	if err != nil {
 		return 1, err
 	}
-	// A --token-env given, whatever its value (the empty one included), is the token's one source: never the flag's absence.
-	tokenEnvGiven := false
-	fs.Visit(func(f *flag.Flag) { tokenEnvGiven = tokenEnvGiven || f.Name == "token-env" })
+	if *secretsStdin {
+		cfg.WorkbenchToken, cfg.GeneratedWorkbenchToken, cfg.WorkbenchTokenRenamed = secrets.WorkbenchToken, false, false
+		cfg.DesktopKey = config.NewSecret(secrets.DesktopKey)
+		log.Info("the workbench token came on stdin", "desktopKey", cfg.DesktopKey)
+	}
 	if tokenEnvGiven {
 		tok, err := tokenFromEnv(*tokenEnv)
 		if err != nil {
@@ -202,6 +313,11 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	if *switchyard {
 		cfg.Switchyard.Enabled = true
+	}
+	// A switchyard, however it was turned on (the flag, CONDUCTOR_SWITCHYARD or
+	// the file), takes no secrets on stdin: refused before anything is bound.
+	if cfg.Switchyard.Enabled && *secretsStdin {
+		return 2, errors.New(secretsSwitchyardWords)
 	}
 	// With the flags applied, before anything is written, started or bound.
 	if cfg.PublishesToItself() {
@@ -289,7 +405,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		log.Warn("serving with a chat's floor whose modes could not be set", "dir", agents.HooksDir(cfg.DataDir), "err", err)
 	}
 	if root := cfg.DataDirOverlap(); root != "" {
-		log.Warn("the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; keep it outside allowedRoots (the default is ~/.conductor), or set dataDir or CONDUCTOR_DATA_DIR to a directory outside them", "dataDir", cfg.DataDir, "allowedRoot", root)
+		log.Warn(config.DataDirOverlapWords, "dataDir", cfg.DataDir, "allowedRoot", root)
 	}
 
 	ui := webUI()
@@ -473,7 +589,30 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			log.Warn("http shutdown", "err", err)
 		}
 	}
-	if *printListen {
+	// stdin's end is watched before the handshake is printed, and no
+	// handshake is printed once it has ended: a parent that told the server
+	// to stop while it started is never handed its address.
+	stdinEnded := make(chan struct{})
+	if *exitOnStdinClose {
+		go func() {
+			_, _ = io.Copy(io.Discard, stdin)
+			log.Info("stdin closed; shutting down")
+			close(stdinEnded)
+			stdinCancel()
+		}()
+	}
+	if beforeHandshake != nil {
+		beforeHandshake(stdinEnded)
+	}
+	ended := false
+	select {
+	case <-stdinEnded:
+		ended = true
+	default:
+	}
+	if *printListen && ended {
+		log.Info("stdin ended before the handshake; it is not printed")
+	} else if *printListen {
 		if err := printHandshake(stdout, cfg, ln, tlsLn); err != nil {
 			if cfg.GeneratedWorkbenchToken && !tokenKept {
 				// The handshake was the one place of this server's token:
@@ -484,14 +623,6 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			log.Warn("print-listen", "err", err)
 		}
 	}
-	if *exitOnStdinClose {
-		go func() {
-			_, _ = io.Copy(io.Discard, stdin)
-			log.Info("stdin closed; shutting down")
-			stdinCancel()
-		}()
-	}
-
 	select {
 	case <-ctx.Done():
 		log.Info("shutting down")
@@ -560,6 +691,11 @@ func (p uplinkPublisher) OpenDesk(ctx context.Context, run proto.DeskRun) (api.D
 // Server is the switchyard as a reply shows it (the links' fallback): its
 // scheme, host and path (config.ShownURL).
 func (p uplinkPublisher) Server() string { return config.ShownURL(p.u.ServerURL) }
+
+// beforeHandshake, when a test sets it before runServe, runs just before
+// the handshake would be printed, with the channel closed once stdin has
+// ended.
+var beforeHandshake func(stdinEnded <-chan struct{})
 
 // handshake is the JSON line --print-listen writes once the listeners are
 // bound: what a parent process needs to open the workbench and sign in.

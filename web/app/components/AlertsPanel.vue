@@ -4,8 +4,8 @@ import type { WebhookInfo } from '~/composables/useSessions'
 /**
  * Alerts: both halves of how a person is alerted, in one slideover at the right of the window, mounted once in the layout and
  * opened through useAlertsPanel (your menu's "Alerts…", the palette's row, the phone's "All alert rules", `?alerts`, the feed's
- * Edit routing). On top the switches for a browser notification and a chime (AlertSwitches); under them where each kind of event
- * goes (RoutingRows), kept in this browser, with the webhooks of conductor.json read from the server while it is open. Closed, by
+ * Edit routing). On top the switches for a notification on this device and a chime (AlertSwitches); under them where each kind of event
+ * goes (RoutingRows), kept on this device, with the webhooks of conductor.json read from the server while it is open. Closed, by
  * Escape or its close button, it gives the focus back to the control it was opened from.
  */
 const panel = useAlertsPanel()
@@ -20,7 +20,7 @@ async function readWebhooks() {
   try {
     webhooks.value = (await api.integrations()).webhooks
   } catch {
-    // The column then reads as not configured: the rules themselves are this browser's and still work.
+    // The column then reads as not configured: the rules themselves are this device's and still work.
   }
 }
 watch(
@@ -53,7 +53,7 @@ function giveBack(e: Event) {
         <AlertSwitches />
         <section class="flex flex-col gap-3 border-t border-default pt-5" aria-labelledby="alerts-rules-title" data-alerts-rules>
           <h3 id="alerts-rules-title" class="text-sm font-semibold text-highlighted">Where each event goes</h3>
-          <p class="text-[13px] text-muted">Where each kind of event goes in this browser. The routing is kept here, not on the server; webhooks are set in <code>conductor.json</code>.</p>
+          <p class="text-[13px] text-muted">Where each kind of event goes on this device. Webhooks are set in <code>conductor.json</code>.</p>
           <RoutingRows :routes="events.routes.value" :webhooks="webhooks" @update="events.setRoute" />
         </section>
       </div>

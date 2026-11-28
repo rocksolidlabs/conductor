@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { budget, dayPage, expect, test, useTheme, type Session } from './fixtures'
+import { budget, dayPage, expect, openMore, test, useTheme, type Session } from './fixtures'
 import { inside, noSideways } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 
@@ -80,7 +80,7 @@ test('a first message waits for the trust question, is typed once after it, and 
   const dialog = await openLaunch(page)
   await pick(dialog, UNTRUSTED)
   await dialog.locator('[data-launch-message] textarea').fill('say hello')
-  await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'say hello')
+  await expect((await openMore(dialog)).getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'say hello')
   const s = await launchFrom(page, dialog)
   expect(s.name).toBe('say hello')
   await expect(page).toHaveURL(new RegExp(`/sessions/${s.id}$`))
@@ -110,7 +110,7 @@ test('with no question, the message is typed once the agent is ready, and its fi
   await pick(dialog, PROMPTED)
   const message = 'fix the flaky vim spec on the mac runner please'
   await dialog.locator('[data-launch-message] textarea').fill(message)
-  await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'fix the flaky vim spec on the mac…')
+  await expect((await openMore(dialog)).getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'fix the flaky vim spec on the mac…')
   const s = await launchFrom(page, dialog)
   await expect(page.locator('[data-session-title]')).toHaveText('fix the flaky vim spec on the mac…')
   await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()).toContainText('fix the flaky vim spec on the mac…')
@@ -144,12 +144,13 @@ test('an agent whose prompt the server does not know is offered no message, and 
   await expect(dialog.locator('[data-launch-message] textarea')).toBeVisible()
   await expect(dialog.locator('[data-launch-no-message]')).toHaveCount(0)
   await dialog.locator('[data-launch-message] textarea').fill('say hello')
-  // The catalog's own stub has no prompt shape: no field, and one line under the agent's choice naming those that take one.
+  // The catalog's own stub has no prompt shape: no field, and one line in its place saying where its task goes.
   await pick(dialog, 'Plain (e2e stub)')
   await expect(dialog.locator('[data-launch-message]')).toHaveCount(0)
   const line = dialog.locator('[data-launch-no-message]')
-  await expect(line).toHaveText(`Conductor types a first message only where it knows the agent's prompt: ${UNTRUSTED} and ${PROMPTED} here.`)
-  await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'optional')
+  await expect(line).toHaveText('Plain (e2e stub) starts at its prompt. Type your task in its terminal.')
+  await expect(dialog).not.toContainText('Conductor types a first message')
+  await expect((await openMore(dialog)).getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'Plain (e2e stub) and a number')
   // Launched so, it carries no message: the server would refuse one, and the session is named as any launch is.
   const s = await launchFrom(page, dialog)
   expect(s.name).toMatch(/^Plain \(e2e stub\) #\d+$/)

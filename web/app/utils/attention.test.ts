@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, choiceTitle, decisionAnsweredBy, decisionOf, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { alerting, answerDigit, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, choiceTitle, decisionAnsweredBy, decisionOf, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal, markedByPerson, attentionWords } from './attention'
 import type { Attention, Role } from './protocol'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
@@ -75,8 +75,19 @@ describe('a turn held for the terminal', () => {
 
   it('heads the reply bar with the terminal, else with the agent', () => {
     expect(waitingHeading({ state: 'needs_input', source: 'submit' }, 'claude')).toBe('Type in the terminal to go on')
-    expect(waitingHeading({ state: 'needs_input', source: 'api' }, 'claude')).toBe('claude is waiting on you')
-    expect(waitingHeading(undefined, 'codex')).toBe('codex is waiting on you')
+    expect(waitingHeading({ state: 'needs_input', source: 'api' }, 'claude')).toBe('claude asks')
+    expect(waitingHeading(undefined, 'codex')).toBe('codex asks')
+    // A person's own mark, with no words of its own, is no question; one with words is a question, whatever its source.
+    expect(waitingHeading({ state: 'needs_input', source: 'admin' }, 'claude')).toBe('claude needs you')
+    expect(waitingHeading({ state: 'needs_input', source: 'admin', message: 'Which database?' }, 'claude')).toBe('claude asks')
+    expect(waitingHeading({ state: 'needs_input', source: 'question', message: 'Which database?' }, 'claude')).toBe('claude asks')
+    expect(markedByPerson({ state: 'needs_input', source: 'admin' })).toBe(true)
+    expect(markedByPerson({ state: 'needs_input', source: 'admin', message: 'Which database?' })).toBe(false)
+    expect(markedByPerson({ state: 'needs_input', source: 'api' })).toBe(false)
+    // The words shown: a mark's own, or for a mark with none `Marked by a person.`; an agent's question its own.
+    expect(attentionWords({ state: 'needs_input', source: 'admin' })).toBe('Marked by a person.')
+    expect(attentionWords({ state: 'needs_input', source: 'admin', message: 'Which database?' })).toBe('Which database?')
+    expect(attentionWords({ state: 'needs_input', source: 'question', message: 'Which database?' })).toBe('Which database?')
   })
 })
 
@@ -232,5 +243,18 @@ describe('choiceTitle', () => {
   it("gives a plain choice its label, and a mode answer its label and what it does", () => {
     expect(choiceTitle({ label: 'Yes' })).toBe('Yes')
     expect(choiceTitle({ label: 'Yes, and switch to BYPASS PERMISSIONS', mode: true })).toBe('Yes, and switch to BYPASS PERMISSIONS (allows from now on, not this request alone)')
+  })
+})
+
+describe('the number a key press answers with', () => {
+  const key = (key: string, o: Partial<KeyboardEvent> = {}) => ({ key, repeat: false, isComposing: false, altKey: false, ctrlKey: false, metaKey: false, ...o })
+  it('is 1 to 9 for a fresh press of a digit alone', () => {
+    for (let n = 1; n <= 9; n++) expect(answerDigit(key(String(n)))).toBe(n)
+    for (const k of ['0', 'a', 'Enter', '10', ' ']) expect(answerDigit(key(k))).toBe(0)
+  })
+  it("answers nothing for a held key's repeats, a key of a composition, or a press with a modifier", () => {
+    expect(answerDigit(key('1', { repeat: true }))).toBe(0)
+    expect(answerDigit(key('1', { isComposing: true }))).toBe(0)
+    for (const m of ['altKey', 'ctrlKey', 'metaKey'] as const) expect(answerDigit(key('1', { [m]: true }))).toBe(0)
   })
 })

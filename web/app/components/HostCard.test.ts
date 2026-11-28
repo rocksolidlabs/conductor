@@ -33,7 +33,8 @@ describe("a machine's card", () => {
 
   it("names a session the page does not hold by its id, as evidence, and links each to its page", () => {
     expect(card).toMatch(/<span v-else class="min-w-0 truncate font-mono text-xs" data-mono="id" :title="s.id">\{\{ s.id \}\}<\/span>/)
-    expect(card).toContain(':to="`/sessions/${encodeURIComponent(s.id)}`"')
+    // Each to its place: a crew's member inside its crew, any other session its page (UX3 R72).
+    expect(card).toContain(':to="placeOf(s.id)"')
   })
 
   it('has no control: its only actions are links, and a read-only card links none of its counts', () => {

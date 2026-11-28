@@ -51,6 +51,12 @@ type createSessionRequest struct {
 	// (session.NameFromMessage). Kept in memory only, never in Info, the
 	// launch or a record: a resume or a clone never types it again.
 	Message string `json:"message,omitempty"`
+	// Way is the way the person's launch runs its agent (issue 1174):
+	// "terminal", the default and what a client that sends none means, or
+	// "protocol", Run as Chat: the session starts in its terminal all the
+	// same (I21) and moves to Chat by itself at the first moment the move
+	// can be made (launch_way.go). A person's launch alone reads it.
+	Way string `json:"way,omitempty"`
 	// login, set by a resume or a Brakeman turn's launch, is the binding
 	// the launch must get again, or Brakeman's folder.
 	login loginWant
@@ -143,6 +149,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "first_message_unsupported", "this agent takes no first message: Conductor types one only where it knows the agent's prompt")
 		return
 	}
+	// The way is judged before anything starts: a launch as a chat its
+	// agent cannot run is refused in the switch's words, no process made.
+	if s.refuseLaunchWay(w, r, &req) {
+		return
+	}
 	req.ctx = context.WithoutCancel(r.Context())
 	local, aerr := s.createLocalSession(req, nil)
 	if aerr != nil {
@@ -152,6 +163,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	agent, known := s.Catalog().Get(req.AgentID)
 	if known {
 		s.noteIdentity(local, agent)
+	}
+	// Kept for the next opening of Launch agent and the welcome, after a
+	// restart too (last_launch.go): never its arguments, name or task.
+	s.noteLaunch(req.AgentID, req.Cwd, req.Model, req.Way)
+	if req.Way == session.WayProtocol {
+		// Noted before the reply, so the page's first welcome says it.
+		s.noteChatAtLaunch(req.ctx, local)
 	}
 	if req.Message != "" {
 		// The reply says the message waits; it is typed on a goroutine of
@@ -230,6 +248,11 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	for _, a := range req.Args {
 		if strings.ContainsRune(a, 0) || len(a) > 4096 {
 			return nil, newAPIError(http.StatusBadRequest, "invalid_request", "invalid argument")
+		}
+	}
+	if !req.conductorArgs {
+		if aerr := s.needsValue(agent, req.Args); aerr != nil {
+			return nil, aerr
 		}
 	}
 	cwdInput := req.Cwd
@@ -679,28 +702,32 @@ func launchHook(stage string) {
 // process starts in that folder and its Files tab serves it, whatever its
 // path names later.
 func (s *Server) openCwd(cwd string) (*session.Folder, error) {
-	real, err := s.resolveCwd(cwd)
+	return openCwdIn(cwd, s.roots.list())
+}
+
+// openCwdIn is openCwd under roots, the allowed roots as the holder had
+// them once (rootList.list), so that the check by path and the open go by
+// the same list. Each root's links are resolved at each use, the open's
+// after the path's check.
+func openCwdIn(cwd string, roots []allowedRoot) (*session.Folder, error) {
+	real, err := resolveCwdIn(cwd, roots)
 	if err != nil {
 		return nil, err
 	}
 	var opened error // an open through a root that holds it, failed
 	launchHook("resolved")
-	for _, root := range s.cfg.AllowedRoots {
-		rootReal, err := filepath.EvalSymlinks(root)
-		if err != nil {
+	for _, root := range roots {
+		// The root as allowed: the folder is opened only through that one.
+		rootReal, same, ok := root.resolve()
+		if !ok {
 			continue
 		}
 		rel, err := filepath.Rel(rootReal, real)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
-		// The root as checked: the folder is opened only through that one.
-		want, err := os.Stat(rootReal)
-		if err != nil {
-			continue
-		}
 		launchHook("root")
-		f, err := session.OpenFolderIn(rootReal, rel, want)
+		f, err := session.OpenFolderInWith(rootReal, rel, same)
 		if err == nil {
 			return f, nil
 		}
@@ -736,6 +763,12 @@ func (e *cwdError) Unwrap() error { return e.err }
 // through its root (openCwd); a check alone (a resume's, the pickers')
 // takes the path.
 func (s *Server) resolveCwd(cwd string) (string, error) {
+	return resolveCwdIn(cwd, s.roots.list())
+}
+
+// resolveCwdIn is resolveCwd under roots, the allowed roots as the holder
+// had them once (rootList.list).
+func resolveCwdIn(cwd string, roots []allowedRoot) (string, error) {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
 		return "", errors.New("invalid working directory")
@@ -751,9 +784,9 @@ func (s *Server) resolveCwd(cwd string) (string, error) {
 	if err != nil {
 		return "", &cwdError{"working directory is not a directory", err}
 	}
-	for _, root := range s.cfg.AllowedRoots {
-		rootReal, err := filepath.EvalSymlinks(root)
-		if err != nil {
+	for _, root := range roots {
+		rootReal, _, ok := root.resolve()
+		if !ok {
 			continue
 		}
 		if real == rootReal || strings.HasPrefix(real, rootReal+string(filepath.Separator)) {

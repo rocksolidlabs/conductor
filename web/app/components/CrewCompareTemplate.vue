@@ -1,144 +1,325 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo } from '~/composables/useSessions'
-import { COMPARE_LIMITS, compareProblems, compareSpec, draftComparison, draftOnOpen, rowKey, withCandidateAgent, type DraftCandidate, type DraftComparison } from '~/utils/compareTemplate'
+import {
+  COMPARE_LIMITS,
+  checkNote,
+  compareProblems,
+  compareSpec,
+  draftOnOpen,
+  FOLDER_CHECK_MS,
+  notSavedWords,
+  trialCheckLine,
+  trialFolderLine,
+  inMore,
+  optionsLine,
+  rowKey,
+  type DraftAgent,
+  type DraftComparison,
+  type TrialField,
+} from '~/utils/compareTemplate'
+import { ApiError } from '~/composables/useApi'
+import { checkFor, readTrialMemory, rememberTrial, rememberedAgents, trialFromRecord, type TrialMemory } from '~/utils/trialMemory'
+import { recordWithin } from '~/utils/lastLaunch'
+import { effectiveYolo } from '~/utils/yolo'
 
 /**
- * New comparison (CP1, docs/plans/compare-crew.md, "The template"), opened from Crews: the project folder (the crew's working directory),
- * the objective (its goal), the instructions every candidate gets, one to twelve criteria, the checks every candidate's result must pass
- * (or the project's conductor.manifest.json verify steps), two to four candidates (each an agent, its arguments, which is how a model is
- * chosen, and an optional approach), whether an agent reviews each candidate, and whether Brakeman drafts the comparison. Create posts the
- * template (POST /api/crews/templates/compare), which saves an ordinary crew with tasks approach-a, approach-b… and a `compare` block; the
- * page opens it. The server holds the spec to its rules and its refusal is shown in its words. Nothing launches here: a comparison is
- * launched from a ticket's approved plan revision. A form closed by Escape or a click outside keeps its draft for its next opening; Cancel
- * and a crew created end it.
+ * New agent trial (CP1, docs/plans/compare-crew.md, "The template", where a trial is called a comparison), opened from Crews. Its face:
+ * the task, the agents, the command that checks each result and the folder; the rest under More options; Yolo beside the button. The
+ * press posts the template (POST /api/crews/templates/compare), which saves an ordinary crew with tasks approach-a, approach-b… and a
+ * `compare` block; the page opens it. Nothing launches here: a trial starts from a ticket's approved plan. Nothing is marked before the
+ * first press; a press with problems marks each field with its words, opens More options when the first is inside it, and puts the
+ * cursor in the first. The server holds the spec to its rules and its refusal is shown in its words. A form closed by Escape, the X or a
+ * click outside keeps its draft for its next opening; Cancel and a save end it.
  */
 const open = defineModel<boolean>('open', { default: false })
-const props = defineProps<{ agents: readonly AgentInfo[] }>()
+const props = defineProps<{ agents: readonly AgentInfo[]; yoloDefault: boolean }>()
 const emit = defineEmits<{ created: [crew: CrewInfo] }>()
 
 const api = useSessions()
-const draft = ref<DraftComparison>(draftComparison())
+const draft = ref<DraftComparison>(draftOnOpen(null, props.agents))
 const creating = ref(false)
 const error = ref('')
+/** Whether the button was pressed in this draft: only then are its fields marked. */
+const pressed = ref(false)
+const moreOpen = ref(false)
+const formRef = useTemplateRef<HTMLFormElement>('form')
+// The folder agents will work in (UX3 R76): the same line, and press, as Launch agent's (FolderAllowLine).
+const allowLine = useTemplateRef<{ blocks: boolean }>('allowLine')
+const allowBlocked = computed(() => !!allowLine.value?.blocks)
 
-/** Whether `draft` is one being made, kept across a close; false once Cancel or Create ended it. */
+/**
+ * The dialog's top edge and height, fixed once it has opened where the modal centred it (useStillDialog): the folder's line and its
+ * check's words, which arrive on their own, never move Save trial or Cancel. More options, opened by the person, grows it downward,
+ * its button staying under the pointer, to the window's bottom before its body scrolls; the height it then has is held, closed too.
+ */
+const still = useStillDialog(formRef, open)
+
+const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()))
+
+// More options opened by the person grows the dialog; closed, the dialog keeps its height, so that Save trial and Cancel stay where
+// they were: a button that moves away takes no press made then (the pointer goes down on it and comes up beside it).
+watch(moreOpen, (now) => {
+  if (now) void still.regrow()
+})
+
+/** Puts the cursor in the element `selector` names once it is drawn (a field of More options is drawn as the fold opens). */
+async function focusWhenDrawn(selector: string) {
+  for (let i = 0; i < 120 && open.value; i++) {
+    const el = formRef.value?.querySelector<HTMLElement>(selector)
+    if (el?.checkVisibility()) {
+      el.focus()
+      if (document.activeElement === el) return
+    }
+    await frame()
+  }
+}
+
+/** The viewer's store, where the last trial's agents, folder and checks are kept (utils/trialMemory.ts); null where there is none. */
+function viewerStore(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+/** What was kept of the last trial, read as a new draft starts. */
+let memory: TrialMemory | null = null
+/** Whether the person typed in Check in this draft: until then it follows the folder, as it was last used there. */
+let checkTyped = false
+/** A new draft, from what was kept of the last trial (`kept`, else this browser's): its agents still installed, its folder and check. */
+function fromMemory(kept: TrialMemory | null = readTrialMemory(viewerStore())): DraftComparison {
+  const d = draftOnOpen(null, props.agents)
+  memory = kept
+  checkTyped = false
+  d.agents = startAgents(d.agents)
+  if (memory?.folder) d.folder = memory.folder
+  d.check = checkFor(memory, d.folder)
+  return d
+}
+/** A new draft's agents: the last trial's still installed, else the form's own start. */
+function startAgents(start: DraftAgent[]): DraftAgent[] {
+  const kept = rememberedAgents(memory, props.agents)
+  return kept ? kept.map((agentId, i) => ({ ...(start[i] ?? { key: rowKey(), args: '', approach: '' }), agentId, args: '', approach: '' })) : start
+}
+// The catalog read after the form opened (a reload, a first visit): a draft with no agent yet takes its agents then.
+watch(
+  () => props.agents,
+  () => {
+    if (!draft.value.agents.length && props.agents.length) patch({ agents: startAgents(draftOnOpen(null, props.agents).agents) })
+  },
+)
+watch(
+  () => draft.value.folder,
+  (folder) => {
+    if (!checkTyped && memory) patch({ check: checkFor(memory, folder) })
+  },
+)
+function typeCheck(text: string) {
+  checkTyped = true
+  patch({ check: text })
+}
+
+/** Whether `draft` is one being made, kept across a close; false once Cancel or a save ended it. */
 let kept = false
 watch(open, (o) => {
   if (!o) return
-  draft.value = draftOnOpen(kept ? draft.value : null, props.agents[0]?.id ?? '')
+  if (!kept) {
+    pressed.value = false
+    moreOpen.value = false
+  }
+  const fresh = !kept
+  draft.value = kept ? draftOnOpen(draft.value, props.agents) : fromMemory()
   kept = true
+  // A new draft: the server's record of the last trial, which outlasts a restart, is read and taken while nothing was changed.
+  if (fresh) void takeRecordedTrial()
   error.value = ''
+  void still.pin()
 })
+let recordReads = 0
+/** The draft as a person changes it: its agents only once it had some (the catalog's late read gives a draft its first ones). */
+function asTyped(d: DraftComparison, withAgents: boolean): string {
+  return JSON.stringify({ ...d, agents: withAgents ? d.agents.map((a) => [a.agentId, a.args, a.approach]) : [] })
+}
+async function takeRecordedTrial() {
+  const n = ++recordReads
+  const hadAgents = draft.value.agents.length > 0
+  const opened = asTyped(draft.value, hadAgents)
+  const rec = await recordWithin(() => api.lastLaunch())
+  const mem = trialFromRecord(rec?.trial)
+  if (!mem || n !== recordReads || !open.value || asTyped(draft.value, hadAgents) !== opened) return
+  draft.value = fromMemory(mem)
+}
 function cancel() {
   kept = false
   open.value = false
 }
 
-const agentItems = computed(() => props.agents.map((a) => ({ label: a.name, value: a.id })))
+// The folder, asked of the server FOLDER_CHECK_MS after it last changed; only the latest answer counts. folderChecked is the folder
+// whose answer the line now shows (data-folder-checked), '' before one: what a walk waits for before it reads the line.
+const folderLine = ref('')
+const folderChecked = ref('')
+let folderTimer: number | undefined
+let folderSeq = 0
+async function checkFolder(folder: string) {
+  const n = ++folderSeq
+  if (!folder) {
+    folderLine.value = ''
+    return
+  }
+  let line = ''
+  try {
+    line = trialCheckLine(await api.gitCheck(folder))
+  } catch (e) {
+    line = trialFolderLine(e instanceof ApiError ? { code: e.code, message: e.message } : null)
+  }
+  if (n === folderSeq) {
+    folderLine.value = line
+    folderChecked.value = folder
+  }
+}
+watch(
+  () => draft.value.folder.trim(),
+  (folder) => {
+    window.clearTimeout(folderTimer)
+    folderChecked.value = ''
+    if (!folder) {
+      folderSeq++
+      folderLine.value = ''
+      return
+    }
+    folderTimer = window.setTimeout(() => void checkFolder(folder), FOLDER_CHECK_MS)
+  },
+)
+onBeforeUnmount(() => window.clearTimeout(folderTimer))
+
 const problems = computed(() => compareProblems(draft.value, props.agents))
-const letter = (i: number) => String.fromCharCode(97 + i)
-const takesArgs = (id: string) => props.agents.find((a) => a.id === id)?.allowArgs !== false
+/** The words under a field, once the button was pressed. */
+function marked(...fields: TrialField[]): string | undefined {
+  if (!pressed.value) return undefined
+  const words = problems.value.filter((p) => fields.includes(p.field)).map((p) => p.words)
+  return words.length ? words.join(' ') : undefined
+}
+const agentsMark = computed(() => marked('agents', ...draft.value.agents.map((_, i) => `agent-${i}` as const)))
+const note = computed(() => checkNote(draft.value.check))
+const yoloShown = computed(() => effectiveYolo(draft.value.yolo, props.yoloDefault))
 
 function patch(p: Partial<DraftComparison>) {
   draft.value = { ...draft.value, ...p }
 }
-function setCriterion(i: number, text: string) {
-  patch({ criteria: draft.value.criteria.map((c, j) => (j === i ? { ...c, text } : c)) })
-}
-function setCandidate(i: number, p: Partial<DraftCandidate>) {
-  patch({ candidates: draft.value.candidates.map((c, j) => (j === i ? { ...c, ...p } : c)) })
-}
-function setAgent(i: number, id: string) {
-  patch({ candidates: draft.value.candidates.map((c, j) => (j === i ? withCandidateAgent(c, id, props.agents) : c)) })
-}
-function addCandidate() {
-  const last = draft.value.candidates.at(-1)
-  patch({ candidates: [...draft.value.candidates, { key: rowKey(), agentId: last?.agentId ?? props.agents[0]?.id ?? '', args: [], approach: '' }] })
+
+/** The element a field's problem puts the cursor in. */
+function fieldTarget(field: TrialField): string {
+  const n = field.replace(/^\D+-/, '')
+  if (field === 'task') return '[data-compare-goal]'
+  if (field === 'agents') return '[data-trial-agent], [data-trial-add-agent]'
+  if (field.startsWith('agent-')) return `[data-trial-agent="${n}"]`
+  if (field === 'check') return '[data-compare-check]'
+  if (field === 'folder') return '[data-compare-cwd] input'
+  if (field === 'name') return '[data-compare-name]'
+  if (field === 'told') return '[data-compare-instructions]'
+  if (field === 'criteria') return '[data-compare-criterion]'
+  if (field === 'checks') return '[data-compare-checks] input'
+  if (field === 'reviews') return '[data-compare-review-agent]'
+  if (field.startsWith('args-')) return `[data-compare-agent-args="${n}"]`
+  return `[data-compare-agent-approach="${n}"]`
 }
 
-async function create() {
-  if (creating.value || problems.value.length) return
+/** The press: a draft with problems marks them and puts the cursor in the first; one without is posted. */
+async function press() {
+  if (creating.value || folderLine.value || allowBlocked.value) return
+  pressed.value = true
+  const first = problems.value[0]
+  if (first) {
+    if (inMore(first.field)) moreOpen.value = true
+    await nextTick()
+    await focusWhenDrawn(fieldTarget(first.field))
+    return
+  }
   creating.value = true
   error.value = ''
   try {
-    const crew = await api.createCompareCrew(compareSpec(draft.value))
+    const spec = compareSpec(draft.value, yoloShown.value)
+    const crew = await api.createCompareCrew(spec)
     kept = false
     open.value = false
+    rememberTrial(viewerStore(), { agents: spec.candidates.map((c) => c.agentId), folder: spec.cwd, check: draft.value.check })
     emit('created', crew)
   } catch (e) {
-    error.value = (e as Error).message
+    error.value = notSavedWords((e as Error).message)
   } finally {
     creating.value = false
   }
 }
+
+/** Ctrl or Cmd with Enter presses the button from any field. */
+function onKey(e: KeyboardEvent) {
+  if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey) || e.isComposing) return
+  e.preventDefault()
+  void press()
+}
 </script>
 
 <template>
-  <UModal v-model:open="open" title="New comparison" description="One objective, worked by two to four candidates apart from one base, each checked alike. It is saved as a crew; a ticket's approved plan revision launches it." :ui="{ content: 'sm:max-w-2xl', wrapper: 'min-w-0 pe-10' }" data-compare-template-dialog>
+  <UModal
+    v-model:open="open"
+    title="New agent trial"
+    description="Two to four agents each try the same task on their own copy. You keep the best result."
+    :ui="{ content: 'sm:max-w-2xl', wrapper: 'min-w-0 pe-10', header: 'shrink-0', body: 'min-h-0', footer: 'shrink-0' }"
+    data-compare-template-dialog
+  >
     <template #body>
-      <UForm :state="draft" class="flex flex-col gap-5 text-sm" data-compare-template @submit="create">
-        <div class="grid gap-4 sm:grid-cols-2">
-          <UFormField label="Name" name="name" :hint="`at most ${COMPARE_LIMITS.name} characters`">
-            <UInput :model-value="draft.name" :maxlength="COMPARE_LIMITS.name" placeholder="What is compared" class="w-full" data-compare-name @update:model-value="patch({ name: String($event ?? '') })" />
+      <form ref="form" class="text-sm" data-compare-template :aria-busy="creating" @submit.prevent="press" @keydown="onKey">
+        <fieldset :disabled="creating" class="flex min-w-0 flex-col gap-5">
+          <UFormField label="Task" name="task" :error="marked('task')">
+            <UTextarea
+              :model-value="draft.task"
+              :rows="2"
+              autoresize
+              :maxrows="6"
+              :maxlength="COMPARE_LIMITS.goal"
+              placeholder="What should each agent do?"
+              autofocus
+              class="w-full"
+              data-compare-goal
+              @update:model-value="patch({ task: String($event ?? '') })"
+            />
           </UFormField>
-          <UFormField label="Project folder" name="cwd" help="The crew's working directory: a git repository with a commit, on the server.">
-            <DirInput :model-value="draft.cwd" name="cwd" placeholder="the ticket's project folder" picker-title="The project folder" data-compare-cwd @update:model-value="patch({ cwd: $event })" />
+
+          <UFormField label="Agents" name="agents" :error="agentsMark">
+            <CrewTrialAgents :model-value="draft.agents" :agents="agents" :disabled="creating" @update:model-value="patch({ agents: $event })" @agents="open = false" />
           </UFormField>
-        </div>
 
-        <UFormField label="Objective" name="goal" help="The crew's goal. The ticket's own intent travels in the launch package.">
-          <UTextarea :model-value="draft.goal" :rows="2" autoresize :maxrows="6" :maxlength="COMPARE_LIMITS.goal" placeholder="What every candidate is to achieve" class="w-full" data-compare-goal @update:model-value="patch({ goal: String($event ?? '') })" />
-        </UFormField>
-        <UFormField label="Instructions" name="instructions" help="Every candidate gets the same.">
-          <UTextarea :model-value="draft.instructions" :rows="3" autoresize :maxrows="10" :maxlength="COMPARE_LIMITS.instructions" placeholder="How to work it: what to keep, where to look" class="w-full" data-compare-instructions @update:model-value="patch({ instructions: String($event ?? '') })" />
-        </UFormField>
-
-        <div class="flex flex-col gap-2" data-compare-criteria>
-          <span class="font-semibold text-highlighted">Criteria <span class="font-normal text-muted">· one line each, {{ COMPARE_LIMITS.minCriteria }} to {{ COMPARE_LIMITS.criteria }}</span></span>
-          <div v-for="(c, i) in draft.criteria" :key="c.key" class="flex items-center gap-2">
-            <UInput :model-value="c.text" :maxlength="COMPARE_LIMITS.criterionText" placeholder="no new dependency" :aria-label="`Criterion ${i + 1}`" class="min-w-0 flex-1" :data-compare-criterion="i" @update:model-value="setCriterion(i, String($event ?? ''))" />
-            <IconButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :label="`Remove criterion ${i + 1}`" :disabled="draft.criteria.length <= COMPARE_LIMITS.minCriteria" @click="patch({ criteria: draft.criteria.filter((_, j) => j !== i) })" />
+          <div class="grid gap-4 sm:grid-cols-2">
+            <UFormField label="Check" name="check" :error="marked('check')" :help="note || undefined">
+              <UInput :model-value="draft.check" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" data-compare-check @update:model-value="typeCheck(String($event ?? ''))" />
+            </UFormField>
+            <UFormField label="Folder" name="folder" :error="allowBlocked || folderLine || marked('folder')">
+              <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" lined data-compare-cwd :data-folder-checked="folderChecked" @update:model-value="patch({ folder: $event })" />
+              <!-- The folder as the trial sends it, trimmed: the line checks that text. -->
+              <FolderAllowLine ref="allowLine" :path="draft.folder.trim()" @use="(p: string) => patch({ folder: p })" @allowed="checkFolder(draft.folder.trim())" @leave="open = false" />
+            </UFormField>
           </div>
-          <UButton label="Add criterion" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="self-start px-0" :disabled="draft.criteria.length >= COMPARE_LIMITS.criteria" data-compare-add-criterion @click="patch({ criteria: [...draft.criteria, { key: rowKey(), text: '' }] })" />
-        </div>
 
-        <div class="flex flex-col gap-2" data-compare-checks>
-          <span class="font-semibold text-highlighted">Checks <span class="font-normal text-muted">· every candidate's result must pass them, run alike in its own checkout</span></span>
-          <CrewCheckList :model-value="draft.checks" what="check" @update:model-value="patch({ checks: $event })" />
-          <UCheckbox :model-value="draft.manifestFile" label="Also run the verify steps of the project's conductor.manifest.json, read at each candidate's commit" data-compare-manifest-file @update:model-value="patch({ manifestFile: !!$event })" />
-        </div>
+          <MoreOptions v-model:open="moreOpen" :line="optionsLine(draft)">
+            <CrewTrialOptions :model-value="draft" :agents="agents" :marked="marked" @update:model-value="draft = $event" />
+          </MoreOptions>
 
-        <div class="flex flex-col gap-3" data-compare-candidates>
-          <span class="font-semibold text-highlighted">Candidates <span class="font-normal text-muted">· {{ COMPARE_LIMITS.minCandidates }} to {{ COMPARE_LIMITS.candidates }}, each working alone from the same base</span></span>
-          <div v-for="(c, i) in draft.candidates" :key="c.key" class="flex flex-col gap-2 rounded-md border border-default p-3" :data-compare-candidate-row="i">
-            <div class="flex items-center gap-2">
-              <span class="font-medium text-highlighted">Candidate {{ letter(i).toUpperCase() }}</span>
-              <code class="text-xs text-muted" data-mono="id">approach-{{ letter(i) }}</code>
-              <IconButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" class="ml-auto" :label="`Remove candidate ${letter(i).toUpperCase()}`" :disabled="draft.candidates.length <= COMPARE_LIMITS.minCandidates" @click="patch({ candidates: draft.candidates.filter((_, j) => j !== i) })" />
-            </div>
-            <div class="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
-              <USelect :model-value="c.agentId" :items="agentItems" placeholder="Agent" :aria-label="`Agent of candidate ${letter(i).toUpperCase()}`" class="w-full" data-compare-candidate-agent @update:model-value="setAgent(i, String($event ?? ''))" />
-              <ArgvInput v-if="takesArgs(c.agentId)" :model-value="c.args" :pending="c.argsPending ?? ''" placeholder="arguments, such as --model; a quoted argument is one" :aria-label="`Arguments of candidate ${letter(i).toUpperCase()}`" data-compare-candidate-args @update:model-value="setCandidate(i, { args: $event })" @update:pending="setCandidate(i, { argsPending: $event || undefined })" />
-              <span v-else class="self-center text-xs text-muted">This agent takes no arguments.</span>
-            </div>
-            <UTextarea :model-value="c.approach" :rows="1" autoresize :maxrows="5" :maxlength="COMPARE_LIMITS.approach" placeholder="An approach, if you want one: key the cache by locale. Left empty, the candidates are independent tries." :aria-label="`Approach of candidate ${letter(i).toUpperCase()}`" class="w-full" data-compare-candidate-approach @update:model-value="setCandidate(i, { approach: String($event ?? '') })" />
-          </div>
-          <UButton label="Add candidate" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="self-start px-0" :disabled="draft.candidates.length >= COMPARE_LIMITS.candidates || !agents.length" data-compare-add-candidate @click="addCandidate" />
-        </div>
-
-        <div class="flex flex-col gap-2">
-          <USwitch :model-value="draft.reviews" label="An agent reviews each candidate that succeeds" size="sm" data-compare-reviews @update:model-value="patch({ reviews: $event, reviewAgent: $event ? draft.reviewAgent || (agents[0]?.id ?? '') : '' })" />
-          <USelect v-if="draft.reviews" :model-value="draft.reviewAgent" :items="agentItems" placeholder="The reviewing agent" aria-label="The reviewing agent" class="w-full sm:w-72" data-compare-review-agent @update:model-value="patch({ reviewAgent: String($event ?? '') })" />
-          <USwitch :model-value="draft.brakeman" label="Brakeman drafts the comparison when all candidates are done, on your Brakeman account" size="sm" data-compare-brakeman @update:model-value="patch({ brakeman: $event })" />
-        </div>
-
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-x" title="Not created" :description="error" data-compare-template-error />
-        <div class="flex flex-wrap items-center justify-end gap-2">
-          <span v-if="problems.length" class="mr-auto min-w-0 text-xs text-muted" data-compare-template-problem>{{ problems[0] }}</span>
-          <UButton label="Cancel" color="neutral" variant="ghost" :disabled="creating" data-compare-cancel @click="cancel" />
-          <UButton type="submit" label="Create" icon="i-lucide-check" :loading="creating" :disabled="!!problems.length" data-compare-create />
-        </div>
-      </UForm>
+          <p class="text-xs text-muted" data-compare-next>This saves the trial as a crew. To launch it: on a ticket in Dispatch, press Propose a plan or New revision, pick this crew, then Propose, Approve and Launch.</p>
+          <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-x" title="Not saved" :description="error" data-compare-template-error />
+        </fieldset>
+      </form>
+    </template>
+    <template #footer>
+      <div class="flex w-full flex-wrap items-center gap-x-2 gap-y-3">
+        <UTooltip text="Each agent runs commands and changes files without asking you.">
+          <USwitch :model-value="yoloShown" :disabled="creating" data-compare-yolo @update:model-value="patch({ yolo: $event })">
+            <template #label>Yolo <span class="font-normal text-muted">skips permission prompts</span></template>
+          </USwitch>
+        </UTooltip>
+        <div class="flex-1" />
+        <UButton label="Cancel" color="neutral" variant="ghost" :disabled="creating" data-compare-cancel @click="cancel" />
+        <UButton label="Save trial" icon="i-lucide-save" :loading="creating" :disabled="!!folderLine || allowBlocked" :aria-busy="creating" data-compare-create @click="press" />
+      </div>
     </template>
   </UModal>
 </template>

@@ -8,12 +8,15 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A chat's floor (docs/plans/chat-or-terminal.md, design 7): the one
 // --settings a chat's child of Claude Code takes (claude-protocol.json, or
 // claude-protocol-yolo.json for a yolo session, the yolo key beside it)
-// holds a Read and an Edit deny rule for every path of the server's deny
+// holds, in a chat that asks, an ask rule for each skill tool
+// (session.SkillTools), and a Read and an Edit deny rule for every path of the server's deny
 // list, which "block in every mode, including bypassPermissions" and keep
 // an @ reference from including such a file, and a PreToolUse hook on shell
 // calls, conductor notify --protocol-floor, a second look a folder's own
@@ -156,8 +159,15 @@ func FloorRules(deny []string) []string {
 // yolo key.
 func floorSettings(hooksDir, bin string, deny []string, yolo bool) ([]byte, error) {
 	hook := shellQuote(bin) + " notify --protocol-floor " + shellQuote(filepath.Join(hooksDir, ClaudeProtocolFloorList))
+	permissions := map[string]any{"deny": append([]string{}, FloorRules(deny)...), "allow": claudeAllowRules()}
+	if !yolo {
+		// A chat that asks asks for every skill call (session.SkillTools),
+		// whatever another source allows: Claude Code judges an ask rule
+		// before an allow, so each call reaches the session's own check.
+		permissions["ask"] = append([]string{}, session.SkillTools...)
+	}
 	settings := map[string]any{
-		"permissions": map[string]any{"deny": append([]string{}, FloorRules(deny)...), "allow": claudeAllowRules()},
+		"permissions": permissions,
 		"hooks": map[string]any{
 			"PreToolUse": []any{map[string]any{
 				"matcher": claudeShellTool,

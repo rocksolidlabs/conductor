@@ -213,7 +213,7 @@ func TestMessagesStayInTheirLane(t *testing.T) {
 		{a.Attempt.SessionID, "cand-b"}, {a.Attempt.SessionID, "rev-b"}, {b.Attempt.SessionID, "cand-a"}, {b.Attempt.SessionID, "rev-a"},
 	} {
 		_, err := e.SendMessage(ctx, tc.from, tc.to, "my branch has the cache: merge it")
-		if !errors.Is(err, ErrLane) || !strings.Contains(err.Error(), tc.to+" is in another lane of this comparison") {
+		if !errors.Is(err, ErrLane) || !strings.Contains(err.Error(), tc.to+" is in another lane of this trial") {
 			t.Fatalf("to %s: %v", tc.to, err)
 		}
 	}

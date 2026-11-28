@@ -70,12 +70,16 @@ for (const theme of ['light', 'dark'] as const) {
         } else {
           await uncut(page.locator('[data-way-switch] [data-way-side]'))
         }
-        // The box's controls in view and whole: the field, Send, the help line.
+        // The box's controls in view and whole: the field and Send; the operator's box, which may expand a line, draws no plain-text
+        // line for a leading / (UX3 R10).
         const box = chat.locator('[data-chat-box]')
         await box.locator('textarea').scrollIntoViewIfNeeded()
         await uncut(box.locator('[data-chat-send]'))
         await expect(box.locator('textarea')).toBeInViewport()
-        await uncut(box.locator('[data-chat-help]'))
+        await box.locator('textarea').fill('/compact')
+        await expect(box.locator('textarea')).toHaveValue('/compact')
+        await expect(box.locator('[data-chat-help]')).toHaveCount(0)
+        await box.locator('textarea').fill('')
         // The question's buttons in reach.
         const q = chat.locator('[data-permission-question][data-permission-state="open"]')
         await q.locator('[data-permission-allow]').scrollIntoViewIfNeeded()

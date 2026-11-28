@@ -60,7 +60,7 @@ const CANDIDATES: StubCandidate[] = [
 ]
 
 /** What a selection's `authorizes` says (docs/plans/compare-crew.md, PR-6a, "Which record"). */
-export const SELECTION_AUTHORIZES = 'Continuing the selected candidate into review and repair, and delivering it. Final: the candidates not selected are kept and cannot be continued; a new comparison tries them again.'
+export const SELECTION_AUTHORIZES = 'Continuing the selected candidate into review and repair, and delivering it. Final: the candidates not selected are kept and cannot be continued; a new trial tries them again.'
 
 /** The fields a spec sets on an item: what the list derives (its actions, its count of blocked work, tracking) it does not. */
 export type ItemOver = Partial<Omit<StubItem, 'kind'>>
@@ -141,7 +141,7 @@ export function inboxItem(kind: InboxKind, over: ItemOver = {}): StubItem {
         const id = `dr-${900 + n}`
         const cands = over.candidates ?? CANDIDATES
         const question = `Which approach does STB-${n} continue with?`
-        base = { ref: `decision:${id}`, kind, since, title: question, brief: `A decision for you, from the comparison of run ${run.name}`, question, answerer: ANSWERER, choices: [...cands.map((c) => `${c.task} at ${c.commit.slice(0, 7)}`), 'None of these'], state: 'open', type: 'approval', origin: 'compare', run, candidates: cands }
+        base = { ref: `decision:${id}`, kind, since, title: question, brief: `A decision for you, from the trial of run ${run.name}`, question, answerer: ANSWERER, choices: [...cands.map((c) => `${c.task} at ${c.commit.slice(0, 7)}`), 'None of these'], state: 'open', type: 'approval', origin: 'compare', run, candidates: cands }
         break
       }
       const plan = over.origin === 'plan'
@@ -351,7 +351,7 @@ function compareRecord(it: StubItem, whole: boolean): Record<string, unknown> {
   const cands = it.candidates ?? CANDIDATES
   const options = [
     ...cands.map((c) => ({ label: `${c.task} at ${c.commit.slice(0, 7)}`, tradeoffs: 'checks 2/2 passed, comparable; 12 files, +340 −90; no dependency change; independent', subject: { kind: 'candidate', run: run.id, task: c.task, n: c.n, commit: c.commit } })),
-    { label: 'None of these', tradeoffs: 'Ends the comparison with no candidate selected.' },
+    { label: 'None of these', tradeoffs: 'Ends the trial with no candidate selected.' },
   ]
   const request = { question: it.question, context: 'Two candidates from one base, checked alike.', options, recommendation: -1, authorizes: SELECTION_AUTHORIZES, subject: { kind: 'comparison', run: run.id, base: 'c'.repeat(40), digest: 'd'.repeat(64) } }
   const opened = { seq: 1, at: it.since, kind: 'opened', by: 'yardmaster' }

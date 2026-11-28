@@ -18,6 +18,9 @@ export interface DesktopSettings {
   noticed?: string[]
 }
 
+/** The public switchyard: what an empty Switchyard address publishes to (the server's default, README.md). */
+export const PUBLIC_SWITCHYARD = 'switchyard.rslabs.net'
+
 /** The words for a switchyard that is plain http on another machine: the desktop app's validate (desktop/src/settings.ts PLAIN_SWITCHYARD) says the same. */
 export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
 
@@ -87,6 +90,39 @@ function thisMachine(raw: string, u: URL): boolean {
   return !!quad && quad.slice(1).every((p) => (p === '0' || !p.startsWith('0')) && Number(p) <= 255)
 }
 
+/** What Settings says at a folder field, checked as it is picked (UX3 R55): the app's validate (desktop/src/settings.ts) refuses the first two. */
+export const FOLDER_WORDS = {
+  /** The last folder agents can use cannot be taken away: validate's "agents need at least one folder". */
+  lastRoot: 'Agents need at least one folder.',
+  /** The default folder outside every folder agents can use: validate's "the default folder must be inside a folder agents can use". */
+  defaultOutside: 'Pick a folder inside one that agents can use.',
+  /** The data folder inside a folder agents can use: said, never held (the server keeps its own guard). */
+  dataInside: 'Keep this outside the folders agents can use.',
+} as const
+
+/** Whether path is root or lies under it, as validate reads it (a trailing slash on the root aside). */
+export function underRoot(path: string, root: string): boolean {
+  return path === root || path.startsWith(root.replace(/\/+$/, '') + '/')
+}
+
+/**
+ * The folder fields' problems, checked as they are picked (UX3 R55), in the words said at each field: `roots` and `defaultCwd` hold
+ * Save (the app's validate refuses them), `dataDir` only says so. None for a field that is fine.
+ */
+export function folderProblems(s: Pick<DesktopSettings, 'allowedRoots' | 'defaultCwd' | 'dataDir'>): { roots?: string; defaultCwd?: string; dataDir?: string } {
+  const out: { roots?: string; defaultCwd?: string; dataDir?: string } = {}
+  const roots = s.allowedRoots ?? []
+  if (roots.length === 0) out.roots = FOLDER_WORDS.lastRoot
+  if (roots.length && s.defaultCwd && !roots.some((r) => underRoot(s.defaultCwd, r))) out.defaultCwd = FOLDER_WORDS.defaultOutside
+  if (s.dataDir && roots.some((r) => underRoot(s.dataDir, r))) out.dataDir = FOLDER_WORDS.dataInside
+  return out
+}
+
+/** Whether the folder problems hold Save: the ones the app's validate refuses. */
+export function foldersHeld(p: ReturnType<typeof folderProblems>): boolean {
+  return !!(p.roots || p.defaultCwd)
+}
+
 /** The words of a one-time notice the desktop app hands the workbench; null for one this build does not know. */
 export function noticeWords(notice: string): { title: string; description: string } | null {
   if (notice === 'publishing') {
@@ -115,6 +151,9 @@ export interface DesktopIceStatus {
   publicIp: string
   wslAddress: string
   firewall: 'present' | 'missing' | 'unknown'
+  /** WSL shares Windows' network (mirrored mode): viewers connect straight, nothing is forwarded or said. */
+  mirrored?: boolean
+  /** Why viewers cannot connect straight yet, in the app's own words: never a program's raw text. */
   reason?: string
 }
 
@@ -164,6 +203,17 @@ export interface DesktopBridge {
   openUrl?(url: string, browser?: AgentBrowser | null): Promise<{ outcome: string }>
   /** The browsers of the five an agent may name that are installed on this computer, for the Agents page to mark. Older apps lack it. */
   browsers?(): Promise<string[]>
+  /**
+   * Allow this folder (UX3 R30): agents may use path from now on, with nothing restarted, and the settings keep it (saved false, with
+   * why, when they could not be written); confirmed names a wide folder's kind once asked. Absent where the app does not offer it
+   * (an older app, Windows while its switch is off).
+   */
+  allowFolder?(path: string, confirmed?: string): Promise<{ ok: true; root: string; saved: boolean; error?: string } | { ok: false; code: string; message: string; real?: string; wide?: string; reason?: string }>
+  /**
+   * The settings changed outside the Settings page (a folder allowed from the Launch agent dialog, a trial's or a crew's): the page
+   * reads them again (UX3 R62). Older apps lack it.
+   */
+  onSettings?(cb: () => void): () => void
   restartServer(): Promise<void>
   openInBrowser(): Promise<void>
   showLog(): Promise<void>

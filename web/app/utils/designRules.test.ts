@@ -610,3 +610,95 @@ describe('the design rules judge what they are shown', () => {
     expect(filledAtOnce(root(`<UDashboardNavbar>${split}<UButton label="Save" /></UDashboardNavbar>`))).toBe(2)
   })
 })
+
+// ---- What stays in view, and the words (docs/design/system.md, #1158) ----
+
+/** A fold: a part that hides what it holds until a person opens it (MoreOptions, the forms' own, among them). */
+const FOLD = /^(UCollapsible|UAccordion|MoreOptions)$/
+
+/** Per source, the controls bound to a Yolo value (`v-model="yolo"`, `:model-value="crew.yolo"`) that sit inside a fold. */
+function foldedYolo(from: Record<string, TNode> = templates): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [path, ast] of Object.entries(from)) {
+    let n = 0
+    for (const { el, up } of elements(ast)) {
+      if (up.some((tag) => FOLD.test(tag)) && (el.props ?? []).some((p) => p.type === 7 && /\byolo\b/i.test(p.exp?.content ?? ''))) n++
+    }
+    if (n > 0) out[path] = n
+  }
+  return out
+}
+
+/** The settings page and each component its template draws (a tag that is a file of components/), by the folds each holds. */
+function settingsFolds(from: Record<string, TNode> = templates): Record<string, number> {
+  const page = from['pages/settings.vue']
+  if (!page) throw new Error('no pages/settings.vue')
+  const parts = ['pages/settings.vue', ...new Set([...elements(page)].map(({ el }) => `components/${el.tag}.vue`))].filter((path) => from[path])
+  const out: Record<string, number> = {}
+  for (const path of parts) {
+    const n = [...elements(from[path]!)].filter(({ el }) => FOLD.test(el.tag!)).length
+    if (n > 0) out[path] = n
+  }
+  return out
+}
+
+/** The attributes written as text that a person reads. */
+const SHOWN = new Set(['label', 'description', 'placeholder', 'title', 'text', 'hint', 'help', 'aria-label', 'alt'])
+
+/** The text of a template that a person reads: its text and its SHOWN attributes written as text (comments and bound values left out). */
+function* shownText(node: TNode): Generator<string> {
+  for (const c of node.children ?? []) {
+    if (c.type === 2 && typeof c.content === 'string') yield c.content
+    if (c.type !== 1) continue
+    for (const p of c.props ?? []) if (p.type === 6 && SHOWN.has(p.name) && p.value) yield p.value.content
+    yield* shownText(c)
+  }
+}
+
+/** Per source, how many times the text a person reads says "browser". */
+function browserWords(from: Record<string, TNode> = templates): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [path, ast] of Object.entries(from)) {
+    const n = [...shownText(ast)].reduce((sum, text) => sum + (text.match(/\bbrowser/gi) ?? []).length, 0)
+    if (n > 0) out[path] = n
+  }
+  return out
+}
+
+/** The places known to break a rule, or to be its exception, by their count, each with why. A fixed place lowers or drops its entry. */
+type Known = Record<string, { count: number; why: string }>
+const countsOf = (known: Known) => Object.fromEntries(Object.entries(known).map(([path, k]) => [path, k.count]))
+
+const YOLO_FOLDED_KNOWN: Known = {}
+
+const SETTINGS_FOLDS_KNOWN: Known = {}
+
+const BROWSER_WORDS_KNOWN: Known = {
+  'components/AddAgentSlideover.vue': { count: 1, why: "a real browser: an agent's browser profile folder" },
+  'pages/settings.vue': { count: 1, why: "a real browser: Open in browser, The app's server row, which the desktop app opens" },
+}
+
+describe('what stays in view, and the words', () => {
+  it('keep Yolo out of a fold, the places that still fold it each with its reason', () => {
+    expect(foldedYolo()).toEqual(countsOf(YOLO_FOLDED_KNOWN))
+  })
+
+  it('fold nothing on the settings page or in a card it draws, the places that still do each with its reason', () => {
+    expect(settingsFolds()).toEqual(countsOf(SETTINGS_FOLDS_KNOWN))
+  })
+
+  it('never say the app is used in a browser, each place that still says it or means a real browser with its reason', () => {
+    expect(browserWords()).toEqual(countsOf(BROWSER_WORDS_KNOWN))
+  })
+
+  it('see Yolo in a fold, a fold in a card of the settings page and the word browser', () => {
+    expect(
+      foldedYolo(sample(`<template><div><USwitch v-model="yolo" /><UCollapsible><template #content><USwitch v-model="crew.yolo" /><USwitch v-model="yoloDefault" /></template></UCollapsible></div></template>`)),
+    ).toEqual({ 'components/Sample.vue': 1 })
+    expect(foldedYolo(sample(`<template><div><MoreOptions v-model:open="more"><USwitch v-model="form.yolo" /></MoreOptions></div></template>`))).toEqual({ 'components/Sample.vue': 1 })
+    const page = sample('<template><div><SampleCard /></div></template>')['components/Sample.vue']!
+    const card = sample('<template><UCard><UAccordion :items="items" /></UCard></template>')['components/Sample.vue']!
+    expect(settingsFolds({ 'pages/settings.vue': page, 'components/SampleCard.vue': card })).toEqual({ 'components/SampleCard.vue': 1 })
+    expect(browserWords(sample('<template><p title="Kept in this browser">Watch it from any browser.<!-- a browser --></p><UButton :label="browserLabel" /></template>'))).toEqual({ 'components/Sample.vue': 2 })
+  })
+})

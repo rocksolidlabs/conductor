@@ -144,6 +144,10 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 		Hold:       hold,
 		// A chat's resume point: the entries changed after it follow the ready.
 		TranscriptAfter: hello.TranscriptAfter,
+		// The server's own viewer socket: with the operator's own
+		// connection, a chat sends its typed line for the agent to expand
+		// (I19). Given here alone (expand_walk_test.go).
+		ViewerSocket: true,
 	}, out)
 	if err != nil {
 		switch {
@@ -447,7 +451,10 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		held.typeIn(sub, local, m.ReqID, func() error {
 			ctx, cancel := context.WithTimeout(context.Background(), s.submitWait())
 			defer cancel()
-			res, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, UnlessWaiting: m.UnlessWaiting, Finished: word})
+			// Expand is the one word that may send a chat's line without the
+			// as-written mark; the session honours it for the operator's own
+			// chat connection alone (I19). Set here alone (expand_walk_test.go).
+			res, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, UnlessWaiting: m.UnlessWaiting, Finished: word, Expand: m.Expand})
 			// A line the program takes slowly is accepted, and entered as it
 			// reads (ErrSubmitPending); its word comes then.
 			if !errors.Is(err, session.ErrSubmitPending) {

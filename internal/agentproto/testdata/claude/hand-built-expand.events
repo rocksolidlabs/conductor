@@ -1,0 +1,17 @@
+conversation 00000000-0000-4000-8000-000000000301
+accepted m301
+turn_started
+text msg_01Fixture000000000000911:0 1 call(s) final=true "one"
+turn_ended done in=2 out=3 cost=0.00000000
+turn_started
+text local:00000000-0000-4000-8000-000000000925 1 call(s) final=true "Compacted"
+accepted m302
+turn_ended done in=0 out=0 cost=0.00100000
+turn_started
+text 00000000-0000-4000-8000-000000000931:0 1 call(s) final=true "/paint isn't available in this environment."
+accepted m303
+turn_ended done in=0 out=0 cost=0.00000000
+turn_started
+text 00000000-0000-4000-8000-000000000964:0 1 call(s) final=true "Context: 12% of the window is used."
+accepted m304
+turn_ended done in=0 out=0 cost=0.00000000

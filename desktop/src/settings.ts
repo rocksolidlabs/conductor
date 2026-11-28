@@ -6,8 +6,13 @@ import { clampZoom } from './zoom'
 export interface DesktopSettings {
   /** The server's data directory (catalog, crews, hooks, certificates). */
   dataDir: string
-  /** Directories server sessions may run in. */
+  /** Directories server sessions may run in, as typed in Settings. */
   allowedRoots: string[]
+  /**
+   * The folders Allow this folder added, kept apart from the typed ones: the server judges each again at every start as the press
+   * did, and uses one only while it is that folder. Settings shows the two lists as one (shownSettings).
+   */
+  pressedRoots: PressedRoot[]
   /** The working directory a launch gets without one. */
   defaultCwd: string
   /** Launch every agent with its yolo recipe. */
@@ -40,14 +45,69 @@ export interface DesktopSettings {
   updateFailedNoticed: string
 }
 
+/** A folder Allow this folder added, and the kind of wide folder it was confirmed as ('' for none). */
+export interface PressedRoot {
+  path: string
+  confirmed: '' | 'home' | 'above_home' | 'holds_data'
+}
+
+const PRESSED_KINDS = ['', 'home', 'above_home', 'holds_data'] as const
+
+/** under says whether path is root or lies inside it. */
+function under(path: string, root: string): boolean {
+  return path === root || path.startsWith(root.replace(/\/+$/, '') + '/')
+}
+
+/**
+ * typedDefault makes the folder the default folder lies in a typed one when only a pressed folder holds it: choosing a default
+ * folder in Settings is typing its folder there. The pressed entry leaves pressedRoots for allowedRoots, so the default folder
+ * always lies under a typed folder, as validate asks.
+ */
+export function typedDefault<T extends Pick<DesktopSettings, 'allowedRoots' | 'pressedRoots' | 'defaultCwd'>>(s: T): T {
+  if (!s.defaultCwd || (s.allowedRoots ?? []).some((r) => under(s.defaultCwd, r))) return s
+  const holder = (s.pressedRoots ?? []).find((p) => under(s.defaultCwd, p.path))
+  if (!holder) return s
+  return { ...s, allowedRoots: [...(s.allowedRoots ?? []), holder.path], pressedRoots: (s.pressedRoots ?? []).filter((p) => p !== holder) }
+}
+
+/** rootPaths are every folder agents may use, as a person sees them: the typed ones, then the pressed ones not among them. */
+export function rootPaths(s: Pick<DesktopSettings, 'allowedRoots' | 'pressedRoots'>): string[] {
+  const out = [...(s.allowedRoots ?? [])]
+  for (const p of s.pressedRoots ?? []) if (!out.includes(p.path)) out.push(p.path)
+  return out
+}
+
+/**
+ * shownSettings are the settings as the Settings page has them: one list of folders (rootPaths), the press's apart from the typed
+ * ones being the app's own business.
+ */
+export function shownSettings(s: DesktopSettings): Omit<DesktopSettings, 'pressedRoots'> & { pressedPaths: string[] } {
+  const { pressedRoots: _pressed, ...rest } = s
+  // pressedPaths, read-only: which folders of the list a press added. No page reads it yet. Nothing the page sends under this name,
+  // or under pressedRoots, is ever taken (SettingsSaver).
+  return { ...rest, allowedRoots: rootPaths(s), pressedPaths: (s.pressedRoots ?? []).map((p) => p.path) }
+}
+
+/**
+ * splitRoots takes the one list the Settings page sends back (allowedRoots) apart again: a folder the press added stays the press's
+ * while the list holds it, and is dropped when the page drops it; every other folder of the list is a typed one. Without a list,
+ * both stay as they are.
+ */
+export function splitRoots(cur: Pick<DesktopSettings, 'allowedRoots' | 'pressedRoots'>, shown: unknown): Pick<DesktopSettings, 'allowedRoots' | 'pressedRoots'> {
+  if (!Array.isArray(shown)) return { allowedRoots: cur.allowedRoots, pressedRoots: cur.pressedRoots }
+  const list = shown.filter((r): r is string => typeof r === 'string')
+  const pressedRoots = (cur.pressedRoots ?? []).filter((p) => list.includes(p.path))
+  return { allowedRoots: list.filter((r) => !pressedRoots.some((p) => p.path === r)), pressedRoots }
+}
+
 /** The notices the app owes once: publishing, that sessions are published to a switchyard (on by default), to a fresh install and an upgrade alike. */
 export const NOTICES = ['publishing'] as const
 export type Notice = (typeof NOTICES)[number]
 
-export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
+export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'pressedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
 
 export function defaultSettings(home: string, userData: string): DesktopSettings {
-  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [], zoomLevel: 0, updateAnnounced: '', updateDownloaded: '', updateFailedNoticed: '' }
+  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], pressedRoots: [], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [], zoomLevel: 0, updateAnnounced: '', updateDownloaded: '', updateFailedNoticed: '' }
 }
 
 /** The words for a switchyard that is plain http on another machine; web/app/utils/desktop.ts's check, which the Settings page runs first, says the same. */
@@ -163,11 +223,13 @@ export function validate(s: DesktopSettings, posix = false): string[] {
   const out: string[] = []
   const absolute = (p: string) => (posix ? p.startsWith('/') : isAbsolute(p))
   const kind = posix ? 'an absolute path inside the WSL distribution, such as /home/<user>/code' : 'an absolute path'
-  if (!s.dataDir || !absolute(s.dataDir)) out.push(`the data directory must be ${kind}`)
-  if (!Array.isArray(s.allowedRoots) || s.allowedRoots.length === 0) out.push('at least one allowed root is needed')
-  for (const r of s.allowedRoots ?? []) if (!r || !absolute(r)) out.push(`allowed root ${JSON.stringify(r)} must be ${kind}`)
-  if (!s.defaultCwd || !absolute(s.defaultCwd)) out.push(`the default working directory must be ${kind}`)
-  else if (s.allowedRoots?.length && !s.allowedRoots.some((r) => s.defaultCwd === r || s.defaultCwd.startsWith(r.replace(/\/+$/, '') + '/'))) out.push('the default working directory must lie under an allowed root')
+  if (!s.dataDir || !absolute(s.dataDir)) out.push(`where Conductor keeps its data must be ${kind}`)
+  if (!Array.isArray(s.allowedRoots) || s.allowedRoots.length === 0) out.push('agents need at least one folder')
+  for (const r of s.allowedRoots ?? []) if (!r || !absolute(r)) out.push(`the folder ${JSON.stringify(r)} must be ${kind}`)
+  for (const p of s.pressedRoots ?? []) if (!p || typeof p.path !== 'string' || !absolute(p.path)) out.push(`the folder ${JSON.stringify(p?.path)} must be ${kind}`)
+  if (!s.defaultCwd || !absolute(s.defaultCwd)) out.push(`the default folder must be ${kind}`)
+  // Under a typed folder, as the release before reads it: a file written here always loads there.
+  else if (s.allowedRoots?.length && !s.allowedRoots.some((r) => under(s.defaultCwd, r))) out.push('the default folder must be inside a folder agents can use')
   if (!['auto', 'manual', 'off'].includes(s.reach)) out.push('reach must be auto, manual or off')
   // Off, nothing is published there: a switchyard the server would refuse is kept, and never handed to it (serverEnv).
   if (s.switchyardEnabled && s.switchyardServer) {
@@ -210,7 +272,7 @@ export function migrateToWsl(s: DesktopSettings, linuxHome: string): { settings:
 export function loadSettings(file: string, defaults: DesktopSettings): DesktopSettings {
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<DesktopSettings>
-    const merged: DesktopSettings = { ...defaults, ...pick(raw) }
+    const merged: DesktopSettings = typedDefault({ ...defaults, ...pick(raw) })
     return validate(merged).some((p) => p !== PLAIN_SWITCHYARD && p !== SWITCHYARD_EXTRA && p !== SWITCHYARD_SHAPE) ? defaults : merged
   } catch {
     return defaults
@@ -221,6 +283,11 @@ function pick(raw: Partial<DesktopSettings>): Partial<DesktopSettings> {
   const out: Partial<DesktopSettings> = {}
   if (typeof raw.dataDir === 'string') out.dataDir = raw.dataDir
   if (Array.isArray(raw.allowedRoots)) out.allowedRoots = raw.allowedRoots.filter((r): r is string => typeof r === 'string')
+  if (Array.isArray(raw.pressedRoots)) {
+    out.pressedRoots = raw.pressedRoots
+      .filter((p): p is PressedRoot => !!p && typeof p === 'object' && typeof (p as PressedRoot).path === 'string')
+      .map((p) => ({ path: p.path, confirmed: (PRESSED_KINDS as readonly string[]).includes(p.confirmed) ? p.confirmed : '' }))
+  }
   if (typeof raw.defaultCwd === 'string') out.defaultCwd = raw.defaultCwd
   if (typeof raw.yolo === 'boolean') out.yolo = raw.yolo
   if (raw.reach === 'auto' || raw.reach === 'manual' || raw.reach === 'off') out.reach = raw.reach
@@ -275,6 +342,17 @@ export function saveSettings(file: string, s: DesktopSettings): void {
   const tmp = file + '.tmp'
   writeFileSync(tmp, JSON.stringify(s, null, 2) + '\n', { mode: 0o600 })
   renameSync(tmp, file)
+}
+
+/**
+ * keepIn is the app's way to keep settings: written to file first, and only once the file holds them taken as the settings the app
+ * runs with (assign). A file that cannot be written throws, and the settings the app runs with are left as they were.
+ */
+export function keepIn(file: string, assign: (s: DesktopSettings) => void): (s: DesktopSettings) => void {
+  return (s) => {
+    saveSettings(file, s)
+    assign(s)
+  }
 }
 
 /** serverAffecting says whether changing from a to b needs the server restarted. */

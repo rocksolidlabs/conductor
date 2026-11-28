@@ -1,7 +1,8 @@
+import { sessionPlace } from '~/utils/memberStrip'
 import type { Ref } from 'vue'
 import type { RunInfo, SessionInfo } from './useSessions'
 import { ApiError } from './useApi'
-import { liveSession, attentionFavicon, alerting, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
+import { attentionWords, liveSession, attentionFavicon, alerting, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
 import { eventAlert, type RoutedEvent } from '~/utils/events'
 import { formedCrew } from '~/utils/activity'
 import { desktopBridge } from '~/utils/desktop'
@@ -221,7 +222,7 @@ export function useAttention() {
     if (!import.meta.client) return
     const fresh = alerting(newlyNeedingInput(prev, next))
     if (!fresh.length || !events.routes.value.needs_input.browser) return
-    for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, () => notificationTarget(window.innerWidth, s.id, s.attention?.id))
+    for (const s of fresh) notify(`${s.name} needs input`, attentionWords(s.attention) || 'The agent is waiting for you.', `conductor-${s.id}`, () => notificationTarget(window.innerWidth, s.id, s.attention?.id, sessionPlace(s, s.id)))
     chime()
   }
 
@@ -244,7 +245,7 @@ export function useAttention() {
   function reactToEvent(e: RoutedEvent) {
     const alert = eventAlert(e, events.routes.value)
     if (!alert) return
-    notify(alert.title, alert.body, alert.tag, () => notificationTarget(window.innerWidth, e.sessionId))
+    notify(alert.title, alert.body, alert.tag, () => notificationTarget(window.innerWidth, e.sessionId, undefined, sessionPlace(store.value.sessions.get(e.sessionId), e.sessionId)))
     chime()
   }
 

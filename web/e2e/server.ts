@@ -247,6 +247,12 @@ export async function startServer(o: {
    * under its HOME: it finds the stubs and never a real agent CLI (#961).
    */
   realAgents?: boolean
+  /**
+   * The desktop app's key for this run, as the app hands its server the secrets (`serve --secrets-stdin`): the workbench token and
+   * this key on the first line of stdin, in no environment variable. A server so started lets the app allow a folder while it runs
+   * (POST /api/roots with the key in X-Conductor-Desktop-Key), and says so (whoami `folders: app`).
+   */
+  desktopKey?: string
 }): Promise<Started> {
   const lost: string[] = []
   for (let i = 0; i < PORT_TRIES; i++) {
@@ -266,7 +272,7 @@ async function startOn(o: Parameters<typeof startServer>[0], port: number): Prom
   const from = existsSync(o.log) ? statSync(o.log).size : 0
   const out = openSync(o.log, 'a')
   const path = serverPath(o, stubBash().path)
-  const child = spawn(bin, ['serve', '--config', o.config, '--listen', `127.0.0.1:${port}`], {
+  const child = spawn(bin, ['serve', '--config', o.config, '--listen', `127.0.0.1:${port}`, ...(o.desktopKey ? ['--secrets-stdin'] : [])], {
     env: {
       PATH: path,
       LANG: 'C.UTF-8',
@@ -275,7 +281,8 @@ async function startOn(o: Parameters<typeof startServer>[0], port: number): Prom
       CONDUCTOR_PUBLIC_URL: baseURL,
       CONDUCTOR_ALLOWED_ROOTS: o.allowedRoot,
       CONDUCTOR_DEFAULT_CWD: o.defaultCwd,
-      CONDUCTOR_WORKBENCH_TOKEN: token,
+      // With the app's key, the token comes on stdin with it, as the app hands them over; else in its variable.
+      ...(o.desktopKey ? {} : { CONDUCTOR_WORKBENCH_TOKEN: token }),
       CONDUCTOR_REACH: 'off',
       // The suite's sessions stay here: never published to the public switchyard.
       CONDUCTOR_RENDEZVOUS: '0',
@@ -285,8 +292,9 @@ async function startOn(o: Parameters<typeof startServer>[0], port: number): Prom
       ...Object.fromEntries((o.passEnv ?? []).flatMap((k) => (process.env[k] === undefined || k.startsWith('CONDUCTOR_') ? [] : [[k, process.env[k]!]]))),
       ...(o.env ?? {}),
     },
-    stdio: ['ignore', out, out],
+    stdio: [o.desktopKey ? 'pipe' : 'ignore', out, out],
   })
+  if (o.desktopKey) child.stdin?.end(JSON.stringify({ workbenchToken: token, desktopKey: o.desktopKey }) + '\n')
   closeSync(out)
   const exited = new Promise<void>((done) => child.once('exit', () => done()))
   const pid = child.pid

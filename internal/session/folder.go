@@ -92,17 +92,28 @@ func OpenFolder(path string) (*Folder, error) {
 // the directory opened must be that one (os.SameFile), so dir replaced in
 // between (a link put at its path or its parents') is refused.
 func OpenFolderIn(dir, rel string, want os.FileInfo) (*Folder, error) {
+	var same func(got os.FileInfo) bool
+	if want != nil {
+		same = func(got os.FileInfo) bool { return os.SameFile(got, want) }
+	}
+	return OpenFolderInWith(dir, rel, same)
+}
+
+// OpenFolderInWith is OpenFolderIn with the judgement of the opened root
+// given whole: same is asked of the root as opened (its handle's stat), and
+// a false refuses the open. A nil same takes the root as it is.
+func OpenFolderInWith(dir, rel string, same func(got os.FileInfo) bool) (*Folder, error) {
 	parent, err := os.OpenRoot(openDirOnly(dir))
 	if err != nil {
 		return nil, err
 	}
 	defer parent.Close()
-	if want != nil {
+	if same != nil {
 		got, err := parent.Stat(".")
 		if err != nil {
 			return nil, err
 		}
-		if !os.SameFile(got, want) {
+		if !same(got) {
 			return nil, errors.New("session: the folder's root changed while it was opened")
 		}
 	}
@@ -132,6 +143,11 @@ func (f *Folder) Path() string {
 
 // Close closes the folder; what is under way finishes or fails.
 func (f *Folder) Close() error { return f.root.Close() }
+
+// Root opens the folder again as an os.Root of its own, for work in it
+// that names nothing by its path (a crew's first commit,
+// crew.EnsureFirstCommit); the caller closes it.
+func (f *Folder) Root() (*os.Root, error) { return f.root.OpenRoot(".") }
 
 // Lstat describes rel, a path relative to the folder, through the
 // folder's root, a link at its last element not followed: nothing outside

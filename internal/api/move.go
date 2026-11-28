@@ -99,35 +99,19 @@ func (s *Server) moveStarts(ctx context.Context, local *session.Local, to string
 		return session.MoveStarts{}, session.CannotMoveWords
 	}
 	l := v.(*chatLaunch)
-	if l.where != ext.WhereNative || !s.moves(l.agent.Protocol.Name) || l.agent.Session.Empty() || len(l.agent.Session.ResumeArgs) == 0 {
-		return session.MoveStarts{}, session.CannotMoveWords
+	if words := s.chatRefusal(ctx, l, to == session.WayProtocol); words != "" {
+		return session.MoveStarts{}, words
 	}
 	chat, err := s.chatStart(local)
 	if err != nil {
 		return session.MoveStarts{}, session.CannotMoveWords
-	}
-	if to == session.WayProtocol {
-		// What the child's argv would refuse is told now, with the
-		// terminal still running: an added folder, a flag a chat sets.
-		if err := s.chatArgsCheck(l); err != nil {
-			return session.MoveStarts{}, chatArgsWords(err)
-		}
-		version := ""
-		if id, ok := s.cachedIdentity(l.agent); ok && id.Identified {
-			version = id.Version
-		} else if id := s.identityNow(ctx)(l.agent); id != nil && id.Identified {
-			version = id.Version
-		}
-		if !agentproto.Qualified(l.agent.Protocol.Name, version) {
-			return session.MoveStarts{}, agentproto.NotQualifiedWords
-		}
 	}
 	id := info.ID
 	m := session.MoveStarts{
 		Protocol: chat,
 		Terminal: s.terminalStart(l),
 		Gone:     session.GroupGone,
-		Words:    moveWords,
+		Words:    moveWordsFor(l.agent.Protocol.Name),
 	}
 	if seam := s.moveSeam; seam != nil {
 		m.AfterOldExit = func() { seam(id) }
@@ -135,21 +119,69 @@ func (s *Server) moveStarts(ctx context.Context, local *session.Local, to string
 	return m, ""
 }
 
+// chatRefusal is the plan's sentence for why the session launched as l
+// cannot move to its chat and back ("" when it can), of what its agent and
+// its launch say: no protocol the server speaks, a driver whose Moves is
+// false, a Runtime other than the native one or one that starts no pipes,
+// no recipe to resume its terminal; and, toChat, arguments its chat is not
+// started with (an added folder, a flag a chat sets itself) and a version
+// its driver did not qualify. The move judges a session by it
+// (moveStarts), and a launch as a chat its agent before anything starts
+// (launchWayRefusal).
+func (s *Server) chatRefusal(ctx context.Context, l *chatLaunch, toChat bool) string {
+	if l.where != ext.WhereNative || l.agent.Protocol.Off() || agentproto.Check(l.agent.Protocol) != nil || !s.moves(l.agent) || l.agent.Session.Empty() || len(l.agent.Session.ResumeArgs) == 0 {
+		return session.CannotMoveWords
+	}
+	if rt, ok := s.runtimeAt(l.where); !ok {
+		return session.CannotMoveWords
+	} else if _, ok := rt.(ext.PipeStarter); !ok {
+		return session.CannotMoveWords
+	}
+	if !toChat {
+		return ""
+	}
+	// What the child's argv would refuse is told now, with the terminal
+	// still running: an added folder, a flag a chat sets.
+	if err := s.chatArgsCheck(l); err != nil {
+		return chatArgsWords(err)
+	}
+	version := ""
+	if id, ok := s.cachedIdentity(l.agent); ok && id.Identified {
+		version = id.Version
+	} else if id := s.identityNow(ctx)(l.agent); id != nil && id.Identified {
+		version = id.Version
+	}
+	if !agentproto.Qualified(l.agent.Protocol.Name, version) {
+		return agentproto.StartWords(agentproto.NotQualifiedFor(l.agent.Protocol.Name))
+	}
+	return ""
+}
+
 // chatArgsWords is the plan's sentence for arguments a chat is not
 // started with (design 13).
 func chatArgsWords(err error) string {
 	var own *agentproto.OwnFlagError
+	var codexArg *agentproto.CodexArgError
+	var acpArg *agentproto.ACPArgError
 	switch {
 	case errors.Is(err, agentproto.ErrAddedFolder):
 		return agentproto.AddedFolderWords
+	case errors.Is(err, agentproto.ErrOptionsEnd):
+		return agentproto.OptionsEndWords
 	case errors.As(err, &own):
 		return agentproto.OwnFlagWords(own.Flag)
+	case errors.As(err, &codexArg):
+		return agentproto.CodexArgWords(codexArg.Flag)
+	case errors.As(err, &acpArg):
+		return agentproto.ACPArgWords(acpArg.Flag)
 	}
 	return session.CannotMoveWords
 }
 
-// moves is the driver's Moves for the protocol name.
-func (s *Server) moves(name string) bool { return agentproto.Moves(name) }
+// moves is whether a session of the agent a moves between its ways: its
+// driver's word (agentproto.MovesFor; for the Agent Client Protocol, the
+// agent's own).
+func (s *Server) moves(a catalog.Agent) bool { return agentproto.MovesFor(a.Protocol.Name, a.Adapter) }
 
 // terminalStart starts the session's terminal again on a conversation, as
 // a resume starts it: the agent's command, its recipe's resume arguments on
@@ -182,18 +214,19 @@ func (s *Server) terminalStart(l *chatLaunch) func(context.Context, string, uint
 	}
 }
 
-// moveWords is a failed start's sentence: the driver's own for a chat that
-// did not start (design 13), the terminal's for one that did not.
-func moveWords(err error) string {
-	switch {
-	case errors.Is(err, agentproto.ErrNotQualified):
-		return agentproto.NotQualifiedWords
-	case errors.Is(err, agentproto.ErrNotSignedIn):
-		return agentproto.NotSignedInWords
-	case errors.Is(err, agentproto.ErrNotStarted), errors.Is(err, errNoConversation), errors.Is(err, errNoPipes):
-		return agentproto.NotStartedWords
+// moveWordsFor is a failed start's sentence for an agent of the protocol
+// name: its driver's own for a chat that did not start (design 13), the
+// terminal's for one that did not.
+func moveWordsFor(name string) func(error) string {
+	return func(err error) string {
+		if w := agentproto.StartWords(err); w != "" {
+			return w
+		}
+		if errors.Is(err, errNoConversation) || errors.Is(err, errNoPipes) {
+			return agentproto.StartWords(agentproto.NotStartedFor(name))
+		}
+		return ""
 	}
-	return ""
 }
 
 // endChatOnOlderSwitchyard ends the publication of a session that has

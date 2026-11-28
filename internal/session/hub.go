@@ -96,6 +96,9 @@ type Subscription struct {
 	// owner marks one of the owner's own connections (AttachOptions.Owner),
 	// the only ones offered the editor's Neovim.
 	owner bool
+	// viewerSocket says it came by the server's own viewer socket
+	// (AttachOptions.ViewerSocket). Set once, as it attaches.
+	viewerSocket bool
 	// authorize is the connection's credential check (AttachOptions.
 	// Authorize), nil for one without a link: asked again before a
 	// submission of the connection is written (revoked), since the

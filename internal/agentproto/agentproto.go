@@ -9,6 +9,7 @@
 package agentproto
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -22,7 +23,7 @@ const ClaudeStreamJSON = "claude-stream-json"
 
 // Names are the protocols a catalog's agent may declare, in the order they
 // were added.
-func Names() []string { return []string{ClaudeStreamJSON} }
+func Names() []string { return []string{ClaudeStreamJSON, CodexAppServer, ACPv1} }
 
 // Check reports an error when r names a protocol Conductor does not speak;
 // nil and the empty recipe ({}, the protocol off) pass. The recipe's shape
@@ -47,8 +48,22 @@ func Moves(name string) bool {
 	switch name {
 	case ClaudeStreamJSON:
 		return claudeMoves
+	case CodexAppServer:
+		return codexMoves
 	}
 	return false
+}
+
+// MovesFor is Moves for an agent of the catalog: for the Agent Client
+// Protocol, whose one client speaks to many agents, the agent's own word
+// (acpMoves, by its adapter), set only once its session id through the
+// protocol is shown to be its terminal's own; for any other protocol, its
+// driver's.
+func MovesFor(name, adapter string) bool {
+	if name == ACPv1 {
+		return acpMoves[adapter]
+	}
+	return Moves(name)
 }
 
 // claudeMoves is Claude Code's Moves: set on the by-hand observation of both
@@ -63,8 +78,75 @@ func Qualified(name, version string) bool {
 	switch name {
 	case ClaudeStreamJSON:
 		return versionAtLeast(version, ClaudeMinVersion)
+	case CodexAppServer:
+		return versionAtLeast(version, CodexMinVersion)
+	case ACPv1:
+		// One client for many agents, each of its own versions: the
+		// protocol's version, in the initialize answer, is the gate (Begin),
+		// and a program the probe found is enough here.
+		return strings.TrimSpace(version) != ""
 	}
 	return false
+}
+
+// NotQualifiedFor is the refusal of a version the driver of the protocol
+// name did not qualify (its NotQualified sentence), and NotStartedFor that
+// of a chat whose child did not start: each driver's own words, Claude
+// Code's for a name Conductor does not speak.
+func NotQualifiedFor(name string) error {
+	switch name {
+	case CodexAppServer:
+		return ErrCodexNotQualified
+	case ACPv1:
+		return ErrACPNotQualified
+	}
+	return ErrNotQualified
+}
+
+// NotStartedFor is the refusal of a chat of the protocol name whose child
+// did not start (NotQualifiedFor).
+func NotStartedFor(name string) error {
+	switch name {
+	case CodexAppServer:
+		return ErrCodexNotStarted
+	case ACPv1:
+		return ErrACPNotStarted
+	}
+	return ErrNotStarted
+}
+
+// ErrNoRequest is a driver's Reply for a request it no longer holds (one
+// answered, taken back, resolved or replaced): the verdict reached nobody,
+// and the session records it so.
+var ErrNoRequest = errors.New("agentproto: the agent holds no such request")
+
+// StartWords is the sentence a person reads for a chat's start that err
+// ended, by its kind: a version not qualified, a child that did not start
+// a chat, an agent not signed in, in its driver's own words; "" for any
+// other error.
+func StartWords(err error) string {
+	var w *words
+	if errors.As(err, &w) && w.kind != "" {
+		return w.s
+	}
+	return ""
+}
+
+// IsNotQualified, IsNotStarted and IsNotSignedIn say which of a start's
+// answers err is, whichever driver gave it.
+func IsNotQualified(err error) bool { return isKind(err, kindNotQualified) }
+
+// IsNotStarted says err is a driver's answer that its child did not start
+// a chat.
+func IsNotStarted(err error) bool { return isKind(err, kindNotStarted) }
+
+// IsNotSignedIn says err is a driver's answer that its agent is not signed
+// in.
+func IsNotSignedIn(err error) bool { return isKind(err, kindNotSignedIn) }
+
+func isKind(err error, kind string) bool {
+	var w *words
+	return errors.As(err, &w) && w.kind == kind
 }
 
 // versionAtLeast says whether v, a dotted version of numbers ("2.1.331",

@@ -54,6 +54,8 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
     await expect(q.locator('[data-permission-whole][data-permission-short]')).toContainText('echo allowed')
     await expect(q.locator('[data-permission-line]')).toHaveCount(0)
     await expect(q.locator('[data-permission-hidden]')).toHaveCount(0)
+    // The reason goes with a deny alone, and its field says so.
+    await expect(q.locator('[data-permission-message]')).toHaveAttribute('placeholder', 'Why you deny, for the agent (optional)')
     // No bar repeats the question under the chat that shows it, and the sidebar's row says where it is answered, with no field.
     await expect(page.locator('[data-quick-reply]')).toHaveCount(0)
     const row = page.locator(`#dashboard-sidebar-main [data-sidebar-row="s:${s.id}"]`).first()
@@ -116,7 +118,8 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
 test("a call with its description, as every real one has, is allowed with one press; one whose end shows with its top out of view waits", async ({ browser }) => {
   const api = own.api
   const { s, conv } = await launch(api, sessions, 'e2e chat permission described', 'asker-proto')
-  const page = await dayPage(browser, { server: own.started, width: 1440, height: 420 })
+  // A window short enough that the seven lines' call cannot lie whole in the chat's pane above the box (one row since UX3 R4).
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 360 })
   try {
     const view = await openSession(page, s.id)
     await firstTurn(page, api, s.id)
@@ -327,6 +330,46 @@ test('a value of no-break spaces wraps inside the question: its last word is not
   }
 })
 
+test("a skill the agent runs on a link's line is refused without a question; on the operator's own line it is asked by its name", async ({ browser }) => {
+  const api = own.api
+  const { s, conv } = await launch(api, sessions, 'e2e chat permission skill', 'asker-proto')
+  const page = await dayPage(browser, { server: own.started })
+  let guest: Awaited<ReturnType<typeof joined>> | undefined
+  try {
+    const view = await openSession(page, s.id)
+    await firstTurn(page, api, s.id)
+    await toChat(api, s.id, view)
+    const chat = page.locator('[data-chat-view]')
+
+    // A control link's line: the agent's skill call is refused, its reason told to the agent, and nothing is drawn for the operator.
+    guest = await joined(browser, own, s.id, 'control')
+    await say(guest.g, 'ask skill')
+    budget(8 * STEP_MS + 3 * LONG_MS)
+    await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).toBe("Folder commands and skills run only from the operator's own line.\n")
+    await expect(chat.locator('[data-chat-turn]').last()).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
+    await expect(chat.locator('[data-permission-question]')).toHaveCount(0)
+    await expect(page.locator(`#dashboard-sidebar-main [data-sidebar-row="s:${s.id}"]`).first().locator('[data-row-in-chat]')).toHaveCount(0)
+    expect(readStub(own, conv, 'allowed')).toBe('')
+
+    // The operator's own line: asked, by the skill's name, with what an Allow grants, and Allow once and Deny alone.
+    rmSync(stubFile(own, conv, 'denied'), { force: true })
+    await say(page, 'ask skill')
+    budget(8 * STEP_MS + 2 * LONG_MS)
+    const q = openQuestion(page)
+    await expect(q).toBeVisible({ timeout: LONG_MS })
+    await expect(q.locator('[data-permission-words]')).toHaveText('Run a skill?')
+    await expect(q.locator('[data-permission-tool]')).toHaveText('Skill')
+    await expect(q.locator('[data-permission-whole]')).toContainText('hello')
+    await expect(q.locator('[data-permission-skill-grant]')).toHaveText('A skill can run the tools its own file allows without asking again.')
+    await expect(q.locator('[data-permission-buttons] button')).toHaveText(['Allow once', 'Deny'])
+    await q.locator('[data-permission-deny]').click()
+    await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).toBe('The operator denied this call.\n')
+  } finally {
+    await guest?.ctx.close()
+    await page.context().close()
+  }
+})
+
 test("a view link's join page shows the question and who answers it, with no button", async ({ browser }) => {
   const api = own.api
   const { s, conv } = await launch(api, sessions, 'e2e chat permission link', 'asker-proto')
@@ -361,6 +404,49 @@ test("a view link's join page shows the question and who answers it, with no but
     await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).not.toBe('')
   } finally {
     await guest?.ctx.close()
+    await page.context().close()
+  }
+})
+
+test('a request scrolled out of view leaves one line above the box; Show it brings the card back with the focus on its first button', async ({ browser }) => {
+  const api = own.api
+  const { s } = await launch(api, sessions, 'e2e chat permission away', 'asker-proto')
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 560 })
+  try {
+    const view = await openSession(page, s.id)
+    await firstTurn(page, api, s.id)
+    await toChat(api, s.id, view)
+    const chat = page.locator('[data-chat-view]')
+    // A conversation taller than its pane: two turns of steps, opened, then the request.
+    for (const words of ['steps one', 'steps two']) {
+      await say(page, words)
+      budget(LONG_MS + STEP_MS)
+      await expect(chat.locator(`[data-chat-turn][data-turn-outcome="done"]`).filter({ hasText: `stub chat: ${words}` })).toHaveCount(1, { timeout: LONG_MS })
+      await chat.locator('[data-chat-turn]').filter({ hasText: `stub chat: ${words}` }).locator('[data-chat-steps-line]').click()
+    }
+    await say(page, 'ask short')
+    budget(8 * STEP_MS + LONG_MS)
+    const q = openQuestion(page)
+    await expect(q.locator('[data-permission-allow]')).toBeVisible({ timeout: LONG_MS })
+    const away = chat.locator('[data-chat-permission-away]')
+    await expect(away).toHaveCount(0)
+    // Scrolled to the top, the card out of view: the line says what it asks.
+    const scroll = chat.locator('[data-chat-scroll]')
+    expect(await scroll.evaluate((el) => el.scrollHeight > el.clientHeight + 200), 'the conversation is taller than its pane').toBe(true)
+    await scroll.evaluate((el) => (el.scrollTop = 0))
+    await expect(away).toBeVisible()
+    await expect(away).toContainText('asks: Run a command?')
+    // Show it: the card in view, the focus on its first button, and the line gone.
+    await away.locator('[data-chat-permission-show]').click()
+    await expect(q).toBeInViewport()
+    await expect(q.locator('button:not([disabled])').first()).toBeFocused()
+    await expect(away).toHaveCount(0)
+    // Answered, nothing is left of it.
+    await q.locator('[data-permission-deny]').click()
+    await expect(chat.locator('[data-permission-question]').last()).toHaveAttribute('data-permission-state', 'denied', { timeout: LONG_MS })
+    await scroll.evaluate((el) => (el.scrollTop = 0))
+    await expect(away).toHaveCount(0)
+  } finally {
     await page.context().close()
   }
 })

@@ -97,6 +97,11 @@ test('each prompt runs without a person, the members start in order, the handoff
     .toContain('Handoff from tester: stub tester: over to core')
   // The feed shows the same steps.
   await page.goto(`/runs/${encodeURIComponent(runId)}`)
+  // Activity is off at first: one press shows it beside the tiles.
+  const toggle = page.locator('[data-activity-toggle]')
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
   const feed = page.locator('[data-crew-feed]')
   for (const text of ["typed lead's prompt", 'lead is done: starting core, cli', 'cli is done: starting tester', 'handoff delivered from tester to core']) {
     await expect(feed).toContainText(text)
@@ -132,7 +137,8 @@ test('the Crews home shows the run as running now, and the crew\'s Runs tab list
 test('the full sidebar groups the run: its header, then its four members', async ({ page, api }) => {
   await page.goto('/crews')
   const run = await api.run(runId)
-  const sessions = new Set(run.members.map((m) => `/sessions/${m.sessionId}`))
+  // Each member's row links to its place inside its crew (UX3 R72).
+  const sessions = new Set(run.members.map((m) => `/runs/${encodeURIComponent(runId)}?session=${m.sessionId}`))
   await expect.poll(async () => (await sidebarLinks(page)).filter((h) => sessions.has(h)).length).toBe(4)
   const links = await sidebarLinks(page)
   const header = links.indexOf(`/runs/${encodeURIComponent(runId)}`)

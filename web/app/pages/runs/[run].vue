@@ -1,23 +1,27 @@
 <script setup lang="ts">
-import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { RunInfo, SessionInfo } from '~/composables/useSessions'
+import { attentionWords } from '~/utils/attention'
 import { scopeItems } from '~/utils/chat'
-import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
+import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopRunPageQuestion, type Action } from '~/utils/actions'
 import { taskActions, taskWords } from '~/utils/tasks'
 import { attemptSession, markSection, sessionStatus, taskStatus } from '~/utils/status'
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
 import type { PaletteItem } from '~/composables/usePalette'
-import { memberAsk, memberLook, runTitle, startedClock } from '~/utils/crewWords'
+import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
-import { bestGrid, lastItemSpan } from '~/utils/wall'
+import { RUN_LAYOUTS, RUN_LAYOUT_LOOK, type RunLayout, type RunWallTile } from '~/utils/wall'
+import { choiceFor, choose, crewOfRun, crewsForDoc, largeOf, readRunTiles, RUN_TILES_KEY, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 import { previewPath } from '~/utils/capture'
 import type { BrakemanRequest } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
+import { carriedQuery, keepIfHere, memberOfRun, readSaidFor } from '~/utils/memberStrip'
+import { RUN_SHORTCUTS } from '~/composables/useShortcuts'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
@@ -115,6 +119,43 @@ watch(
 )
 const reviewTicket = computed(() => run.value?.ticket?.key || runTicket.value?.key || chainTicket.value)
 
+// A member opens in the run's place (UX3 R72; docs/design/system.md, "A run's member opens inside its run"): `?session=<id>` draws
+// its whole view (SessionView) where the run's views are, with its crew's strip at its top; the run's own views, tiles and message bar
+// are not mounted meanwhile, so the member has one view and one connection from this page. Only a session of this run is drawn here:
+// another goes to its own address, by replace, before anything of it is drawn.
+const openId = computed(() => (typeof route.query.session === 'string' ? route.query.session : ''))
+/** Where a session asked for here goes instead: its own page, unless it is a member of this run (a Brakeman turn never is). */
+function notThisRun(s: Pick<SessionInfo, 'id' | 'crew'>): string | undefined {
+  return memberOfRun(s, runId.value) ? undefined : ownPage(s.id)
+}
+/** A session's own page, what its address carried with it: where one that is not this run's, or cannot be read, is drawn. */
+function ownPage(id: string): string {
+  return `/sessions/${encodeURIComponent(id)}${carriedQuery(route.query)}`
+}
+// The live list's word on the session asked for, kept: while it sends the session away, nothing of it mounts here, its header and
+// keys included. An address a read moved the page to (readSaidFor) waits for its own read instead.
+const leaving = ref('')
+watch(
+  openId,
+  (sid) => {
+    const known = sid && !readSaidFor(window.history.state, sid) ? live.sessions.value.find((s) => s.id === sid) : undefined
+    leaving.value = (known && notThisRun(known)) || ''
+    if (leaving.value) void navigateTo(leaving.value, { replace: true })
+  },
+  { immediate: true },
+)
+/**
+ * Every way to a member's session: in this page's place when the live list holds it as this run's, its address naming the member alone
+ * (the run's own `decision`, `task` and the rest come back through history), else its own page, which lands a member in its crew.
+ */
+function openSession(id: string, given?: Pick<SessionInfo, 'crew'>) {
+  // The session as just handed (a resumed member's, before the live list holds it), else as the list knows it.
+  const s = given ?? live.sessions.value.find((x) => x.id === id)
+  if (s && memberOfRun(s, runId.value)) void router.push(keepIfHere(`${route.path}?session=${encodeURIComponent(id)}`, route))
+  else void router.push(`/sessions/${encodeURIComponent(id)}`)
+}
+const placeOf = useSessionPlace()
+
 /** An action (add, start, stop) answered with the run as it is now. */
 function changed(r: RunInfo) {
   live.applyRun(r)
@@ -123,18 +164,12 @@ function changed(r: RunInfo) {
 /** The run's sessions in the live store. */
 const sessions = computed(() => live.sessions.value.filter((s) => s.crew?.runId === runId.value))
 
-interface Tile {
-  name: string
-  member?: RunMember
-  session?: SessionInfo
-}
-
 /**
  * One tile per member in the run's order, then any session of the run the last read did not know yet. A managed run's member has one
  * session per attempt over time: its tile is its latest, and the earlier attempts' sessions get no tile of their own.
  */
-const tiles = computed<Tile[]>(() => {
-  const out: Tile[] = []
+const tiles = computed<RunWallTile[]>(() => {
+  const out: RunWallTile[] = []
   const seen = new Set<string>()
   const names = new Set<string>()
   for (const m of run.value?.members ?? []) {
@@ -152,30 +187,24 @@ const tiles = computed<Tile[]>(() => {
 })
 
 
-// Broadcast selection: every member whose session runs, unless the person
-// unticked it; a member that starts later is selected as it appears. Only the
-// person's own ticks are kept (choices), so no read of the run and no run
-// event clears one; another run starts afresh.
-const choices = ref<Record<string, boolean>>({})
-const selection = computed(() =>
-  broadcastSelection(
-    tiles.value.map((t) => ({
-      name: t.name,
-      live: !!t.session && (t.session.status === 'running' || t.session.status === 'starting'),
-      waiting: t.session?.attention?.state === 'needs_input',
-    })),
-    choices.value,
-  ),
-)
-function isSelected(name: string) {
-  return selection.value.selected.includes(name)
+// Who gets a line from the message bar (broadcastSelection): everyone who can get one while `All` is on (`pick` null), else the
+// members the person ticked in the bar. The pick outlasts every read of the run and every run event, and a trip to a member and
+// back: it is kept for each run for the tab's life (useRunRecipients), with the line begun.
+const { pick } = useRunRecipients(runId)
+// While the bar holds the focus, each tile that will get the line carries the ring.
+const barFocused = ref(false)
+const receiving = computed(() => (barFocused.value ? selection.value.to : []))
+const wall = useTemplateRef<{ show: (name: string) => boolean }>('wall')
+/** The message bar's chip of a member that waits on a question: the Members view, its tile in view and focused. */
+async function showMember(name: string) {
+  view.value = 'grid'
+  await nextTick()
+  wall.value?.show(name)
 }
-function toggle(name: string, on: boolean | 'indeterminate') {
-  choices.value = { ...choices.value, [name]: on === true }
-}
+const recipients = computed(() => tiles.value.map((t) => ({ name: t.name, state: recipientState(t.member, t.session) })))
+const selection = computed(() => broadcastSelection(recipients.value, pick.value))
 
 watch(runId, (_, before) => {
-  choices.value = {}
   gone.value = false
   load()
   dispatch.gate.drop(`run-ticket:${before}`)
@@ -235,12 +264,53 @@ watch(view, (v) => {
 })
 const viewItems = computed(() => [
   ...(run.value?.managed ? [{ label: 'Tasks', value: 'tasks', icon: 'i-lucide-list-checks' }] : []),
-  { label: 'Grid', value: 'grid', icon: 'i-lucide-layout-grid' },
+  { label: 'Members', value: 'grid', icon: 'i-lucide-users' },
   { label: 'Graph', value: 'graph', icon: 'i-lucide-git-fork' },
   { label: 'Timeline', value: 'timeline', icon: 'i-lucide-chart-gantt' },
 ])
 /** The view shown: Tasks is a managed run's alone, so a legacy run asked for it gets the grid. */
 const shownView = computed(() => (view.value === 'tasks' && !run.value?.managed ? 'grid' : view.value))
+
+// How the Members view draws the crew's tiles (runTiles): their layout, the member One large draws large, the sizes its gaps were
+// dragged to, and whether Activity shows beside them. Kept for the crew in this app's storage; a crew opened for the first time takes the last choice made for any crew.
+function pageStorage(): Storage | null {
+  try {
+    return localStorage
+  } catch {
+    return null
+  }
+}
+const tilesRecord = ref(readRunTiles(pageStorage()))
+const crew = computed(() => crewOfRun(runId.value, run.value?.crewId))
+const tilesChoice = computed(() => choiceFor(tilesRecord.value, crew.value))
+function chooseTiles(change: Partial<RunTilesChoice>) {
+  // On the record as the storage holds it now: another tab's choice since this page read it stays.
+  tilesRecord.value = choose(readRunTiles(pageStorage()), crew.value, change)
+  writeRunTiles(pageStorage(), tilesRecord.value)
+  // The record is the layout document's too (R88, R73): the desktop app's server starts on a fresh address, whose page storage is
+  // empty, and the server's copy brings the choices back; another machine's arrive the same way.
+  const { last, crews } = tilesRecord.value
+  ui.setLayout({ runTiles: { layout: last.layout, activity: last.activity, crews: crewsForDoc(crews) } })
+}
+// The record is read again from the storage when the server's copy was taken up (useUiState writes it there as it reads it) and when
+// another tab of this origin stored a choice; this page never writes back what it read at its start.
+watch(
+  () => ui.layout.value.runTiles,
+  () => (tilesRecord.value = readRunTiles(pageStorage())),
+)
+watch(runId, () => (tilesRecord.value = readRunTiles(pageStorage())))
+function tilesStored(e: StorageEvent) {
+  if (e.key === RUN_TILES_KEY) tilesRecord.value = readRunTiles(pageStorage())
+}
+onMounted(() => window.addEventListener('storage', tilesStored))
+onBeforeUnmount(() => window.removeEventListener('storage', tilesStored))
+function setActivity(on: boolean) {
+  chooseTiles({ activity: on })
+}
+const tilesLayout = computed({ get: () => tilesChoice.value.layout, set: (l: RunLayout) => chooseTiles({ layout: l }) })
+const largeMember = computed(() => largeOf(tilesChoice.value, tiles.value.map((t) => t.name)))
+/** Whether the wall stacks its tiles (a narrow area), where no layout applies and the switch is not drawn. */
+const wallStacked = ref(false)
 
 // The task selected in the Tasks view (`?task=`), in the URL so a link opens on it (#334, row 7).
 const selectedTask = computed(() => (typeof route.query.task === 'string' ? route.query.task : ''))
@@ -279,7 +349,7 @@ watch(
 /** A task opened from the graph: its attempt's session when it has one, else the task in the Tasks view. */
 function openTask(id: string) {
   const t = run.value?.tasks?.find((x) => x.id === id)
-  if (t?.attempt?.sessionId) router.push(`/sessions/${t.attempt.sessionId}`)
+  if (t?.attempt?.sessionId) openSession(t.attempt.sessionId)
   else selectTask(id, true)
 }
 const taskCommands = useTaskCommands(() => runId.value)
@@ -349,36 +419,11 @@ const selectedMember = ref('')
 /** A node opened (Enter, a double click, Open): the member's session page, as a tile's select does. */
 function openMember(name: string) {
   const t = tiles.value.find((x) => x.name === name)
-  if (t?.session) router.push(`/sessions/${t.session.id}`)
+  if (t?.session) openSession(t.session.id)
 }
 
 function transportFor(s: SessionInfo) {
   return () => create({ sessionId: s.id, token: admin.token.value, kind: s.kind })
-}
-
-function footer(t: Tile): { where: string; diff: string } {
-  const m = t.member
-  const branch = m?.branch || t.session?.branch || (run.value?.isolation === 'worktree' ? '' : 'shared cwd')
-  // A managed run's member is on a task: `build #2 · crew/<run>/build.2`.
-  const where = m?.task ? `${m.task} #${m.attempt}${branch ? ` · ${branch}` : ''}` : branch
-  const diff = m?.diff ? `+${m.diff.added} −${m.diff.removed}` : ''
-  return { where, diff }
-}
-
-/**
- * A member's state in the Crews pages' one vocabulary (C2, memberLook): the tile's foot and a tile without a session say it, with
- * whom it waits for ("after driver") on a member not started.
- */
-function looked(t: Tile) {
-  return t.member && run.value ? memberLook(run.value, t.member, live.sessions.value, now.value) : null
-}
-/**
- * A tile's question with its choices (C6): the same line the run's chat offers, answered through the same path (runChatAnswers:
- * the member's running session, the question named); none where the page cannot answer it.
- */
-function tileAsk(t: Tile) {
-  const line = memberAsk(t.name, t.session).line
-  return line && runChatAnswers.answerable(line) ? line : null
 }
 
 const starting = ref('')
@@ -392,32 +437,6 @@ async function startMember(name: string) {
     starting.value = ''
   }
 }
-
-// Grid: every tile and the activity card fit on screen, as on the wall; on
-// a narrow screen they stack and the page scrolls.
-const grid = useTemplateRef<HTMLDivElement>('grid')
-const box = ref({ w: 0, h: 0 })
-watch(
-  grid,
-  (el, _prev, onCleanup) => {
-    if (!el) return
-    const observer = new ResizeObserver((entries) => {
-      const r = entries[0]?.contentRect
-      if (r) box.value = { w: r.width, h: r.height }
-    })
-    observer.observe(el)
-    onCleanup(() => observer.disconnect())
-  },
-  { immediate: true },
-)
-const narrow = computed(() => box.value.w > 0 && box.value.w < 640)
-const layout = computed(() => bestGrid(tiles.value.length + 1, box.value.w, box.value.h, 12, 1.4))
-const feedSpan = computed(() => lastItemSpan(tiles.value.length + 1, layout.value))
-const gridStyle = computed(() =>
-  narrow.value
-    ? { gridTemplateColumns: 'minmax(0, 1fr)', gridAutoRows: '16rem' }
-    : { gridTemplateColumns: `repeat(${layout.value.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.value.rows}, minmax(0, 1fr))` },
-)
 
 let tick: number | undefined
 onMounted(() => {
@@ -437,17 +456,20 @@ watch(() => admin.token.value, () => {
 // This page's group in the command palette (#302): the header's buttons, the view, the chat, then the members as rows, the one
 // asking first. The broadcast takes its line in the row and says who gets it and who is skipped, as the bar does.
 const palette = usePalette()
+useShortcutsModal().registerPage(RUN_SHORTCUTS)
 const header = useTemplateRef<{ openAdd: () => void; share: () => void; stopNow: () => Promise<void>; resume: () => Promise<void>; togglePause: () => Promise<void>; isEnded: () => boolean }>('header')
 const identity = useIdentity()
 async function paletteBroadcast(text: string) {
   const line = text.trim()
-  if (!line) return
+  // Taken before the wait: a request that names nobody goes to every member.
+  const to = [...selection.value.to]
+  if (!line || !to.length) return
   try {
     const byName = await broadcastByName(identity.name.value, api.whoami)
-    const r = await api.broadcastRun(runId.value, { text: line, members: [...selection.value.selected], byName })
-    toast.add({ ...broadcastSummary(r), icon: 'i-lucide-megaphone' })
+    const r = await api.broadcastRun(runId.value, { text: line, members: to, byName })
+    toast.add({ ...messageToast(r), icon: 'i-lucide-megaphone' })
   } catch (e) {
-    toast.add({ title: 'Broadcast failed', description: (e as Error).message, color: 'error' })
+    toast.add({ title: 'Not sent', description: (e as Error).message, color: 'error' })
   }
 }
 palette.registerPage(() => {
@@ -458,7 +480,7 @@ palette.registerPage(() => {
   const sel = selection.value
   const views: Array<[RunView, string, string]> = [
     ...(r.managed ? [['tasks', 'View the tasks', 'i-lucide-list-checks'] as [RunView, string, string]] : []),
-    ['grid', 'View as a grid', 'i-lucide-layout-grid'],
+    ['grid', 'View the members', 'i-lucide-users'],
     ['graph', 'View as a graph', 'i-lucide-git-fork'],
     ['timeline', 'View as a timeline', 'i-lucide-chart-gantt'],
   ]
@@ -466,7 +488,7 @@ palette.registerPage(() => {
   const taskRows: PaletteItem[] = (r.tasks ?? []).map((t) => {
     const a = taskActions(t, r)
     const actions: Action[] = []
-    if (a.open) actions.push({ id: 'open-attempt', kind: 'page', target: t.id, label: "Open the attempt's session", icon: 'i-lucide-terminal', run: () => router.push(`/sessions/${t.attempt!.sessionId}`) })
+    if (a.open) actions.push({ id: 'open-attempt', kind: 'page', target: t.id, label: "Open the attempt's session", icon: 'i-lucide-terminal', run: () => openSession(t.attempt!.sessionId!) })
     // The attempt's preview (EN1): in a new tab (at the label's admin URL when it names its tree's secret), or framed on the preview
     // page, Open in Conductor, where it is captured.
     const preview = a.preview
@@ -521,7 +543,7 @@ palette.registerPage(() => {
       return {
         key: `page:member:${t.name}`,
         label: t.name,
-        detail: s ? s.attention?.message || `${s.agentId} · ${s.status}` : pending ? `${m.start.when === 'manual' ? 'waiting for a hand' : 'waiting to start'}${offer === 'start' ? ' · Enter starts it' : ''}` : (m?.error ?? m?.status ?? ''),
+        detail: s ? attentionWords(s.attention) || `${s.agentId} · ${s.status}` : pending ? `${m.start.when === 'manual' ? 'waiting for a hand' : 'waiting to start'}${offer === 'start' ? ' · Enter starts it' : ''}` : (m?.error ?? m?.status ?? ''),
         agentId: m?.agentId ?? s?.agentId,
         state,
         status: mark,
@@ -530,26 +552,48 @@ palette.registerPage(() => {
         run: () => {
           if (s && !ended) openMember(t.name)
           else if (offer === 'start') void startMember(t.name)
-          else if (offer === 'resume') void api.resumeRunMember(runId.value, t.name).then((res) => router.push(`/sessions/${res.session.id}`)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
+          else if (offer === 'resume') void api.resumeRunMember(runId.value, t.name).then((res) => openSession(res.session.id, res.session)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
           else if (s) openMember(t.name)
         },
-        href: s ? `/sessions/${s.id}` : undefined,
+        href: s ? placeOf(s.id, {}, s) : undefined,
       }
     })
   const rows: PaletteItem[] = [
       {
         key: 'page:broadcast',
-        label: 'Broadcast…',
-        detail: sel.sending.length ? `Send to ${sel.sending.length}${sel.waiting.length ? ` · skipped, waiting on a prompt: ${sel.waiting.join(', ')}` : ''}` : 'No member is running',
+        label: 'Message the crew…',
+        detail: sel.to.length ? sel.button : sel.placeholder,
         icon: 'i-lucide-megaphone',
-        disabled: stopped || !sel.sending.length,
+        disabled: stopped || !sel.to.length,
         // Enter opens the field; the line is sent from it. Nothing runs without a line.
         run: () => {},
         fieldOnEnter: true,
-        field: { placeholder: 'A line for every selected member…', button: `Send to ${sel.sending.length}`, submit: paletteBroadcast },
+        field: { placeholder: sel.placeholder, button: sel.button, submit: paletteBroadcast },
       },
       { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: !runOffer(r).add, run: () => header.value?.openAdd() },
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
+      // The layouts and Activity are the Members view's: choosing one from another view shows the members too.
+      ...RUN_LAYOUTS.map((l) => ({
+        key: `page:layout:${l}`,
+        label: `Lay the members out: ${RUN_LAYOUT_LOOK[l].label}`,
+        icon: RUN_LAYOUT_LOOK[l].icon,
+        on: tilesLayout.value === l,
+        run: () => {
+          tilesLayout.value = l
+          view.value = 'grid'
+        },
+      })),
+      tilesChoice.value.activity
+        ? { key: 'page:activity', label: 'Hide activity', icon: 'i-lucide-activity', run: () => setActivity(false) }
+        : {
+            key: 'page:activity',
+            label: 'Show activity',
+            icon: 'i-lucide-activity',
+            run: () => {
+              setActivity(true)
+              view.value = 'grid'
+            },
+          },
       { key: 'page:share', label: 'Share run', icon: 'i-lucide-share-2', kbds: ['S'], run: () => header.value?.share() },
       ...(r.managed && !stopped && !r.record && !header.value?.isEnded() ? [{ key: 'page:pause', label: r.paused ? 'Resume scheduling' : 'Pause scheduling', icon: r.paused ? 'i-lucide-play' : 'i-lucide-pause', run: () => header.value?.togglePause() }] : []),
       ...(bk.available.value === true
@@ -581,7 +625,9 @@ palette.registerPage(() => {
 </script>
 
 <template>
-  <UDashboardPanel id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
+  <!-- A member open in the run's place (UX3 R72): its whole view, keyed by its session, so one view and one connection at a time. -->
+  <SessionView v-if="openId && !leaving" :key="openId" :session-id="openId" :leave="notThisRun" :stray-to="ownPage" />
+  <UDashboardPanel v-else-if="!openId" id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
       <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :ticket="runTicket" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
     </template>
@@ -612,8 +658,22 @@ palette.registerPage(() => {
       <PageEmpty v-if="gone" state="missing" :words="`No run has the id ${runId}. The server forgets runs when it restarts.`" :actions="[{ label: 'Crews', icon: 'i-lucide-arrow-left', to: '/crews' }]" data-run-missing />
 
       <template v-else>
-        <div class="flex flex-none items-center px-3 pt-3">
+        <!-- The views, then the layouts and Activity at the right; on a narrow window that group wraps under the views, its words kept. -->
+        <div class="flex flex-none flex-wrap items-center gap-2 px-3 pt-3">
           <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-run-view />
+          <div v-if="shownView === 'grid'" class="ml-auto flex items-center gap-2">
+            <RunLayoutSwitch v-if="!wallStacked" v-model="tilesLayout" />
+            <UButton
+              label="Activity"
+              icon="i-lucide-activity"
+              size="xs"
+              color="neutral"
+              :variant="tilesChoice.activity ? 'soft' : 'outline'"
+              :aria-pressed="tilesChoice.activity"
+              data-activity-toggle
+              @click="setActivity(!tilesChoice.activity)"
+            />
+          </div>
         </div>
         <div v-if="shownView === 'graph'" class="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" data-run-graph>
           <CrewGraph
@@ -643,56 +703,39 @@ palette.registerPage(() => {
         </div>
         <!-- The tasks, with Brakeman on this run beside them; on a narrow window the panel wraps under the tasks. -->
         <div v-else-if="shownView === 'tasks' && run" class="flex min-h-0 flex-1 flex-wrap content-start items-start gap-3 overflow-y-auto p-3" data-run-tasks-view>
-          <RunTasks class="min-w-0 [flex:3_1_40rem]" :run="run" :ticket="reviewTicket" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" :answers="brakemanAbout.byTask.value" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" @asked="brakemanAsked" />
+          <RunTasks class="min-w-0 [flex:3_1_40rem]" :run="run" :ticket="reviewTicket" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" :answers="brakemanAbout.byTask.value" @select="selectTask($event, true)" @open="openSession($event)" @asked="brakemanAsked" />
           <BrakemanSubjectPanel class="[flex:1_1_300px]" :subject="`run:${run.id}`" :label="runTitle(run)" :chips="brakemanChips" :about="brakemanAbout" @asked="brakemanAsked" />
         </div>
         <div v-else-if="shownView === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
           <RunTimeline :run="run" :sessions="sessions" :feed="events.entries.value" :now="now" />
         </div>
-        <div v-else ref="grid" class="min-h-0 flex-1 p-3" :class="narrow ? 'overflow-y-auto' : 'overflow-hidden'">
-          <div class="grid h-full w-full gap-3" :class="narrow && 'h-auto'" :style="gridStyle" data-run-grid>
-            <template v-for="t in tiles" :key="t.session?.id ?? `m-${t.name}`">
-              <SessionTile v-if="t.session" :session="t.session" :status="looked(t)?.view" :create-transport="transportFor(t.session)" :data-member="t.name" @select="router.push(`/sessions/${t.session.id}`)">
-                <template v-if="tileAsk(t)" #ask>
-                  <RunAskChoices :line="tileAsk(t)!" :answer="runChatAnswers.answer" />
-                </template>
-                <template #leading>
-                  <UCheckbox :model-value="isSelected(t.name)" :aria-label="`Select ${t.name} for the broadcast`" data-broadcast-pick @update:model-value="toggle(t.name, $event)" />
-                </template>
-                <template #footer>
-                  <span class="truncate font-mono" data-mono="commit" data-branch>{{ footer(t).where }}</span>
-                  <span class="ml-auto flex-none font-mono" data-mono="measure" data-diff>{{ footer(t).diff }}</span>
-                </template>
-              </SessionTile>
-              <div v-else class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-dashed border-accented" :data-member="t.name">
-                <div class="flex items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs">
-                  <SessionAvatar :agent-id="t.member?.agentId ?? ''" dashed />
-                  <span class="flex-1 truncate text-[13px] font-semibold">{{ t.name }}</span>
-                </div>
-                <div class="flex flex-1 flex-col items-center justify-center gap-2 p-3 text-center text-sm text-muted">
-                  <span v-if="looked(t)" class="inline-flex flex-wrap items-center justify-center gap-x-2" data-member-words :data-phase="looked(t)!.phase">
-                    <StatusMark :status="looked(t)!.view" word />
-                    <span v-if="looked(t)!.after && looked(t)!.phase === 'waiting'">{{ looked(t)!.after }}</span>
-                  </span>
-                  <UButton
-                    v-if="memberOffer(t.member?.status, run) === 'start'"
-                    label="Start now"
-                    icon="i-lucide-play"
-                    size="xs"
-                    color="neutral"
-                    variant="outline"
-                    :loading="starting === t.name"
-                    @click="startMember(t.name)"
-                  />
-                  <ResumeButton v-else-if="memberOffer(t.member?.status, run) === 'resume'" :run-id="runId" :member="t.name" stay size="xs" />
-                </div>
-              </div>
-            </template>
-            <CrewFeed :items="feed" :style="narrow ? undefined : { gridColumn: `span ${feedSpan} / span ${feedSpan}` }" />
-          </div>
-        </div>
+        <RunWall
+          v-else
+          ref="wall"
+          :tiles="tiles"
+          :run="run"
+          :run-id="runId"
+          :sessions="live.sessions.value"
+          :feed="feed"
+          :now="now"
+          :starting="starting"
+          :create-transport="transportFor"
+          :answerable="runChatAnswers.answerable"
+          :answer="runChatAnswers.answer"
+          :receiving="receiving"
+          v-model:narrow="wallStacked"
+          :activity="tilesChoice.activity"
+          :layout="tilesLayout"
+          :large="largeMember"
+          :sizes="tilesChoice.sizes?.[tilesLayout]"
+          @resize="(axis, shares) => chooseTiles(withShares(tilesChoice, tilesLayout, axis, shares))"
+          @show-large="chooseTiles({ large: $event })"
+          @decision="decisionModal.open($event)"
+          @open="openSession($event)"
+          @start="startMember"
+        />
         <div class="flex-none px-3 pb-3">
-          <BroadcastBar :run-id="runId" :members="selection.selected" :will-type="selection.sending.length" :waiting="selection.waiting.length" :disabled="!run || !!run.stoppedAt" />
+          <BroadcastBar v-model:pick="pick" :run-id="runId" :members="recipients" :ended="!!run?.stoppedAt" :disabled="!run" @update:focused="barFocused = $event" @show="showMember" />
         </div>
       </template>
     </template>

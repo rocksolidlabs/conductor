@@ -8,6 +8,8 @@ import { relativeTime } from '~/utils/sessions'
 import { runItems, runStatusLine, summaryStatusLine } from '~/utils/status'
 import { taskBadges } from '~/utils/tasks'
 import { comparisonLink, runCompare } from '~/utils/compare'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 /**
  * One run of a ticket's Runs (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11): its name, linked to its page, its
@@ -67,8 +69,8 @@ const selected = ref('')
       <span v-else class="min-w-0 truncate text-sm text-muted">Reading <span class="font-mono" data-mono="id">{{ runId }}</span>…</span>
       <span class="flex-none font-mono text-[11px] text-dimmed" :title="runId" data-mono="id">{{ shortRunId(runId) }}</span>
       <UBadge v-if="ticket" :label="revisionTag(ticket.planN)" color="neutral" variant="outline" size="sm" class="flex-none font-mono" :title="`Launched from ${ticket.key} at its revision ${ticket.rev}, plan revision ${ticket.planN}`" data-run-card-plan />
-      <NuxtLink v-if="comparison" :to="comparison" class="flex flex-none items-center gap-1 text-xs text-muted hover:text-default hover:underline" :title="`The comparison of ${runId}'s candidates`" data-run-card-comparison>
-        <UIcon name="i-lucide-columns-3" class="size-3.5" />Comparison
+      <NuxtLink v-if="comparison" :to="comparison" class="flex flex-none items-center gap-1 text-xs text-muted hover:text-default hover:underline" :title="`This trial's results side by side, on ${ticket?.key ?? runId}`" data-run-card-comparison>
+        <UIcon name="i-lucide-columns-3" class="size-3.5" />Trial results
       </NuxtLink>
       <UBadge v-if="run?.record || (!run && summary?.record)" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-ticket-run-record />
       <UBadge v-else-if="state" :label="state.text" :color="state.needs ? 'warning' : state.outcome === 'Failed' ? 'error' : 'neutral'" variant="subtle" size="sm" class="min-w-0 max-w-full truncate" :title="state.text" data-ticket-run-state :data-run-status-from="liveRun ? 'run' : 'summary'" />
@@ -84,7 +86,7 @@ const selected = ref('')
         <li v-for="q in questions.waiting" :key="q.sessionId" class="flex min-w-0 flex-wrap items-center gap-2 text-xs" :data-run-question="q.member">
           <span class="flex-none font-medium">{{ q.member }}</span>
           <span class="min-w-0 flex-1 break-words text-default" data-run-question-message>{{ q.message || 'waits on a prompt' }}</span>
-          <UButton label="Open" icon="i-lucide-square-arrow-out-up-right" size="xs" color="warning" variant="soft" :to="`/sessions/${encodeURIComponent(q.sessionId)}`" data-run-question-open />
+          <UButton label="Open" icon="i-lucide-square-arrow-out-up-right" size="xs" color="warning" variant="soft" :to="placeOf(q.sessionId)" data-run-question-open />
         </li>
       </ul>
       <p v-else class="text-xs text-muted">As recorded: the server holds none of its members' sessions now.</p>
@@ -97,7 +99,7 @@ const selected = ref('')
       </li>
     </ul>
 
-    <RunTasks v-if="run" :run="run" :selected="selected" :now="now" @select="(id: string) => (selected = id)" @open="(id: string) => router.push(`/sessions/${id}`)" />
+    <RunTasks v-if="run" :run="run" :selected="selected" :now="now" @select="(id: string) => (selected = id)" @open="(id: string) => router.push(placeOf(id))" />
     <DispatchCandidates v-if="managed" :run-id="runId" :revision="liveRun?.managed?.revision" :compare="!!(runCompare(run) || runCompare(summary))" :continues="run?.resumedFrom || summary?.resumedFrom" />
   </div>
 </template>

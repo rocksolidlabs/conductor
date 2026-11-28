@@ -2,6 +2,11 @@
 import type { ScopeItem } from '~/utils/chat'
 import { chatBytes, chatCounter, chatTooLong, cleanChatText } from '~/utils/chat'
 import { MAX_SUBMIT } from '~/utils/protocol'
+import { giveFocusBack, type ReplyTaken } from '~/utils/reply'
+import { OwnLines, RowDrafts } from '~/utils/rowDrafts'
+import { afterPick, expandsLine, freeHeld, listsOpen, markInput } from '~/utils/boxLine'
+import { boxKey, commandAt, commandRows, fileRows, mentionAt, offeredCommands, outsideMention, pickCommand, pickMention, type CommandWord, type Mention, type MenuRow } from '~/utils/chatBoxMenu'
+import type { AgentCommand } from '~/utils/protocol'
 
 /**
  * Where a message is written (design 2a, 2c, 2e): Enter sends, Shift+Enter is
@@ -21,11 +26,34 @@ const props = withDefaults(
     phone?: boolean
     scopeItems?: ScopeItem[]
     /**
-     * The box of a chat's agent (docs/plans/chat-or-terminal.md, design 11) rather than the people's chat: its messages go to the agent,
-     * bound to MAX_SUBMIT bytes; its help line says what the session's `verbatim` means; Stop (`stop`) shows while a turn runs and
-     * this viewer may stop it; `said` is the owner's refusal of the last message, in its words.
+     * The box of a chat's agent (docs/plans/chat-or-terminal.md, design 11; UX3 R4) rather than the people's chat: one row, the field,
+     * `Stop turn` while a turn runs and this viewer may stop it (`stop`), then Send. Its messages go to the agent, bound to MAX_SUBMIT
+     * bytes; a line that begins with / says what the session's `verbatim` means for it; `said` is the owner's refusal of the last
+     * message, in its words. `name` is the agent's, for the placeholder and Stop's tooltip. `draftKey` is the session whose line the
+     * app keeps (useBoxDrafts), so that it is there again when the person comes back to this agent; without one the line is this
+     * box's alone.
+     *
+     * `asked` is the question the session's page shows (UX3 R5): while it takes a typed reply (`reply`), a line begun as it shows is
+     * bound to it (replyLine's rule, by RowDrafts) and goes as its answer (`answer`), Send reading Answer; a line begun before it came
+     * stays a message. A refused answer comes back into the box, bound as it was.
+     *
+     * `expand` is the server's word that this connection may send a line for the agent to expand (UX3 R10): the agent's commands and
+     * files then; `folder` is the session's folder, for the line about a file outside it. A line goes for expand only when the person
+     * typed or pasted it, or picked from the list, themselves (OwnLines); `send`'s third argument says so, and hands back a refused
+     * line (`back`).
      */
-    agent?: { verbatim?: boolean; running: boolean; canStop: boolean; said?: string }
+    agent?: { verbatim?: boolean; running: boolean; canStop: boolean; said?: string; name?: string; draftKey?: string; asked?: { id?: string; choices: boolean; reply: boolean } | null; expand?: boolean; folder?: string }
+    /**
+     * The agent's box's files for `@` (UX3 R6): the words typed after it ('' for the files the agent touched) to the paths from the
+     * folder, and whether more match than came; rejected when the read was refused. None where this connection may not read files:
+     * no list then.
+     */
+    files?: (words: string) => Promise<{ paths: string[]; more: boolean }>
+    /**
+     * The agent's own commands for `/` (UX3 R11), as the server sent them to this connection; given only where the server said this
+     * connection may expand a line. None: no list.
+     */
+    commands?: { list: AgentCommand[]; more: boolean } | null
   }>(),
   {
     disabled: false,
@@ -35,17 +63,91 @@ const props = withDefaults(
     phone: false,
     scopeItems: undefined,
     agent: undefined,
+    files: undefined,
+    commands: null,
   },
 )
 /** `to` is '' for the chat alone, `agent` for this session's agent, else a run member's name. */
-const emit = defineEmits<{ send: [text: string, to: string]; stop: [] }>()
+const emit = defineEmits<{ send: [text: string, to: string, how?: { own: boolean; back: (text: string) => void }]; stop: []; answer: [text: string, question: string | undefined, taken: ReplyTaken] }>()
 
-const draft = ref('')
+/** The agent's box keeps its line by session in the app's store; the people's chat keeps its own. */
+const lines: RowDrafts = props.agent?.draftKey ? useBoxDrafts() : (reactive(new RowDrafts()) as RowDrafts)
+const lineKey = computed(() => props.agent?.draftKey ?? '')
+/** Whose the line in the box is: the person's own typing or pasting (utils/boxLine.ts), or their own pick; else the page's. */
+const own: OwnLines = props.agent?.draftKey ? useOwnLines() : (reactive(new OwnLines()) as OwnLines)
+function onInput(e: Event) {
+  markInput(own, lineKey.value, e as InputEvent, (e.target as HTMLTextAreaElement | null)?.value ?? '')
+  noteCaret()
+}
+/** The line in the box is the person's own, as it stands now. */
+const mineNow = computed(() => own.is(lineKey.value, draft.value))
+const people = ref('')
+const draft = computed({
+  get: () => (props.agent ? lines.text(lineKey.value) : people.value),
+  set: (v: string) => {
+    if (!props.agent) {
+      people.value = v
+      return
+    }
+    note.value = ''
+    // An emptied box holds nobody's line.
+    if (v === '') own.set(lineKey.value)
+    // A line kept for an answered question rebinds only to a question that takes a typed reply: with none shown, it stays bound to
+    // its own and goes nowhere until the person empties the box (UX3 R5: what was typed as an answer never becomes a message).
+    const d = lines.get(lineKey.value)
+    const now = asking()
+    lines.edit(lineKey.value, v, d?.kept && now === undefined ? d.question : now)
+  },
+})
+/** Why the line in the box goes nowhere, or goes otherwise than it was begun, said under it until the next edit. */
+const note = ref('')
+/** What a line begun now is bound to: the question shown while it takes a typed reply (its id, or ASKED for one with none). */
+const ASKED = '\u0000asked'
+/** The questions this box has sent an answer to: a line begun while one still shows is a message, never a second answer to it. */
+const answeredHere = new Set<string>()
+function asking(): string | undefined {
+  const a = props.agent?.asked
+  if (!a?.reply) return undefined
+  const id = a.id ?? ASKED
+  return answeredHere.has(id) ? undefined : id
+}
+/** The line in the box is an answer: it was begun for a question (which the owner refuses if it is no longer the one shown). */
+const answering = computed(() => !!props.agent && lines.get(lineKey.value)?.question !== undefined)
+/** The question its line was begun for is not the one shown: said, with the way on. */
+const stale = computed(() => {
+  if (!answering.value) return false
+  const a = props.agent?.asked
+  const shown = a?.reply ? (a.id ?? ASKED) : undefined
+  return lines.get(lineKey.value)?.question !== shown
+})
+// A line begun while its question had no id yet takes the id as it comes (UX3 R5), so that Send names it.
+watch(
+  () => props.agent?.asked?.id,
+  (now, was) => {
+    if (now && !was) lines.rebind(lineKey.value, ASKED, now)
+  },
+)
 const bytes = computed(() => (props.agent ? chatBytes(draft.value.replace(/\r\n/g, '\n').trim()) : chatBytes(cleanChatText(draft.value))))
 /** The agent's box counts from three quarters of its bound, the people's chat from its own. */
 const counter = computed(() => (props.agent ? (bytes.value < (MAX_SUBMIT * 3) / 4 ? '' : `${(bytes.value / 1024).toFixed(1)} / ${MAX_SUBMIT / 1024} KiB`) : chatCounter(bytes.value)))
 const tooLong = computed(() => (props.agent ? bytes.value > MAX_SUBMIT : chatTooLong(bytes.value)))
 const empty = computed(() => (props.agent ? draft.value.trim() === '' : cleanChatText(draft.value) === ''))
+/** Who the agent's box writes to, in its placeholder and Stop's tooltip. */
+const who = computed(() => props.agent?.name || 'the agent')
+const boxPlaceholder = computed(() => {
+  const a = props.agent?.asked
+  if (!a?.reply) return props.agent?.expand ? `Message ${who.value} · @ for a file, / for a command` : `Message ${who.value}`
+  return a.choices ? 'Pick an answer above, or type your own' : `Answer ${who.value}…`
+})
+/** The agent's line begins with /: what the session does with a command is said then, and only then. */
+const slash = computed(() => !!props.agent && !props.agent.expand && draft.value.trimStart().startsWith('/'))
+/** Where the box may expand a line, a line beginning with / that is not the person's own goes as plain text: said, with the way on. */
+const plainSlash = computed(() => !!props.agent?.expand && !answering.value && draft.value.trimStart().startsWith('/') && !mineNow.value)
+/** Messages the owner refused that wait for this box to be emptied: said, with the way on. */
+const waitingBack = computed(() => (props.agent ? lines.waiting(lineKey.value) : 0))
+/** A file the line names that lies outside the folder, where the agent would attach it: said, so that the person can take it out. */
+const outside = computed(() => (props.agent?.expand ? outsideMention(draft.value) : ''))
+const folderName = computed(() => props.agent?.folder?.replace(/\/+$/, '').split('/').pop() || 'the folder')
 
 /** The run chat's choice: where the next message goes; back to chat only when the member can no longer take it. */
 const scope = ref('')
@@ -59,31 +161,276 @@ watch(
 // `member`, never `to`: a menu item's `to` is a link.
 const scopeMenu = computed(() => [(props.scopeItems ?? []).map((s) => ({ label: s.label, member: s.to, detail: s.detail, disabled: s.disabled, onSelect: () => (scope.value = s.to) }))])
 
+const form = useTemplateRef<HTMLFormElement>('form')
+const input = useTemplateRef<{ textareaRef?: HTMLTextAreaElement }>('input')
+function focus() {
+  input.value?.textareaRef?.focus()
+}
+/** After a send, the cursor goes back to the field: from the field itself, Send, or nowhere; never from what else took it. */
+function keepCursor() {
+  if (typeof document === 'undefined') return
+  const el = document.activeElement
+  if (!el || el === document.body || form.value?.contains(el)) void nextTick(focus)
+}
+
 function send(to: string) {
   if (props.disabled || empty.value || tooLong.value) return
-  emit('send', draft.value, to)
+  if (answering.value) return answer()
+  const key = lineKey.value
+  const mine = expandsLine(true, own, key, draft.value)
+  // A line the owner refused (`not_sent`) comes back into its own session's box, as a message bound to no question: at once if that
+  // box is empty, else when the person empties it (RowDrafts.putBack). It is the page's line then: sent again unchanged, it goes as
+  // written.
+  const back = (text: string) => lines.putBack(key, text)
+  emit('send', draft.value, to, { own: mine, back })
   draft.value = ''
+  own.sent(key)
+  if (props.agent) keepCursor()
 }
 
+/** The line as the question's answer, through the page's answer: it leaves the box as it goes, and a refused one comes back bound. */
+function answer() {
+  const key = lineKey.value
+  const raw = draft.value
+  const bound = lines.get(key)?.question
+  const from = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)
+  if (bound && bound !== ASKED) answeredHere.add(bound)
+  // The answer leaves the box: its record of whose it was goes with it, so that a line put back with the same words is not theirs.
+  own.sent(key)
+  emit('answer', raw.trim(), bound === ASKED ? undefined : bound, (outcome) => {
+    // This page had already sent its answer to that question (a choice, a line before): the line goes free, a message now, and says so.
+    if (outcome === 'held') {
+      if (freeHeld(lines, own, key, raw)) note.value = 'That question is already answered. Send now sends this line as a message.'
+      return
+    }
+    if (outcome === 'refused' && bound) answeredHere.delete(bound)
+    lines.settle(key, raw, outcome)
+    // What comes back into the box is the page's now, until the person changes it; a line they typed meanwhile stays theirs.
+    if (outcome === 'refused' && lines.text(key) === raw) own.set(key)
+    if (outcome === 'refused') giveFocusBack(from)
+  })
+  keepCursor()
+}
+
+/**
+ * The list for `@` (UX3 R6): the `@` word at the cursor asks for files; with nothing typed after it, the files the agent touched,
+ * else the folder's files whose name holds the words, 150 ms after the last key, one read on its way at a time and a late answer
+ * dropped. Escape closes it and keeps the text; while it is open Enter and Tab pick and never send. A pick writes `@<path> ` as plain
+ * text in the line.
+ */
+const caret = ref(0)
+function noteCaret() {
+  const el = input.value?.textareaRef
+  if (el) caret.value = el.selectionStart ?? el.value.length
+}
+/** The lists open on the person's own line alone, never while the box would answer (listsOpen). */
+const listsOn = computed(() => listsOpen({ mine: mineNow.value || draft.value === '', answering: answering.value || !!props.agent?.asked?.reply }))
+const mention = computed<Mention | null>(() => (props.agent && props.files && listsOn.value ? mentionAt(draft.value, caret.value) : null))
+const fileList = ref<{ words: string; rows: MenuRow[]; more: boolean } | null>(null)
+const finding = ref(false)
+const active = ref(0)
+const dismissed = ref('')
+const mentionKey = computed(() => (mention.value ? `${mention.value.start}:${mention.value.words}` : ''))
+let asked = 0
+let inFlight = false
+let pending: string | null = null
+let findTimer: ReturnType<typeof setTimeout> | undefined
+let slowTimer: ReturnType<typeof setTimeout> | undefined
+function find(words: string) {
+  if (inFlight) {
+    pending = words
+    return
+  }
+  const n = ++asked
+  inFlight = true
+  clearTimeout(slowTimer)
+  slowTimer = setTimeout(() => n === asked && (finding.value = true), 300)
+  props.files!(words)
+    .then((r) => {
+      if (n !== asked || mention.value?.words !== words) return
+      fileList.value = { words, rows: fileRows(r.paths), more: r.more }
+      active.value = Math.max(0, fileList.value.rows.findIndex((x) => x.pickable))
+    })
+    .catch(() => undefined) // a refused read says nothing: the next key tries again
+    .finally(() => {
+      inFlight = false
+      if (n === asked) finding.value = false
+      clearTimeout(slowTimer)
+      const next = pending
+      pending = null
+      if (next !== null && next === mention.value?.words) find(next)
+    })
+}
+watch(mentionKey, () => {
+  clearTimeout(findTimer)
+  const m = mention.value
+  if (!m) {
+    fileList.value = null
+    finding.value = false
+    // A list closed with Escape opens again for the next @ word, even one typed the same.
+    dismissed.value = ''
+    asked++
+    return
+  }
+  if (fileList.value && fileList.value.words !== m.words) active.value = 0
+  if (m.words === '') find('')
+  else findTimer = setTimeout(() => find(m.words), 150)
+})
+onBeforeUnmount(() => {
+  clearTimeout(findTimer)
+  clearTimeout(slowTimer)
+})
+/**
+ * The list for `/` (UX3 R11): while the line begins with `/` and the cursor is in its first word, the agent's own commands that
+ * match, on the person's own line alone. Enter and Tab complete the highlighted row; a line goes only by an Enter with the list closed.
+ */
+/** The commands offered now: the server's, where this box may expand a line and is not answering a question (offeredCommands). */
+const commandList = computed(() => offeredCommands({ canExpand: !!props.agent?.expand && !!props.commands, answering: answering.value || !!props.agent?.asked?.reply, list: props.commands?.list }))
+const command = computed<CommandWord | null>(() => (props.agent && commandList.value && listsOn.value ? commandAt(draft.value, caret.value) : null))
+const commandKey = computed(() => (command.value ? `/:${command.value.typed}` : ''))
+watch(commandKey, (k) => {
+  if (!k) dismissed.value = ''
+})
+const fileShown = computed(() => (fileList.value && fileList.value.words === mention.value?.words ? fileList.value.rows : []))
+const menuKind = computed<'file' | 'command'>(() => (command.value ? 'command' : 'file'))
+const menuRows = computed(() => (command.value && commandList.value ? commandRows(commandList.value, command.value.typed) : fileShown.value))
+// A change of the commands' rows (the list sent again, more typed) keeps the highlighted name where it is still there; the file list
+// places its own highlight as each read comes.
+watch(menuRows, (rows, before) => {
+  if (!command.value) return
+  const name = before?.[active.value]?.value
+  const i = name ? rows.findIndex((r) => r.value === name) : -1
+  active.value = i >= 0 ? i : Math.max(0, rows.findIndex((r) => r.pickable))
+})
+const menuFoot = computed(() => {
+  // The commands' list says nothing of its own: its rows are the agent's.
+  if (command.value) return ''
+  const row = menuRows.value[active.value]
+  if (row && !row.pickable) return 'Type this path yourself: its name has a space, a quote or a hidden character.'
+  if (finding.value && !menuRows.value.length) return 'Finding…'
+  if (fileList.value && fileList.value.words === mention.value?.words) {
+    if (!menuRows.value.length) return mention.value?.words ? 'No file matches.' : 'Type a name to find a file.'
+    if (fileList.value.more) return 'More files match. Keep typing.'
+  }
+  return ''
+})
+const openKey = computed(() => commandKey.value || mentionKey.value)
+/** Whether the box has the cursor: a list shows, and takes a press, only then. */
+const focused = ref(false)
+const menuOpen = computed(
+  () =>
+    focused.value &&
+    (command.value ? dismissed.value !== commandKey.value && menuRows.value.length > 0 : !!mention.value && dismissed.value !== mentionKey.value && (menuRows.value.length > 0 || !!menuFoot.value)),
+)
+const menuId = useId()
+const activeId = computed(() => (menuOpen.value && menuRows.value.length ? `${menuId}-${active.value}` : undefined))
+
+/** The person's pick: the `@` word becomes `@<path> `, the cursor after it, the list closed. Their own act, when the press is theirs. */
+function pick(i: number, trusted: boolean) {
+  const c = command.value
+  const m = mention.value
+  const row = menuRows.value[i]
+  if ((!c && !m) || !row?.pickable) return
+  const wasMine = mineNow.value
+  const put = c ? pickCommand(draft.value, c, row.value) : pickMention(draft.value, m!, row.value)
+  draft.value = put.text
+  afterPick(own, lineKey.value, put.text, { trusted, wasMine })
+  caret.value = put.caret
+  fileList.value = null
+  void nextTick(() => {
+    const el = input.value?.textareaRef
+    el?.focus()
+    el?.setSelectionRange(put.caret, put.caret)
+  })
+}
+
+/**
+ * The box's keys, by boxKey (utils/chatBoxMenu.ts): while the list is open the arrows move, Enter and Tab complete the highlighted
+ * row, Escape closes it; a line is sent only by the person's own Enter, not held down, with the list closed.
+ */
 function onKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Enter' || e.isComposing) return
-  if (e.shiftKey && !props.phone) return
-  e.preventDefault()
-  send(scope.value)
+  const act = boxKey(
+    { key: e.key, shift: e.shiftKey, repeat: e.repeat, trusted: e.isTrusted, composing: e.isComposing, phone: props.phone },
+    { open: menuOpen.value, rows: menuRows.value.length },
+  )
+  const n = menuRows.value.length
+  if (act === 'move') {
+    e.preventDefault()
+    active.value = (active.value + (e.key === 'ArrowDown' ? 1 : n - 1)) % n
+  } else if (act === 'complete') {
+    e.preventDefault()
+    pick(active.value, true)
+  } else if (act === 'close') {
+    e.preventDefault()
+    e.stopPropagation()
+    dismissed.value = openKey.value
+  } else if (act === 'none') {
+    e.preventDefault()
+  } else if (act === 'send') {
+    e.preventDefault()
+    send(scope.value)
+  } else if (e.key === 'Escape' && props.agent) {
+    // Escape leaves the agent's box, so that the page's keys (a choice's number, S, X) work again.
+    ;(e.target as HTMLElement | null)?.blur()
+  }
 }
 
-defineExpose({ focus: () => input.value?.textareaRef?.focus() })
-const input = useTemplateRef<{ textareaRef?: HTMLTextAreaElement }>('input')
+defineExpose({ focus })
 
 /** A choice made, the person goes on typing: the menu would hand focus back to its button. */
 function keepTyping(e: Event) {
   e.preventDefault()
-  input.value?.textareaRef?.focus()
+  focus()
 }
 </script>
 
 <template>
-  <form class="flex flex-col gap-1.5 border-t border-default px-3 py-2.5" data-chat-composer @submit.prevent="send(scope)">
+  <!-- The agent's box: one row, the field, Stop turn while a turn runs, Send; under it only what the person must know now. -->
+  <form v-if="agent" ref="form" class="relative flex flex-col gap-1.5 px-3 py-2.5" data-chat-composer @submit.prevent="(e: Event) => e.isTrusted && send('')">
+    <ChatBoxMenu v-if="menuOpen" :id="menuId" :kind="menuKind" :rows="menuRows" :active="active" :foot="menuFoot" @pick="(i, trusted) => pick(i, trusted)" @hover="(i) => (active = i)" />
+    <div class="flex items-end gap-2">
+      <UTextarea
+        ref="input"
+        v-model="draft"
+        :placeholder="boxPlaceholder"
+        :rows="1"
+        autoresize
+        :maxrows="6"
+        :disabled="disabled"
+        :aria-label="boxPlaceholder"
+        :enterkeyhint="phone ? 'send' : undefined"
+        class="min-w-0 flex-1"
+        :ui="{ base: 'text-sm' }"
+        :aria-controls="menuOpen && menuRows.length ? menuId : undefined"
+        :aria-activedescendant="activeId"
+        :aria-autocomplete="files || commands ? 'list' : undefined"
+        :data-chat-list-for="`${draft.length}:${caret}:${mention || command ? 'open' : 'none'}`"
+        data-chat-input
+        @keydown="onKeydown"
+        @input="onInput"
+        @focus="focused = true"
+        @blur="focused = false"
+        @keyup="noteCaret"
+        @click="noteCaret"
+        @select="noteCaret"
+      />
+      <UTooltip v-if="agent.running && agent.canStop" :text="`Stops what ${who} is doing now. The conversation stays.`">
+        <UButton label="Stop turn" icon="i-lucide-square" color="neutral" variant="outline" class="flex-none" data-chat-stop @click="emit('stop')" />
+      </UTooltip>
+      <UTooltip text="Enter sends · Shift+Enter for a new line" :disabled="phone">
+        <UButton type="submit" :label="answering ? 'Answer' : 'Send'" icon="i-lucide-send" class="flex-none" :disabled="disabled || empty || tooLong" :data-chat-answering="answering || undefined" data-chat-send />
+      </UTooltip>
+    </div>
+    <p v-if="slash && agent.verbatim === true" class="text-[11px] text-muted" data-chat-help="verbatim">Sent as plain text. To run a command, switch to Terminal.</p>
+    <p v-else-if="slash && agent.verbatim === false" class="text-[11px] text-muted" data-chat-help="commands">Messages starting with <code class="font-mono">/</code> may run as the agent's commands.</p>
+    <p v-else-if="plainSlash" class="text-[11px] text-muted" data-chat-help="plain">Sent as plain text. Type it yourself to run it as a command.</p>
+    <p v-if="outside" class="text-[11px] text-warning" role="status" data-chat-outside><span class="font-mono" data-mono="path">{{ outside }}</span> is outside {{ folderName }}. The agent attaches it without asking.</p>
+    <p v-if="note || stale" class="text-[11px] text-warning" role="status" data-chat-box-note>{{ note || 'Its question was answered. Empty the box to write a message instead.' }}</p>
+    <p v-if="agent.said" class="text-[11px] text-warning" role="status" data-chat-said>{{ agent.said }}</p>
+    <p v-if="waitingBack" class="text-[11px] text-warning" role="status" data-chat-waiting>{{ waitingBack === 1 ? 'A message was not sent: it comes back here once you send or clear this one.' : `${waitingBack} messages were not sent: each comes back here once you send or clear the one before.` }}</p>
+    <span v-if="counter" class="self-end font-mono text-[11px] text-muted" :class="tooLong && 'text-error'" data-mono="measure" data-chat-counter>{{ counter }}</span>
+  </form>
+  <form v-else class="flex flex-col gap-1.5 border-t border-default px-3 py-2.5" data-chat-composer @submit.prevent="send(scope)">
     <p v-if="offline" class="text-[11px] text-warning" data-chat-offline>Messages send once you are back online</p>
     <UTextarea
       ref="input"
@@ -93,20 +440,16 @@ function keepTyping(e: Event) {
       autoresize
       :maxrows="6"
       :disabled="disabled"
-      :aria-label="agent ? placeholder : 'Message everyone here'"
+      aria-label="Message everyone here"
       :enterkeyhint="phone ? 'send' : undefined"
       class="w-full"
       :ui="{ base: 'text-sm' }"
       data-chat-input
       @keydown="onKeydown"
     />
-    <!-- The agent's box: one help line by the session's verbatim (design 11), and the owner's word on a message it refused. -->
-    <p v-if="agent && agent.verbatim === true" class="text-[11px] text-muted" data-chat-help="verbatim">Sent as written: <code class="font-mono">@file</code> and <code class="font-mono">/command</code> are not expanded here.</p>
-    <p v-else-if="agent && agent.verbatim === false" class="text-[11px] text-muted" data-chat-help="commands">Messages starting with <code class="font-mono">/</code> may run as the agent's commands.</p>
-    <p v-if="agent?.said" class="text-[11px] text-warning" role="status" data-chat-said>{{ agent.said }}</p>
     <div class="flex items-center gap-2 text-[11px] text-muted">
       <span v-if="!phone">Enter sends · Shift+Enter new line</span>
-      <span v-if="counter" class="font-mono" :class="tooLong && 'text-error'" data-chat-counter>{{ counter }}</span>
+      <span v-if="counter" class="font-mono" :class="tooLong && 'text-error'" data-mono="measure" data-chat-counter>{{ counter }}</span>
       <span class="flex-1" />
       <UDropdownMenu v-if="scopeItems" :items="scopeMenu" :content="{ align: 'end', onCloseAutoFocus: keepTyping }">
         <UButton :label="chosen?.label ?? 'Chat only'" trailing-icon="i-lucide-chevron-down" size="xs" color="neutral" variant="outline" :disabled="disabled" data-chat-scope-menu />
@@ -118,7 +461,6 @@ function keepTyping(e: Event) {
         </template>
       </UDropdownMenu>
       <UButton v-else-if="canSendToAgent" label="To agent" icon="i-lucide-corner-down-right" size="xs" color="neutral" variant="outline" :disabled="disabled || empty || tooLong" data-chat-to-agent @click="send('agent')" />
-      <IconButton v-if="agent?.running && agent.canStop" icon="i-lucide-square" size="xs" color="neutral" variant="outline" label="Stop this turn" data-chat-stop @click="emit('stop')" />
       <UButton type="submit" label="Send" icon="i-lucide-send" size="xs" :disabled="disabled || empty || tooLong" data-chat-send />
     </div>
   </form>

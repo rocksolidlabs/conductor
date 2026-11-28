@@ -32,13 +32,16 @@ test("a terminal session's switch moves it to its chat, whose turn shows its wor
   try {
     const view = await openSession(page, s.id)
     budget(3 * STEP_MS)
-    // Before the first reply: Chat waits, in the plan's words, and cannot be pressed.
+    // Before the first reply: Chat waits, in the plan's words on its dimmed side (no line above the terminal: UX3 R15), and cannot
+    // be pressed.
     const sw = page.locator('[data-way-switch]')
     await expect(sw).toHaveAttribute('data-way', 'terminal')
-    await expect(page.locator('[data-way-line]')).toHaveText("Chat opens after the agent's first reply.")
+    await expect(sw.locator('[data-way-side="protocol"]')).toHaveAttribute('aria-description', "Chat opens after the agent's first reply.")
+    await expect(page.locator('[data-way-line]')).toHaveCount(0)
     await expect(sw.locator('[data-way-side="protocol"]')).toBeDisabled()
     await firstTurn(page, api, s.id, 'remember PINEAPPLE')
     budget(12 * STEP_MS + LONG_MS)
+    await expect(sw.locator('[data-way-side="protocol"]')).not.toHaveAttribute('aria-description', "Chat opens after the agent's first reply.")
     await expect(page.locator('[data-way-line]')).toHaveCount(0)
     // The switch moves it. The first press in this browser draws one note in the chat, under the move's notice, where it covers
     // nothing: the agent's terms decide how the mode is used, and under it that the chat has Conductor's tools only.
@@ -64,9 +67,15 @@ test("a terminal session's switch moves it to its chat, whose turn shows its wor
     await expect(page.locator('[data-chat-view] [data-chat-notice]').first()).toBeVisible()
     await expect(page.locator('[data-chat-terms]')).toHaveCount(0)
 
-    // The box's help line by the session's verbatim.
-    const info = await api.session(s.id)
-    await expect(chat.locator('[data-chat-help]')).toHaveAttribute('data-chat-help', info.verbatim ? 'verbatim' : 'commands')
+    // The operator's box, which the server lets expand a line (UX3 R10): its placeholder names @ and /, and a leading / draws no
+    // plain-text line, at rest or typed (UX3 R4's line is for a box that sends as written).
+    const field = chat.locator('[data-chat-box] textarea')
+    await expect(field).toHaveAttribute('placeholder', /· @ for a file, \/ for a command$/)
+    await expect(chat.locator('[data-chat-help]')).toHaveCount(0)
+    await field.fill('/compact')
+    await expect(field).toHaveValue('/compact')
+    await expect(chat.locator('[data-chat-help]')).toHaveCount(0)
+    await field.fill('')
 
     // A turn: the message, the agent's words, its steps folded into one line, the file it changed, the turn's end.
     await say(page, 'steps edit please')
@@ -87,14 +96,17 @@ test("a terminal session's switch moves it to its chat, whose turn shows its wor
     await expect(rows.nth(0).locator('[data-tool-summary]')).toHaveText('ls')
     await rows.nth(0).locator('[data-tool-step-row]').click()
     await expect(rows.nth(0).locator('[data-tool-output]')).toHaveText('notes.txt')
-    // The file change: one line that opens to its diff, and from there the editor's diff tab.
+    // The file change: one line with its counts and, beside it, the editor's diff tab in one press (UX3 R9); opened, its diff.
     const change = turn.locator('[data-file-change]')
     await expect(change.locator('[data-file-change-line]')).toContainText('notes.txt')
-    await expect(change.locator('[data-file-change-line]')).toContainText('changed.')
-    await change.locator('[data-file-change-line]').click()
-    await expect(change.locator('[data-inline-diff]')).toContainText('+gamma')
+    await expect(change.locator('[data-file-change-line]')).toContainText('changed')
+    await expect(change.locator('[data-file-change-line]')).not.toContainText('changed.')
+    await expect(change.locator('[data-file-change-counts]')).toHaveText(/^·\s*\+1$/)
+    await expect(change.locator('[data-inline-diff]')).toHaveCount(0)
     await change.locator('[data-file-change-open-diff]').click()
     await expect(page.locator('[data-editor-tab]').filter({ hasText: 'notes.txt' })).toBeVisible({ timeout: STEP_MS })
+    await change.locator('[data-file-change-line]').click()
+    await expect(change.locator('[data-inline-diff]')).toContainText('+gamma')
   } finally {
     await page.context().close()
   }

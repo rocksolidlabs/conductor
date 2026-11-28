@@ -1,3 +1,4 @@
+import { dropEntry, pushEntry, topEntry } from '~/utils/pageStack'
 import type { AgentInfo, CrewSummary, SessionInfo } from '~/composables/useSessions'
 import type { ProjectSummary, TicketSummary } from '~/composables/useDispatch'
 import type { Action, Ask } from '~/utils/actions'
@@ -76,7 +77,8 @@ export interface PageGroup {
   showView?: (v: 'explorer' | 'chat' | 'activity' | 'people') => void
 }
 
-const pageGetter = shallowRef<(() => PageGroup | null) | null>(null)
+/** The pages' groups as registered, the last one the page's (pageStack): a member's view inside its run registers over the run's. */
+const pageGetters = shallowRef<Array<() => PageGroup | null>>([])
 /** The Touched cache's generation: bumped as the token is forgotten, so a reply on its way is dropped (#304, whole-batch round). */
 let touchedGen = 0
 /**
@@ -139,12 +141,12 @@ export function usePalette() {
 
   /** A page's group, registered in its setup and gone with it, as useShortcutsModal().registerPage does. */
   function registerPage(get: () => PageGroup | null) {
-    pageGetter.value = get
+    pageGetters.value = pushEntry(pageGetters.value, get)
     onBeforeUnmount(() => {
-      if (pageGetter.value === get) pageGetter.value = null
+      pageGetters.value = dropEntry(pageGetters.value, get)
     })
   }
-  const page = computed<PageGroup | null>(() => pageGetter.value?.() ?? null)
+  const page = computed<PageGroup | null>(() => topEntry(pageGetters.value)?.() ?? null)
 
   /**
    * The two lists that need a request (principle 1): read after the first

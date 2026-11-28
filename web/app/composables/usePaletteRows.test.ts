@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { NeedsItem } from '~/utils/needsYou'
@@ -97,5 +98,19 @@ describe("the Tickets group for a pasted GitHub address", () => {
     expect(withExternalHits(listed, { url: `${url}0`, tickets: [t('CND-9', 'Nine')] }, url, make)).toEqual(listed)
     expect(withExternalHits(listed, { url, tickets: [] }, url, make)).toEqual(listed)
     expect(withExternalHits(listed, { url: '', tickets: [] }, '', make)).toEqual(listed)
+  })
+})
+
+// A run's message in the palette says what the run's bar says (UX3, after R23a): the run row's Message the crew…, the verb's Message
+// to <run>, and a line that reached nobody Not sent; the old word Broadcast is gone from what a person reads (its ids stay).
+describe("the palette's words for a run's message", () => {
+  it('say Message the crew…, Message to <run> and Not sent, never Broadcast', () => {
+    const source = readFileSync(new URL('./usePaletteRows.ts', import.meta.url), 'utf8')
+    expect(source).toContain("label: 'Message the crew…', icon: 'i-lucide-megaphone'")
+    expect(source).toContain('label: `Message to ${v.target.name}: “${v.text}”`')
+    expect(source).toContain("toast.add({ title: 'Not sent', description: (e as Error).message, color: 'error' })")
+    expect(source).not.toContain("'Broadcast…'")
+    expect(source).not.toContain('Broadcast to ${')
+    expect(source).not.toContain("fail('Broadcast')")
   })
 })

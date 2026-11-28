@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -42,6 +43,18 @@ func operatorAnswers(by *Subscription) bool {
 	return by != nil && by.owner && by.LinkID == "" && by.Role == RoleControl
 }
 
+// operatorChatLocked says by is the operator's own chat connection
+// (docs/plans/chat-or-terminal.md, I19): the operator's own connection
+// (operatorAnswers), attached by the server's own viewer socket
+// (AttachOptions.ViewerSocket), not quiet, on a session that is no crew
+// member's. Only such a connection's typed line goes without the
+// as-written mark, and only it is told so (Welcome.Expands, Way.Expands).
+// A peer over the host link or a switchyard, a link of any role, a run's
+// chat and Conductor itself never pass it. The caller holds s.mu.
+func (s *Local) operatorChatLocked(by *Subscription) bool {
+	return operatorAnswers(by) && by.viewerSocket && !by.quiet && s.info.Crew == nil
+}
+
 // AnswerPermission is the operator's answer to an open permission request
 // (permission_answer): by must be the operator's own connection (the
 // workbench's, or an identity provider's principal holding admin), every
@@ -75,7 +88,9 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 	s.mu.Lock()
 	r, err := s.matchLocked(p, a)
 	if err != nil {
+		out := s.closeNotAsShownLocked(p, r, err)
 		s.mu.Unlock()
+		s.sendApplied(out)
 		return err
 	}
 	if r.claim != 0 {
@@ -95,7 +110,8 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 	out.event = "permission_answered"
 	s.mu.Lock()
 	if err := func() error {
-		if !s.listedLocked(p, r) || r.claim != token {
+		if !s.listedLocked(p, r) || r.claim != token || p.stopping {
+			// A stop under way answers every open request itself.
 			return ErrQuestionAnswered
 		}
 		if _, err := s.matchLocked(p, a); err != nil {
@@ -104,7 +120,9 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 		}
 		return nil
 	}(); err != nil {
+		closed := s.closeNotAsShownLocked(p, r, err)
 		s.mu.Unlock()
+		s.sendApplied(closed)
 		return err
 	}
 	// Who answered, recorded first.
@@ -172,6 +190,22 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 	return nil
 }
 
+// errNotAsShown is ErrStaleRequest for a request whose call the session no
+// longer holds as it was shown.
+var errNotAsShown = fmt.Errorf("%w", ErrStaleRequest)
+
+// closeNotAsShownLocked closes the open request r when err says its call
+// is no longer held as it was shown: its card closes, the agent told no.
+// The caller holds s.mu.
+func (s *Local) closeNotAsShownLocked(p *protocolWay, r *openPermission, err error) applied {
+	var out applied
+	if r != nil && err == errNotAsShown && s.listedLocked(p, r) {
+		out.event = "permission_withdrawn"
+		s.closePermissionLocked(p, r, PermissionWithdrawn, StaleRequestWords, nil, &out)
+	}
+	return out
+}
+
 // matchLocked is the open request a answers, checked as the hand-over
 // checks it: ErrQuestionAnswered when none is open by its question,
 // ErrStaleRequest when its call or digest differ or its call has a
@@ -186,6 +220,12 @@ func (s *Local) matchLocked(p *protocolWay, a proto.PermissionAnswer) (*openPerm
 		}
 		if r.call != "" && p.resulted[r.call] {
 			return nil, ErrStaleRequest
+		}
+		// The call as it was shown: a call the session no longer holds, or
+		// holds announced again with another input, is not the one asked
+		// about.
+		if t := p.tools[r.call]; r.call != "" && (t == nil || t.digest != r.digest) {
+			return r, errNotAsShown
 		}
 		return r, nil
 	}

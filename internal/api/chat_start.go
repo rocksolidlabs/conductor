@@ -87,6 +87,25 @@ func (s *Server) keepChatLaunch(id string, l chatLaunch) {
 	if l.agent.Protocol.Off() || agentproto.Check(l.agent.Protocol) != nil {
 		return
 	}
+	if l.yolo && l.agent.Yolo != nil && len(l.agent.Yolo.Env) > 0 {
+		// A chat's child takes none of a yolo launch's variables: they
+		// stay with the terminal.
+		l.env = slices.DeleteFunc(l.env, func(kv string) bool {
+			k, _, _ := strings.Cut(kv, "=")
+			_, yolo := l.agent.Yolo.Env[k]
+			return yolo
+		})
+	}
+	if name := l.agent.Protocol.Name; name != agentproto.ClaudeStreamJSON {
+		// Only Claude Code's program calls Conductor's permission tool:
+		// another protocol's child is marked by its protocol's name, which
+		// silences the terminal way's hooks and lists no permission tool.
+		for i, kv := range l.env {
+			if kv == "CONDUCTOR_PROTOCOL=1" {
+				l.env[i] = "CONDUCTOR_PROTOCOL=" + name
+			}
+		}
+	}
 	l.gate = &chatGate{}
 	s.chatLaunches.Store(id, &l)
 }
@@ -119,7 +138,10 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 	if !ok {
 		return nil, errNoPipes
 	}
-	if l.agent.Protocol.Name != agentproto.ClaudeStreamJSON {
+	name := l.agent.Protocol.Name
+	switch name {
+	case agentproto.ClaudeStreamJSON, agentproto.CodexAppServer, agentproto.ACPv1:
+	default:
 		return nil, errNoChat
 	}
 	hooks := agents.HooksDir(s.cfg.DataDir)
@@ -137,12 +159,12 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 			if id := s.identityNow(ctx)(l.agent); id != nil && id.Identified {
 				version = id.Version
 			}
-			if !agentproto.Qualified(l.agent.Protocol.Name, version) {
-				return nil, nil, fmt.Errorf("%w (version %q)", agentproto.ErrNotQualified, version)
+			if !agentproto.Qualified(name, version) {
+				return nil, nil, fmt.Errorf("%w (version %q)", agentproto.NotQualifiedFor(name), version)
 			}
 			l.gate.qualified.Store(true)
 		}
-		argv, err := chatArgv(l, conversation, hooks, mcp)
+		argv, resume, err := chatArgv(l, conversation, hooks, mcp)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -154,7 +176,18 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 		dirFile.Close()
 		if err != nil {
 			s.log.Warn("a chat's child did not start", "session", local.Info().ID, "agent", l.agent.ID, "err", err)
-			return nil, nil, fmt.Errorf("%w (its Runtime did not start it)", agentproto.ErrNotStarted)
+			return nil, nil, fmt.Errorf("%w (its Runtime did not start it)", agentproto.NotStartedFor(name))
+		}
+		if name == agentproto.CodexAppServer {
+			return session.PipesChild(pipes), agentproto.NewCodex(pipes.Stdin(), pipes.Stdout(), agentproto.CodexOptions{Resume: resume, InitWait: initWait}), nil
+		}
+		if name == agentproto.ACPv1 {
+			// The terminal's session taken up through the protocol, in the
+			// session's folder.
+			return session.PipesChild(pipes), agentproto.NewACP(pipes.Stdin(), pipes.Stdout(), agentproto.ACPOptions{
+				Session: conversation, Cwd: l.folder.Path(), InitWait: initWait,
+				RawInputKeys: agentproto.ACPRawInputKeys(l.agent.Adapter), YoloLeft: l.yolo,
+			}), nil
 		}
 		driver := agentproto.NewClaude(pipes.Stdin(), pipes.Stdout(), agentproto.ClaudeOptions{
 			Restart:  func() { _ = local.RestartProtocol("restarted", restartedInputWords) },
@@ -166,25 +199,48 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 }
 
 // chatArgv is the argv of l's chat's child on conversation (design 4),
-// with the hooks directory and whether the server's MCP is on.
-func chatArgv(l *chatLaunch, conversation, hooks string, mcp bool) ([]string, error) {
+// with the hooks directory and whether the server's MCP is on, and, for
+// Codex, what its thread is resumed with.
+func chatArgv(l *chatLaunch, conversation, hooks string, mcp bool) ([]string, agentproto.CodexResume, error) {
 	var yoloArgs []string
 	if l.yolo && l.agent.Yolo != nil {
 		yoloArgs = slices.Clone(l.agent.Yolo.Args)
 	}
-	return agentproto.ClaudeArgs(agentproto.ClaudeLaunch{
+	if l.agent.Protocol.Name == agentproto.ACPv1 {
+		// The agent's own start of its ACP server, nothing of the
+		// terminal's: its session is taken up through the protocol.
+		argv, err := agentproto.ACPArgs(agentproto.ACPLaunch{
+			Command: l.agent.Command, Protocol: l.agent.Protocol.Args, Conversation: conversation, Model: l.model, LaunchArgs: l.args,
+		})
+		return argv, agentproto.CodexResume{}, err
+	}
+	if l.agent.Protocol.Name == agentproto.CodexAppServer {
+		// Conductor's MCP server as the terminal's launch gave it (its
+		// configuration overrides, the variables it is handed among them);
+		// none with the server's MCP off.
+		var server []string
+		if mcp {
+			server = agents.MCPFor(l.agent.Adapter, hooks, true)
+		}
+		return agentproto.CodexArgs(agentproto.CodexLaunch{
+			Command: l.agent.Command, Protocol: l.agent.Protocol.Args, Conversation: conversation,
+			Model: l.model, Yolo: l.yolo, YoloArgs: yoloArgs, LaunchArgs: l.args, MCP: server, Dir: l.folder.Path(),
+		})
+	}
+	argv, err := agentproto.ClaudeArgs(agentproto.ClaudeLaunch{
 		Command: l.agent.Command, Protocol: l.agent.Protocol.Args, Conversation: conversation,
 		Model: l.model, Yolo: l.yolo, YoloArgs: yoloArgs, LaunchArgs: l.args, HooksDir: hooks, NoMCP: !mcp,
 		// Conductor answers its permission prompts, its floor the one
 		// --settings (design 7).
 		PermissionHost: true,
 	})
+	return argv, agentproto.CodexResume{}, err
 }
 
 // chatArgsCheck is the refusal the chat's child's argv would meet for l's
 // arguments, asked before a move stops anything: the argv is built as the
 // start builds it, on a conversation that only has the shape of one.
 func (s *Server) chatArgsCheck(l *chatLaunch) error {
-	_, err := chatArgv(l, "00000000-0000-4000-8000-000000000000", agents.HooksDir(s.cfg.DataDir), s.cfg.MCP())
+	_, _, err := chatArgv(l, "00000000-0000-4000-8000-000000000000", agents.HooksDir(s.cfg.DataDir), s.cfg.MCP())
 	return err
 }

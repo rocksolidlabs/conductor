@@ -57,8 +57,24 @@ func (s *Local) SetCrew(ref CrewRef) bool {
 		s.mu.Unlock()
 		return false
 	}
+	var could []*Subscription
+	s.hub.Each(func(sub *Subscription) {
+		if s.operatorChatLocked(sub) {
+			could = append(could, sub)
+		}
+	})
 	r := ref
 	s.info.Crew = &r
+	if p := s.way.Load(); p != nil {
+		// A chat whose standing changed: every connection is told whether
+		// its typed line may still go for the agent to expand (a crew
+		// member's may not: operatorChatLocked), so a page never holds a
+		// word the session no longer honours; and one that was sent the
+		// agent's commands and may be no more is sent an empty list, so
+		// its page keeps none it is no longer kept up to date with.
+		s.standingChangedLocked()
+		s.commandsWithdrawnLocked(p, could)
+	}
 	s.mu.Unlock()
 	s.notifyChange()
 	return true
@@ -78,13 +94,29 @@ func (s *Local) SetAgentSession(as AgentSession) {
 // notifies OnChange.
 func (s *Local) ReportAgentSession(id, policy string, turn bool) {
 	s.mu.Lock()
-	next, changed := NextAgentSession(s.info.AgentSession, id, policy, turn)
+	prev := s.info.AgentSession
+	next, changed := NextAgentSession(prev, id, policy, turn)
 	if changed {
 		s.info.AgentSession = &next
 	}
+	// A chat whose agent took up another conversation (its /clear: the
+	// agent's own hook or stream names a new id) says so in the transcript,
+	// where the person reads what the agent still knows: what is above it no
+	// longer is. Only an id the policy took in place of the one held.
+	var out applied
+	cleared := false
+	if p := s.way.Load(); p != nil && changed && prev != nil && prev.ID != "" && next.ID != prev.ID {
+		s.noticeLocked(p, noticeCleared, ClearedWords, &out)
+		cleared = true
+	}
 	s.mu.Unlock()
+	if cleared {
+		s.sendApplied(out)
+	}
 	if changed {
 		s.notifyChange()
+		// A noted move waits for a conversation it can resume (move.go).
+		s.tryNoted()
 	}
 }
 

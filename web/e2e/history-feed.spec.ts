@@ -1,7 +1,7 @@
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, pageTitle, test } from './fixtures'
+import { expect, member, pageTitle, test } from './fixtures'
 
 // History's Feed (the UX review's P12): the live feed of what agents report, the retired Events page's, as History's second view
 // (`?view=feed`). It names a crew member as "<crew> / <member>" and offers Answer on what needs you; beside it the last hour, where
@@ -80,12 +80,16 @@ test("History's Feed names crew members, offers Answer, fills the last hour besi
   runs.push(run.id)
   const ask = () => feed.locator('[data-event="needs_input"]').filter({ hasText: 'e2e history feed / review' }).first()
   await expect(ask()).toBeVisible({ timeout: 45_000 })
-  await expect(ask().locator('[data-feed-answer]')).toHaveAttribute('href', /^\/sessions\//)
+  // Answer on a crew's member leads to its place inside its crew (UX3 R72): the run's page with that member open.
+  const reviewer = member(await api.run(run.id), 'review').sessionId!
+  const reviewAt = `/runs/${encodeURIComponent(run.id)}?session=${reviewer}`
+  await expect(ask().locator('[data-feed-answer]')).toHaveAttribute('href', reviewAt)
   await expect(feed.locator('[data-feed-group]').first()).toContainText('now')
   const chart = page.locator('[data-activity-chart]')
   await expect.poll(async () => Number(await chart.getAttribute('data-total')), { timeout: 30_000 }).toBeGreaterThanOrEqual(2)
   await expect(chart.locator('[data-activity-bar]')).toHaveCount(60)
-  await expect(page.locator('[data-routing-readout]')).toContainText('Browser notification')
+  await expect(page.locator('[data-routing-readout]')).toContainText('Notification on this device')
+  await expect(page.locator('[data-routing-readout]')).not.toContainText('Browser notification')
   // Which agents report is set-up, not history: folded until asked for.
   await expect(page.locator('[data-reporting-agent="claude"]')).toBeHidden()
   await page.locator('[data-reporting-toggle]').click()
@@ -100,7 +104,7 @@ test("History's Feed names crew members, offers Answer, fills the last hour besi
   await view(page, 'Live').click()
   await expect(page).toHaveURL(/\/history\?view=feed$/)
   await expect(ask()).toBeVisible()
-  await expect(ask().locator('[data-feed-answer]')).toHaveAttribute('href', /^\/sessions\//)
+  await expect(ask().locator('[data-feed-answer]')).toHaveAttribute('href', reviewAt)
   await expect(chart.locator('[data-activity-bar]')).toHaveCount(60)
 
   // The palette's History group: its two views as rows, the shown one on, and Refresh while the Feed is shown.

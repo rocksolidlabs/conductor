@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { CREW, MEMBER, RUN_TILES_CREWS } from './runTiles'
+import { RUN_LAYOUTS, SHARES_MAX } from './wall'
 import { describe, expect, it } from 'vitest'
 import { LAYOUT_KEY, SIDE_SPLIT_KEY } from './editorLayout'
 import { SPLIT_KEY } from './editorTabs'
 import { RECENT_MAX, type Recent } from './palette'
 import { SIDEBAR_FOLDS_KEY, SIDEBAR_KEY, SIDEBAR_SIZE_KEY } from './sidebar'
-import { contentOf, CREW_GRAPH_KEY, isKept, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, PROJECT_VIEW_KEY, RUN_VIEW_KEY, sameContent, type UiLayout } from './uiState'
+import { contentOf, CREW_GRAPH_KEY, isKept, layoutForServer, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, PROJECT_VIEW_KEY, RUN_TILES_LAST_KEY, RUN_VIEW_KEY, sameContent, TILE_LAYOUTS, type UiLayout } from './uiState'
 
 function memory(init: Record<string, string> = {}) {
   const m = new Map(Object.entries(init))
@@ -15,6 +19,7 @@ const full: UiLayout = {
   editor: { layout: 'side', split: 0.4, sideSplit: 0.6 },
   sidebar: { mode: 'rail', width: 18.5, folds: { pinned: true, exited: false } },
   crewGraph: { direction: 'TB', handoffs: false, members: true },
+  runTiles: { layout: 'large', activity: false },
   runView: 'timeline',
   projectView: 'board',
 }
@@ -30,6 +35,7 @@ describe('the layout in local storage', () => {
     expect(s.map.get(SIDEBAR_SIZE_KEY)).toBe('18.5')
     expect(JSON.parse(s.map.get(SIDEBAR_FOLDS_KEY)!)).toEqual({ pinned: true, exited: false })
     expect(JSON.parse(s.map.get(CREW_GRAPH_KEY)!)).toEqual({ direction: 'TB', handoffs: false, members: true })
+    expect(JSON.parse(s.map.get(RUN_TILES_LAST_KEY)!)).toEqual({ layout: 'large', activity: false })
     expect(s.map.get(RUN_VIEW_KEY)).toBe('timeline')
     expect(s.map.get(PROJECT_VIEW_KEY)).toBe('board')
     expect(layoutFromStorage(s)).toEqual(full)
@@ -47,6 +53,31 @@ describe('the layout in local storage', () => {
   it('lays a patch over a layout one level deep', () => {
     expect(patchLayout(full, { sidebar: { mode: 'full' } }).sidebar).toEqual({ mode: 'full', width: 18.5, folds: { pinned: true, exited: false } })
     expect(patchLayout({ v: 1 }, { editor: { split: 0.3 } })).toEqual({ v: 1, editor: { split: 0.3 } })
+    expect(patchLayout(full, { runTiles: { activity: true } }).runTiles).toEqual({ layout: 'large', activity: true })
+    expect(patchLayout({ v: 1 }, { runTiles: { layout: 'rows' } })).toEqual({ v: 1, runTiles: { layout: 'rows' } })
+  })
+
+  it("keeps the run tiles' last layout and Activity, each of the four layouts, and leaves out a value that does not read", () => {
+    for (const layout of TILE_LAYOUTS) {
+      for (const activity of [true, false]) {
+        const s = memory()
+        layoutToStorage(s, { v: 1, runTiles: { layout, activity } })
+        expect(layoutFromStorage(s)).toEqual({ v: 1, runTiles: { layout, activity } })
+      }
+    }
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: '{"layout":"focus","activity":"yes"}' }))).toEqual({ v: 1 })
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: '{"layout":"rows","activity":1}' }))).toEqual({ v: 1, runTiles: { layout: 'rows' } })
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: 'not json' }))).toEqual({ v: 1 })
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: '["grid"]' }))).toEqual({ v: 1 })
+  })
+
+  it("keeps each crew's tiles beside the last choice, an entry that does not read left out", () => {
+    const s = memory()
+    const crews = [{ crew: 'refunds', layout: 'large' as const, activity: true, large: 'core', sizes: { large: { cols: [0.7, 0.3] } } }]
+    layoutToStorage(s, { v: 1, runTiles: { layout: 'rows', activity: false, crews } })
+    expect(layoutFromStorage(s)).toEqual({ v: 1, runTiles: { layout: 'rows', activity: false, crews } })
+    const bad = JSON.stringify({ layout: 'grid', crews: [{ crew: 'Bad Id', layout: 'grid', activity: true }, { crew: 'docs', layout: 'grid', activity: false }] })
+    expect(layoutFromStorage(memory({ [RUN_TILES_LAST_KEY]: bad }))).toEqual({ v: 1, runTiles: { layout: 'grid', crews: [{ crew: 'docs', layout: 'grid', activity: false }] } })
   })
 })
 
@@ -83,5 +114,32 @@ describe('documents', () => {
     expect(contentOf({ v: 1, runView: 'grid', at: 'x', by: 'y' })).toEqual({ v: 1, runView: 'grid' })
     expect(sameContent({ v: 1, sidebar: { mode: 'rail', width: 2 }, at: 'x' }, { sidebar: { width: 2, mode: 'rail' }, v: 1 })).toBe(true)
     expect(sameContent({ v: 1, runView: 'grid' }, { v: 1, runView: 'tasks' })).toBe(false)
+  })
+})
+
+describe("the run tiles' bounds, the page's and the server's", () => {
+  const GO = readFileSync(fileURLToPath(new URL('../../../internal/api/ui_state.go', import.meta.url)), 'utf8')
+  const goConst = (name: string) => Number(new RegExp(`\\b${name}\\s*=\\s*(\\d+)`).exec(GO)?.[1])
+  const goPattern = (name: string) => new RegExp(`${name}\\s*=\\s*regexp\\.MustCompile\\(\`([^\`]+)\`\\)`).exec(GO)?.[1]
+
+  it('are one table: as many crews, as many shares an axis, the same names and layouts', () => {
+    expect(goConst('uiMaxTileCrews')).toBe(RUN_TILES_CREWS)
+    expect(goConst('uiMaxTileShares')).toBe(SHARES_MAX)
+    expect(goPattern('uiTileCrewPattern')).toBe(CREW.source)
+    expect(goPattern('uiTileMemberPattern')).toBe(MEMBER.source)
+    const layouts = /uiTileLayouts\s*=\s*map\[string\]bool\{([^}]*)\}/.exec(GO)?.[1]?.match(/"([a-z]+)"/g)?.map((x) => x.slice(1, -1))
+    expect(layouts?.sort()).toEqual([...RUN_LAYOUTS].sort())
+  })
+
+  it('a save sends the run tiles as the server takes them, and the rest of the layout as it is', () => {
+    const thirteen = Array.from({ length: SHARES_MAX + 1 }, () => 1 / 13)
+    const l: UiLayout = {
+      v: 1,
+      runView: 'grid',
+      runTiles: { layout: 'large', activity: true, crews: [{ crew: 'refunds', layout: 'rows', activity: false, large: 'Bad Name', sizes: { rows: { rows: thirteen } } }] },
+    }
+    expect(layoutForServer(l)).toEqual({ v: 1, runView: 'grid', runTiles: { layout: 'large', activity: true, crews: [{ crew: 'refunds', layout: 'rows', activity: false }] } })
+    expect(layoutForServer({ v: 1, runTiles: { layout: 'focus' as never } })).toEqual({ v: 1 })
+    expect(layoutForServer({ v: 1, sidebar: { mode: 'rail' } })).toEqual({ v: 1, sidebar: { mode: 'rail' } })
   })
 })

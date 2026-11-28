@@ -11,6 +11,8 @@
 #
 # What the environment chooses:
 #   STUB_IDENTITY   claude | codex | pressly-goose | stub: what --version prints
+#   STUB_HELP       commander | clap: --help prints a help in that tool's
+#                   form (our own words); unset, the stub's own short help
 #   STUB_REPORT     plain | claude | codex: notify's words, or the agent's
 #                   hook payloads (Claude Code's UserPromptSubmit and Stop,
 #                   Codex's agent-turn-complete with the thread id)
@@ -172,7 +174,10 @@
 # $HOME/.stub-sessions/<id>.resumed. Started as a chat's child (-p with
 # --input-format stream-json) it is web/e2e/stub-protocol.mjs, run by
 # STUB_NODE (node unless set), on the same transcript; STUB_CLAUDE_VERSION
-# is the version the claude identity says (2.1.287 unless set).
+# is the version the claude identity says (2.1.287 unless set). Started as a
+# chat's child of Codex (`app-server` with CONDUCTOR_PROTOCOL=codex-app-server) it is the
+# same stub in its Codex mode; STUB_CODEX_VERSION is the version the codex
+# identity says (0.159.0 unless set).
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -223,7 +228,7 @@ usage_state= usage_version=
 if [[ -n $usage_dir && -f $usage_dir/stub-usage ]]; then
 	read -r usage_state usage_version _ <"$usage_dir/stub-usage" || true
 fi
-claude_version=${STUB_CLAUDE_VERSION:-2.1.287} codex_version=0.159.0
+claude_version=${STUB_CLAUDE_VERSION:-2.1.287} codex_version=${STUB_CODEX_VERSION:-0.159.0}
 if [[ -n $usage_state ]]; then
 	claude_version=${usage_version:-2.1.322}
 	codex_version=${usage_version:-0.163.0}
@@ -314,6 +319,66 @@ case "${1:-}" in
 	exit 0
 	;;
 --help | -h)
+	case ${STUB_HELP:-} in
+	commander)
+		# A help in commander's form, as Claude Code prints its own, in our own words.
+		cat <<'HELP'
+Usage: stub-agent [options] [prompt]
+
+A stand-in agent for Conductor's tests.
+
+Options:
+  --add-dir <directories...>        More folders the agent may read
+  --dangerously-skip-permissions    Asks nothing at all
+  --effort <level>                  How hard it thinks (choices: "low",
+                                    "medium", "high")
+  -h, --help                        Shows this help
+  --model <model>                   The model to use: an alias (e.g.
+                                    'alpha', 'beta') or a full name
+  --permission-mode <mode>          How it asks (choices: "ask", "plan",
+                                    "bypassPermissions")
+  --session-id <uuid>               The id the session is given
+  --settings <file-or-json>         A settings file, or JSON
+  --tone <tone>                     How it writes (plain, warm)
+  --verbose                         Says more
+  -v, --version                     Prints the version
+HELP
+		exit 0
+		;;
+	clap)
+		# A help in clap's form, as Codex prints its own, in our own words.
+		cat <<'HELP'
+A stand-in agent for Conductor's tests
+
+Usage: stub-agent [OPTIONS] [PROMPT]
+
+Options:
+  -m, --model <MODEL>
+          The model the agent uses
+
+  -s, --sandbox <SANDBOX_MODE>
+          How the commands it runs are fenced in
+
+          [possible values: read-only, workspace-write, danger-full-access]
+
+  -C, --cd <DIR>
+          The folder to work in
+
+      --add-dir <DIR>
+          Another folder the agent may write in
+
+      --dangerously-bypass-approvals-and-sandbox
+          Asks nothing and fences nothing
+
+  -h, --help
+          Prints help
+
+  -V, --version
+          Prints the version
+HELP
+		exit 0
+		;;
+	esac
 	cat <<'HELP'
 Usage: stub-agent.sh [options] [resume ID]
 
@@ -346,7 +411,18 @@ auth)
 		exit 0
 	fi
 	;;
+acp | --acp)
+	# A chat's child of an Agent Client Protocol agent (CONDUCTOR_PROTOCOL=acp-v1): the protocol stub's third mode.
+	if [[ ${CONDUCTOR_PROTOCOL:-} == acp-v1 ]]; then
+		exec "${STUB_NODE:-node}" "$(dirname "${BASH_SOURCE[0]}")/stub-protocol.mjs" "$@"
+	fi
+	;;
 app-server)
+	# A chat's child of Codex (the protocol way, CONDUCTOR_PROTOCOL=codex-app-server): the protocol stub's Codex mode speaks its app
+	# server, on the same conversation's transcript (STUB_NODE is the suite's node); a usage read sets no CONDUCTOR_PROTOCOL.
+	if [[ ${CONDUCTOR_PROTOCOL:-} == codex-app-server ]]; then
+		exec "${STUB_NODE:-node}" "$(dirname "${BASH_SOURCE[0]}")/stub-protocol.mjs" "$@"
+	fi
 	[[ $identity == codex && -n $usage_state ]] || exit 1
 	codex_app_server
 	exit 0

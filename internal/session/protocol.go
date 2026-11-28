@@ -37,6 +37,7 @@ type (
 	FileChange        = way.FileChange
 	Usage             = way.Usage
 	PermissionRequest = way.PermissionRequest
+	Command           = way.Command
 	Verdict           = way.Verdict
 	// ProtocolStart starts a protocol way's child and its driver on the
 	// agent's conversation ("" for a new one).
@@ -113,6 +114,7 @@ const (
 	QueuedWords         = "Sends when the turn ends."
 	TooManyQueuedWords  = "Too many messages are waiting."
 	PermissionCardWords = "Answer this request with its own buttons."
+	NoExpandWords       = "Not sent: here a message goes to the agent as plain text. Send it again, or use Terminal for a command."
 
 	// What a permission request's entry says once it is no longer open,
 	// and what the agent is told with a deny.
@@ -139,6 +141,12 @@ var (
 	ErrNotProtocol error = &wayWords{NotProtocolWords}
 	// ErrNoTurn refuses an interrupt while no turn runs.
 	ErrNoTurn error = &wayWords{NoTurnWords}
+	// ErrNoExpand refuses a line that asks to go without the as-written mark
+	// (Submission.Expand) where it cannot: from any connection but the
+	// operator's own chat connection, with a question, a decision or a
+	// relay, on a driver with no mark, on a session in its terminal.
+	// Nothing is written: the line is never sent otherwise than asked.
+	ErrNoExpand error = &wayWords{NoExpandWords}
 	// ErrTooManyQueued refuses a message while MaxQueuedMessages wait.
 	ErrTooManyQueued error = &wayWords{TooManyQueuedWords}
 	// ErrUnconfirmed is a message's word when the agent did not
@@ -234,9 +242,25 @@ type protocolWay struct {
 	turnEnds  uint64
 	asked     map[string]bool
 	resulted  map[string]bool
-	showing   string
-	under     Attention
-	aside     []asideChange
+	// turnLines counts the lines written to the agent since the last turn
+	// ended, and turnOthers those of them that were not the operator's own
+	// (operatorLine): a skill call is the operator's only in a turn of lines
+	// all theirs (skillRefusedLocked).
+	turnLines  int
+	turnOthers int
+	// othersOnTheirWay are the lines not the operator's own written and
+	// not yet let go, by ref, each as it counts at a turn's end
+	// (otherLine); othersLost counts those past their bound, counted at the
+	// next turn's end (noteWrittenLocked).
+	othersOnTheirWay map[string]otherLine
+	othersLost       int
+	showing          string
+	under            Attention
+	aside            []asideChange
+
+	// commands is the agent's own commands (commands.go): kept with the
+	// chat, gone with it, sent to the operator's own chat connections alone.
+	commands chatCommands
 }
 
 // queuedMessage is a message on its way into the conversation.
@@ -370,7 +394,7 @@ func (s *Local) enterProtocolGroup(ctx context.Context, start ProtocolStart) (in
 		gen: 1, child: child, driver: driver, readDone: make(chan struct{}),
 		ctx: wctx, cancel: cancel, ready: make(chan struct{}), kick: make(chan struct{}, 1),
 		tools: map[string]*openTool{}, texts: map[string]*openText{},
-		announced: make(chan struct{}), asked: map[string]bool{}, resulted: map[string]bool{},
+		announced: make(chan struct{}), asked: map[string]bool{}, resulted: map[string]bool{}, othersOnTheirWay: map[string]otherLine{},
 	}
 	s.mu.Lock()
 	if s.info.Status.Ended() || s.way.Load() != nil {
@@ -534,6 +558,9 @@ func (s *Local) sendNext(p *protocolWay) bool {
 	// move between the ways begins while the message's credential is
 	// taken and it is sent.
 	p.sending, p.inflight = true, q
+	// Counted for the turn it is written into before it is written: one
+	// whose write fails may have reached the agent.
+	p.noteWrittenLocked(q)
 	d := p.driver
 	s.mu.Unlock()
 	// The sender's credential, taken and asked as the terminal's writer
@@ -573,7 +600,8 @@ func (s *Local) sendNext(p *protocolWay) bool {
 	p.sending = false
 	if err != nil {
 		// A write that failed may have written some of it: never written
-		// again.
+		// again, and never said taken.
+		p.othersOnceMoreLocked(q.msg.Ref)
 		if p.inflight == q {
 			p.inflight = nil
 		}
@@ -678,6 +706,8 @@ func (s *Local) unconfirmLocked(p *protocolWay, q *queuedMessage, out *applied) 
 	s.reviseLocked(q.seq, func(e *TranscriptEntry) { e.State = PromptUnconfirmed }, out)
 	p.unconfirmed = append(p.unconfirmed, q)
 	if len(p.unconfirmed) > maxUnconfirmedKept {
+		// No longer followed: never said taken here.
+		p.othersOnceMoreLocked(p.unconfirmed[0].msg.Ref)
 		p.unconfirmed = p.unconfirmed[1:]
 	}
 	out.finish(q, SubmitResult{Unconfirmed: true}, ErrUnconfirmed)
@@ -765,6 +795,18 @@ func (s *Local) submitProtocol(p *protocolWay, sub Submission) (SubmitResult, er
 		return res, ErrTooManyQueued
 	}
 	q := &queuedMessage{sub: sub, msg: Message{Ref: NewID(), Text: text}, by: "conductor", byName: CleanName(sub.ByName), state: PromptQueued}
+	// I19: the one place a message is sent without the as-written mark.
+	// Only the operator's own chat connection's typed line, naming no
+	// question or decision and relaying nobody, on a driver that has a mark.
+	// Asked anywhere else, the line is refused, never sent as something it
+	// did not ask to be (ErrNoExpand).
+	if sub.Expand {
+		if sub.Question != "" || sub.Decision != "" || sub.From != nil || !p.verbatim || !s.operatorChatLocked(sub.By) {
+			s.mu.Unlock()
+			return res, ErrNoExpand
+		}
+		q.msg.Expand = true
+	}
 	shownName := oneLine(sub.ByName, maxPromptName)
 	if from := submissionFrom(sub); from != nil {
 		q.by = "person"
@@ -781,7 +823,7 @@ func (s *Local) submitProtocol(p *protocolWay, sub Submission) (SubmitResult, er
 		}
 		q.claim = token
 	}
-	e := TranscriptEntry{Kind: EntryPrompt, Turn: p.turns + 1, By: q.by, ByName: shownName, State: PromptQueued}
+	e := TranscriptEntry{Kind: EntryPrompt, Turn: p.turns + 1, By: q.by, ByName: shownName, State: PromptQueued, Expanded: q.msg.Expand}
 	if sub.Question != "" {
 		// An answer carries the question it answers and never its text:
 		// its sender's own page shows it (the people's chat's rule).
@@ -890,6 +932,7 @@ func (s *Local) restartProtocol(p *protocolWay) {
 	if p.inTurn || p.accepted {
 		s.endTurnLocked(p, "interrupted", Usage{}, &out)
 	}
+	p.othersToNewChildLocked()
 	conv := ""
 	if s.info.AgentSession != nil {
 		conv = s.info.AgentSession.ID
@@ -1042,8 +1085,12 @@ func (s *Local) endProtocolLocked() func() {
 // activity entries, the entries' TRANSCRIPT frames (sendEntries), the
 // requests' replies, the claims, the submissions' words, the sender woken.
 type applied struct {
-	event    string
-	id       string
+	event string
+	id    string
+	// anyWay sends its entries whichever way the session runs now: a
+	// move's notice, made once the session runs its new way, the terminal
+	// among them.
+	anyWay   bool
 	captured []capturedPiece
 	attn     *attnChange
 	records  []ActivityEntry
@@ -1158,7 +1205,7 @@ func (s *Local) sendApplied(out applied) {
 		s.notifyChange()
 	}
 	if len(out.entries) > 0 {
-		s.sendEntries(out.entries)
+		s.sendEntries(out.entries, out.anyWay)
 	}
 	for _, r := range out.replies {
 		go func() {
@@ -1279,6 +1326,7 @@ func (s *Local) endTurnLocked(p *protocolWay, outcome string, u Usage, out *appl
 	p.turnEnds++
 	clear(p.asked)
 	clear(p.resulted)
+	p.turnCountsLocked()
 	p.announceLocked()
 	d := s.now().Sub(p.turnAt).Milliseconds()
 	if d < 0 {
@@ -1412,12 +1460,19 @@ func (e protocolEvents) Conversation(id string) {
 	e.s.sendApplied(applied{event: "conversation", conv: id, resumed: resumed})
 }
 
-func (e protocolEvents) Accepted(ref string) {
+func (e protocolEvents) Accepted(ref string) { e.accepted(ref, true) }
+
+// AcceptedUnnamed is Accepted for an acknowledgement that named no
+// message, which the driver took for the oldest it wrote, ref.
+func (e protocolEvents) AcceptedUnnamed(ref string) { e.accepted(ref, false) }
+
+func (e protocolEvents) accepted(ref string, named bool) {
 	if !e.begin() {
 		return
 	}
 	s, p := e.s, e.p
 	out := applied{event: "accepted"}
+	p.othersTakenLocked(ref, named)
 	q := p.inflight
 	switch {
 	case q != nil && q.msg.Ref == ref:
@@ -1683,14 +1738,26 @@ func (s *Local) toolNameLocked(p *protocolWay, ref string) string {
 }
 
 func (e protocolEvents) Permission(r PermissionRequest) {
+	// The walk of a call's strings is for calls that come in an agent's
+	// stream, and is made here, on the driver's goroutine, before the
+	// session's lock is taken: it reads the session's folder and the deny
+	// list, needing no lock, and is bounded (streamFloored). The lock is
+	// then held for the bound, the binding and the rest of the floor.
+	walked := ""
+	if len(r.Input) <= MaxTranscriptPart {
+		walked = e.s.streamFloored(r.Input)
+	}
 	if !e.begin() {
 		return
 	}
 	s, p := e.s, e.p
 	out := applied{event: "permission"}
 	// An in-stream request is judged at once (the driver hands events in
-	// order): a digest of one form, the bound, the floor; then it is the
-	// session's question as a request to the prompt tool is.
+	// order): a digest of one form, the bound, the call it names as the
+	// stream announced it (bindLocked, as a request to the prompt tool is
+	// bound, with no wait: a call not yet shown is none this session is
+	// making), the floor; then it is the session's question as a request to
+	// the prompt tool is.
 	canon, clean := strictCanonical(r.Input)
 	digest := inputDigest(r.Tool, r.Input)
 	if clean {
@@ -1699,7 +1766,12 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 	entry := s.permissionEntryLocked(p, r.Call, r.Tool, r.Input, digest, r.Cwd)
 	entry.Ref = cutAt(r.Ref, MaxEntryRef)
 	why := ""
+	var call string
 	switch {
+	case s.skillRefusedLocked(p, r.Tool):
+		// Before any other check: refused with no entry, whatever else it
+		// is.
+		why = SkillOwnLineWords
 	case len(r.Input) > MaxTranscriptPart:
 		// Kept whole or not shown: a part past its bound would be cut
 		// under a digest of the whole.
@@ -1709,8 +1781,21 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 	case p.requests+p.inStreamLocked() >= MaxPendingPermissions:
 		// Past the bound: denied, never left waiting.
 		why = TooManyRequestsWords
-	case s.flooredLocked(r.Tool, r.Input):
-		why = FloorWords
+	default:
+		call, why = s.bindInStreamLocked(p, r.Call, r.Tool, digest)
+		if why == "" && walked != "" {
+			why = walked
+		}
+		if why == "" && s.flooredLocked(r.Tool, r.Input) {
+			why = FloorWords
+		}
+	}
+	if why == SkillOwnLineWords {
+		// Refused, nothing put to anyone and no entry: the agent told why.
+		out.replies = append(out.replies, verdictReply{d: p.driver, ref: r.Ref, v: Verdict{Message: why}})
+		s.mu.Unlock()
+		s.sendApplied(out)
+		return
 	}
 	if why != "" {
 		entry.State, entry.Why = PermissionDenied, why
@@ -1721,9 +1806,40 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 		s.sendApplied(out)
 		return
 	}
-	s.takeLocked(p, entry, entry.Call, r.Ref, r.Input, nil, &out)
+	// One request per call: a second for it is "Already asked."
+	p.asked[call] = true
+	entry.Call = cutAt(call, MaxEntryRef)
+	s.takeLocked(p, entry, call, r.Ref, r.Input, nil, &out)
 	s.mu.Unlock()
 	s.sendApplied(out)
+}
+
+// bindInStreamLocked is the call an in-stream request names, bound as a
+// request to the prompt tool is (bindLocked: a tool call of the current
+// turn that the stream showed, with that call id, the same name and input
+// digest, no result yet, not asked about before), judged at once: a call
+// the stream has not shown is none this session is making. It returns the
+// call's ref, or the words the request is denied with. The caller holds
+// s.mu.
+func (s *Local) bindInStreamLocked(p *protocolWay, call, tool, digest string) (ref, words string) {
+	if p.stopping {
+		// Every open request was denied as the stop began: none is taken
+		// after.
+		return "", EndedBeforeAnswerWords
+	}
+	if call == "" {
+		// An in-stream request names its call: one that names none is no
+		// call this session is making.
+		return "", NotACallWords
+	}
+	if tool == permissionToolName || len(call) > MaxEntryRef || len(tool) > MaxEventTool || !p.isReady || p.restarting || s.moveDone != nil {
+		return "", NotACallWords
+	}
+	ref, words = s.bindLocked(p, call, tool, digest)
+	if words == "" && ref == "" {
+		words = NotACallWords
+	}
+	return ref, words
 }
 
 func (e protocolEvents) PermissionWithdrawn(ref string) {
@@ -1880,12 +1996,15 @@ func canonicalJSON(input []byte) []byte {
 
 // plainOf is the closed set of a request's plain words by its tool.
 func plainOf(tool string) string {
+	if skillTool(tool) {
+		return "skill"
+	}
 	switch strings.ToLower(tool) {
-	case "bash", "shell", "exec", "command", "commandexecution":
+	case "bash", "shell", "exec", "command", "commandexecution", "execute":
 		return "command"
-	case "edit", "write", "multiedit", "notebookedit", "filechange":
+	case "edit", "write", "multiedit", "notebookedit", "filechange", "delete", "move":
 		return "file"
-	case "read", "grep", "glob", "ls":
+	case "read", "grep", "glob", "ls", "search":
 		return "read"
 	}
 	return "tool"

@@ -40,6 +40,7 @@ func TestPermissionFloorAssets(t *testing.T) {
 			Permissions struct {
 				Deny  []string `json:"deny"`
 				Allow []string `json:"allow"`
+				Ask   []string `json:"ask"`
 			} `json:"permissions"`
 			Hooks map[string][]struct {
 				Matcher string `json:"matcher"`
@@ -71,6 +72,14 @@ func TestPermissionFloorAssets(t *testing.T) {
 			"mcp__conductor__task_checkpoint", "mcp__conductor__task_blocked", "mcp__conductor__task_result"}
 		if !slices.Equal(s.Permissions.Allow, want) {
 			t.Errorf("%s allows %v, want %v", name, s.Permissions.Allow, want)
+		}
+		// A chat that asks asks for every skill call, whatever another
+		// source allows; a yolo chat's floor has no ask rule.
+		if yolo && s.Permissions.Ask != nil || !yolo && !slices.Equal(s.Permissions.Ask, []string{"Skill"}) {
+			t.Errorf("%s asks for %v", name, s.Permissions.Ask)
+		}
+		if raw := string(b); yolo == strings.Contains(raw, `"ask"`) {
+			t.Errorf("%s: the ask rule as written: %s", name, raw)
 		}
 		pre := s.Hooks["PreToolUse"]
 		if len(s.Hooks) != 1 || len(pre) != 1 || pre[0].Matcher != "Bash" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Type != "command" ||

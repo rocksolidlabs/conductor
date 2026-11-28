@@ -1,7 +1,9 @@
+import { sessionPlace } from './memberStrip'
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import type { EventMark, EventType, RouteRow } from './events'
 import { joinedPath, type JoinedEntry } from './joined'
 import type { AttentionKind, AttentionOption } from './protocol'
+import { attentionWords } from './attention'
 import { questionOf } from './reply'
 import { askedWhere } from './decisions'
 import type { NeedsItem } from './needsYou'
@@ -165,13 +167,15 @@ export function writeSidebarSize(storage: KeyValueStore, size: number, bounds: S
 }
 
 /** Whether `path` is the page of session `id`: its sidebar entry is marked as the current page. */
-export function sessionOpen(path: string, id: string): boolean {
-  return path === `/sessions/${id}`
+export function sessionOpen(path: string, id: string, query: Record<string, unknown> = {}): boolean {
+  // A crew's member is open at its place inside its crew (UX3 R72) as at its own address.
+  return path === `/sessions/${id}` || (path.startsWith('/runs/') && query.session === id)
 }
 
 /** Whether `path` is the run page of run `runId`. */
-export function runOpen(path: string, runId: string): boolean {
-  return path === `/runs/${runId}`
+export function runOpen(path: string, runId: string, query: Record<string, unknown> = {}): boolean {
+  // With a member open in its place, the member's row is the page, not the run's (UX3 R72).
+  return path === `/runs/${runId}` && typeof query.session !== 'string'
 }
 
 /** The amber dot on a session needing input follows the Alerts rules' Badge route for needs_input; the group and its text stay. */
@@ -305,7 +309,7 @@ export function sessionRow(s: SessionInfo): SessionRow {
   const state = rowState(s)
   const row: SessionRow = { kind: 'session', id: s.id, session: s, state }
   if (s.kind === 'hosted') row.machine = s.hostName || UNNAMED_HOST
-  if (state === 'needs') row.prompt = { message: s.attention?.message || 'Waiting for input', options: s.attention?.options ?? [], kind: s.attention?.kind, since: s.attention?.since, question: questionOf(s.attention) }
+  if (state === 'needs') row.prompt = { message: attentionWords(s.attention) || 'Waiting for input', options: s.attention?.options ?? [], kind: s.attention?.kind, since: s.attention?.since, question: questionOf(s.attention) }
   if (state === 'exited') row.exitWord = s.status === 'host_disconnected' ? 'host away' : s.status === 'exited' && s.exitCode !== undefined ? `exit ${s.exitCode}` : s.status
   return row
 }
@@ -648,14 +652,14 @@ function railSquare(row: SessionRow, marks: Readonly<Record<string, EventMark>>,
   const s = row.session
   const status = sessionStatus(s, now)
   const parts = [s.name, status.word]
-  if (row.state === 'needs' && s.attention?.message) parts.push(s.attention.message)
+  if (row.state === 'needs' && attentionWords(s.attention)) parts.push(attentionWords(s.attention))
   if (row.machine) parts.push(`on ${row.machine}`)
   const mark = marks[s.id]
   // A finished turn's event is counted below, but not named while the status says finished: the status's word says it.
   if (mark && !(mark.type === 'done' && status.key === 'finished')) parts.push(mark.label)
   const chat = unread[`session:${s.id}`] ?? 0
   if (chat) parts.push(unreadWords(chat))
-  return { id: s.id, shape: 'square', to: `/sessions/${s.id}`, label: parts.join(' · '), state: row.state, status, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: (mark ? 1 : 0) + chat, cwd: s.cwd }
+  return { id: s.id, shape: 'square', to: sessionPlace(s, s.id), label: parts.join(' · '), state: row.state, status, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: (mark ? 1 : 0) + chat, cwd: s.cwd }
 }
 
 /** "users api · run started 08:31 · review needs you · core working · lead exited", then "3 unread in chat" when the run's chat has them. */

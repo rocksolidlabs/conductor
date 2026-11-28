@@ -118,7 +118,7 @@ test('a crew of two made from nothing by its labelled fields says why it cannot 
     await expect(row.locator('[data-crew-launch-model]')).toHaveText("The agent's choice")
     await expect(row.locator('[data-crew-launch-account]')).not.toBeEmpty()
   }
-  await expect(page.locator('[data-crew-launch-yolo]')).toHaveText(/^Permission prompts: /)
+  await expect(page.locator('[data-crew-launch-yolo]')).toHaveText(/^Yolo is (on|off): /)
   // The header's button now reads Launch run, the crew saved (the page behind the sheet is hidden from the accessibility tree).
   await expect(launch).toHaveAttribute('aria-label', 'Launch run')
   const started = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/api/crews/${crew.id}/launch`)
@@ -199,17 +199,19 @@ test('a saved crew with edits says so beside its launch, which saves them first;
   await expect(page.getByRole('textbox', { name: 'Crew name' })).toHaveValue(crewName)
   await expect(launch).toHaveAccessibleName('Launch run')
   await expect(page.locator('[data-launch-unsaved]')).toHaveCount(0)
+  // Yolo is in view, never in the fold (UX3 R87): picked with More options closed.
+  await expect(page.locator('[data-crew-more] [data-crew-yolo]')).toHaveCount(0)
+  await pick(page, page.getByRole('combobox', { name: 'Yolo' }), 'On: members act without asking')
   // Folded, the line beside More options says each choice; opened, each is a labelled control.
-  await expect(page.locator('[data-crew-more-line]')).toHaveText('Stays on this page · Permission prompts: ask · No view link')
+  await expect(page.locator('[data-crew-more-line]')).toHaveText('Stays on this page · No view link')
   await page.locator('[data-crew-more-options]').click()
   await expect(page.locator('[data-crew-more]')).toBeVisible()
   await pick(page, page.getByRole('combobox', { name: 'After launch' }), 'Open the run')
-  await pick(page, page.getByRole('combobox', { name: 'Permission prompts' }), 'Skip: members act without asking')
   const viewLink = page.locator('[data-crew-more]').getByRole('switch')
   await expect(page.locator('[data-crew-more]')).toContainText('Make one for 8 h')
   await viewLink.click()
   await expect(viewLink).toHaveAttribute('aria-checked', 'true')
-  await expect(page.locator('[data-unsaved-words]')).toHaveText('More options edited.')
+  await expect(page.locator('[data-unsaved-words]')).toHaveText('Yolo, More options edited.')
   // The edits are said beside the launch, which saves them before the sheet opens.
   await expect(page.locator('[data-launch-unsaved]')).toHaveText('Unsaved changes')
   await expect(launch).toHaveAccessibleName('Save and launch')
@@ -217,7 +219,7 @@ test('a saved crew with edits says so beside its launch, which saves them first;
   await launch.click()
   expect((await put).postDataJSON()).toMatchObject({ openAfterLaunch: true, yolo: true, viewLinkTtlSeconds: 8 * 3600 })
   await expect(page.locator('[data-crew-launch-line="lead"]')).toBeVisible()
-  await expect(page.locator('[data-crew-launch-yolo]')).toHaveText("Permission prompts: skipped: the members act without asking (the crew's setting)")
+  await expect(page.locator('[data-crew-launch-yolo]')).toHaveText("Yolo is on: the members act without asking (the crew's setting).")
   await expect(page.locator('[data-launch-unsaved]')).toHaveCount(0)
   await page.locator('[data-crew-launch-cancel]').click()
   await expect(page.locator('[data-crew-launch-confirm]')).toHaveCount(0)

@@ -131,7 +131,7 @@ func (s *Server) actable(pattern string, next http.HandlerFunc) http.HandlerFunc
 // compareTurnActs is why a compare request's turn runs no act, whatever
 // the person granted: it drafts the comparison for the person, who
 // selects, repairs and delivers; refused before anything is written.
-const compareTurnActs = "a compare turn runs no act: it drafts the comparison, and the person selects, repairs and delivers"
+const compareTurnActs = "a compare turn runs no act: it sums up the trial, and the person selects, repairs and delivers"
 
 // actBody is an act's body as its operation's route decodes it, the
 // fields its checks and its operation read: the one decoding, so what
@@ -768,7 +768,7 @@ func (s *Server) runAct(ctx context.Context, rec *replyRecorder, ds *dispatch.St
 		guard := &planGuard{admit: func(ctx context.Context, crewID, cwd string) *apiError {
 			return actMakesAdmitted(ctx, o, crewID, cwd)
 		}}
-		s.ticketPropose(ctx, rec, ds, dispatch.Op{Actor: brakemanActor, ID: op, ExpectedRev: body.ExpectedRev, By: brakemanBy}, key, body.Propose, guard)
+		s.ticketPropose(ctx, rec, ds, dispatch.Op{Actor: brakemanActor, ID: op, ExpectedRev: body.ExpectedRev, By: brakemanBy}, key, body.Propose, guard, false)
 	case brakeman.ActRequestRepair:
 		s.runRepair(ctx, rec, ds, key, op, body)
 	}

@@ -39,11 +39,15 @@ import (
 
 // Server holds the shared state behind every route.
 type Server struct {
-	notices  string // served at /third-party-notices.txt (WithNotices)
-	cfg      *config.Config
-	registry *session.Registry
-	links    *share.Store
-	hosts    *signal.Hub
+	// firstCommitEnv, when set, is set in the environment of every git of
+	// a first commit (crew.FirstCommitIn.GitEnv): the tests' way to keep
+	// the machine's system configuration out (GIT_CONFIG_NOSYSTEM).
+	firstCommitEnv atomic.Pointer[map[string]string]
+	notices        string // served at /third-party-notices.txt (WithNotices)
+	cfg            *config.Config
+	registry       *session.Registry
+	links          *share.Store
+	hosts          *signal.Hub
 	// machine is this start's key, sent to the hosts it accepts, and its
 	// own row's key among its hosts' machines (machine.go).
 	machine  *serverMachine
@@ -328,6 +332,10 @@ type Server struct {
 	// file read may reach, even inside a session's working directory (see
 	// fileDeny). It is safe to call from many goroutines.
 	fileDeny func() []string
+	// roots are the folders agents may use, from the configuration's
+	// allowedRoots when the server is made (roots.go); every check of a
+	// working directory reads them here.
+	roots *rootList
 	// treeRoots keeps the root commits a context provider's reads found
 	// (exttree.go).
 	treeRoots rootsCache
@@ -540,6 +548,9 @@ type Server struct {
 	// drafts queues a comparison's Brakeman request once its lanes settle
 	// (compare_drafts.go).
 	drafts compareDrafts
+
+	// lastLaunchMu serialises the record of the last launch (last_launch.go).
+	lastLaunchMu sync.Mutex
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -636,6 +647,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		trackers:    newTrackers(cfg, st, log),
 		crews:       crews,
 		fileDeny:    fileDeny(cfg, st, log),
+		roots:       newRootList(cfg),
 		lookups:     newLookupCache(),
 		probes:      newProbeCache(),
 		home:        home,
@@ -650,6 +662,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
+	// The folders the app's press allowed before, judged again now (roots.go).
+	s.takePressed(cfg.PressedRoots)
 	s.settleTick = o.settleTick
 	s.settlePass, s.settleWaits, s.settleBetween = o.settlePass, o.settleWaits, o.settleBetween
 	if len(o.previewBridge) > 0 {
@@ -1276,6 +1290,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/remote", s.requireAdmin(s.handleRemote))
 	mux.HandleFunc("GET /api/hosts", s.requireAdmin(s.handleHosts))
 	mux.HandleFunc("GET /api/sync", s.requireAdmin(s.handleSyncStatus))
+	mux.HandleFunc("GET /api/launch/last", s.launching(s.handleLastLaunch))
+	mux.HandleFunc("POST /api/launch/chat-noted", s.launching(s.handleChatNoted))
 	mux.HandleFunc("GET /api/ui/{name}", s.requireAdmin(s.handleUIGet))
 	mux.HandleFunc("PUT /api/ui/{name}", s.requireAdmin(s.handleUIPut))
 	mux.HandleFunc("GET /api/signin", s.requireAdmin(s.handleSignIn))
@@ -1299,6 +1315,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
 	mux.HandleFunc("GET /api/catalog/{id}", s.launching(s.handleCatalogAgent))
+	mux.HandleFunc("GET /api/catalog/{id}/flags", s.launching(s.handleCatalogFlags))
 	mux.HandleFunc("DELETE /api/catalog/{id}", s.launching(s.handleDeleteAgent))
 	mux.HandleFunc("POST /api/catalog/{id}/unhide", s.launching(s.handleUnhideAgent))
 	mux.HandleFunc("POST /api/catalog/{id}/clone", s.launching(s.handleCloneAgent))
@@ -1319,6 +1336,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/people", s.launching(s.handlePeople))
 	mux.HandleFunc("GET /api/people/{name}", s.launching(s.handlePerson))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
+	mux.HandleFunc("GET /api/roots/check", s.launching(s.handleCheckRoot))
+	mux.HandleFunc("POST /api/roots", s.launching(s.handleAddRoot))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
 	mux.HandleFunc("GET /api/runs/{run}", s.readable("GET /api/runs/{run}", s.launchingAny(s.handleGetRun)))
@@ -1600,6 +1619,9 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
 	out := map[string]any{"user": serverUser(), "host": host, "switchyard": s.cfg.Switchyard.Enabled, "version": version.String()}
+	// Where the folders agents may use come from: the desktop app may allow
+	// one more while the server runs, or the configuration alone sets them.
+	out["folders"] = s.foldersFrom()
 	// The server user's home: where the settings picker's Home goes.
 	if home, err := os.UserHomeDir(); err == nil {
 		out["home"] = home

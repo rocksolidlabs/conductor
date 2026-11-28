@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { choiceKey } from '~/utils/attention'
+import { answerDigit, attentionWords, choiceKey } from '~/utils/attention'
 import { pillGoes } from '~/utils/needsCursor'
 import { pillWords } from '~/utils/needsYou'
 import { replyFailure } from '~/utils/reply'
@@ -22,6 +22,8 @@ const attention = useAttention()
 const quick = useQuickReply()
 const toast = useToast()
 const router = useRouter()
+// The pill opens its session's place; the member already open is the page's own address (UX3 R72).
+const placeOf = useSessionPlace()
 const route = useRoute()
 const root = useTemplateRef<HTMLElement>('root')
 
@@ -69,7 +71,7 @@ function open() {
   if (!s) return
   cursor.hide()
   // On the Yard the tile expands in place, where its bar takes a typed reply; elsewhere the session's page.
-  void router.push(pillTarget(route.path, s.id))
+  void router.push(pillTarget(route.path, s.id, placeOf(s.id, {}, s)))
 }
 function answer(i: number) {
   const s = session.value
@@ -81,8 +83,11 @@ function answer(i: number) {
   quick.choose(s, o, { question: question ?? p.question }).catch((e: unknown) => toast.add(replyFailure(e, s.name, false, s.way)))
   cursor.hide()
 }
-/** What owns its own keys while it has the focus: a field, a terminal, the palette, another dialog, a list's option, a button. */
-const OWNS_KEYS = 'input, textarea, select, [contenteditable], .terminal-host, [data-palette], [role="dialog"], [role="listbox"], [role="option"], [role="menu"], button, a[href]'
+/**
+ * What owns its own keys while it has the focus: a field, a terminal, the palette, another dialog, a list's option, a button, a run's
+ * tile (its frame answers its own question by number).
+ */
+const OWNS_KEYS = 'input, textarea, select, [contenteditable], .terminal-host, [data-palette], [role="dialog"], [role="listbox"], [role="option"], [role="menu"], button, a[href], [data-session-tile]'
 function onKey(e: KeyboardEvent) {
   if (!cursor.shown.value) return
   const target = e.target as HTMLElement | null
@@ -104,8 +109,8 @@ function onKey(e: KeyboardEvent) {
     open()
     return
   }
-  const n = Number(e.key)
-  if (Number.isInteger(n) && n >= 1 && n <= 9) {
+  const n = answerDigit(e)
+  if (n) {
     const o = prompt.value?.choices[n - 1]
     if (o && choiceKey(o, n - 1) === n) {
       e.preventDefault()
@@ -149,7 +154,7 @@ watch(
           <span class="flex-none text-[11px] text-muted tabular-nums" data-pill-count>{{ countWords }}</span>
           <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted" data-mono="key"><UKbd value="enter" size="sm" /> open <UKbd value="escape" size="sm" /></span>
         </div>
-        <p class="break-words text-xs text-muted" data-pill-message>{{ prompt?.message || session.attention?.message || 'needs you' }}</p>
+        <p class="break-words text-xs text-muted" data-pill-message>{{ prompt?.message || attentionWords(session.attention) || 'needs you' }}</p>
         <div v-if="prompt?.choices.length" class="mt-1.5 flex flex-wrap gap-1">
           <UButton
             v-for="(o, i) in prompt.choices"

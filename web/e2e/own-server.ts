@@ -17,12 +17,19 @@ export interface AgentCopy {
   /** The copy's prompt shape (the catalog's promptShape): what the server recognises as the agent's own prompt. */
   promptShape?: string
   /** The copy's protocol (the catalog's protocol): the agent's own interface a session of it moves to as a chat. */
-  protocol?: { name: string }
+  protocol?: { name: string; args?: string[] }
+  /** The copy's name, as a person's catalog names it (`Claude Code`); `<the copied agent's name>, <id>` when not given. */
+  name?: string
 }
 
 export interface OwnServerOptions {
   /** Copies of the catalog's agents, added to the e2e catalog. */
   agents?: AgentCopy[]
+  /**
+   * The ids of the e2e catalog's own agents to keep, the rest left out (the copies are made first, from the whole catalog): a dialog
+   * measured with the half dozen agents a person has, not the e2e catalog's sixteen. Every one when not given.
+   */
+  keep?: string[]
   /**
    * Where the scratch repository is, under the server's root: `repo` when not given. The day gives a nested path about as long as a
    * real checkout's, so that a cut in a meta line is measured against a real length.
@@ -32,6 +39,8 @@ export interface OwnServerOptions {
   env?: Record<string, string>
   /** A host token the server accepts (CONDUCTOR_HOST_TOKENS), so that a spec can bring in a hosted session. */
   hostToken?: string
+  /** The desktop app's key (startServer's desktopKey): the server then lets the app allow a folder while it runs. */
+  desktopKey?: string
 }
 
 export interface OwnServer {
@@ -104,10 +113,14 @@ async function startOwn(o: OwnServerOptions, root: string, log: string, remove: 
   for (const a of o.agents ?? []) {
     const base = cfg.catalog.agents.find((x) => x.id === a.from)
     if (!base) throw new Error(`the e2e catalog has no agent ${a.from} to copy as ${a.id}`)
-    cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name}, ${a.id}`, env: { ...base.env, ...a.env }, ...(a.promptShape ? { promptShape: a.promptShape } : {}), ...(a.protocol ? { protocol: a.protocol } : {}) })
+    cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: a.name ?? `${base.name}, ${a.id}`, env: { ...base.env, ...a.env }, ...(a.promptShape ? { promptShape: a.promptShape } : {}), ...(a.protocol ? { protocol: a.protocol } : {}) })
+  }
+  if (o.keep) {
+    const copies = new Set((o.agents ?? []).map((a) => a.id))
+    cfg.catalog.agents = cfg.catalog.agents.filter((x) => copies.has(x.id) || o.keep!.includes(x.id))
   }
   writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
-  const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log, env: o.env, hostToken: o.hostToken })
+  const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log, env: o.env, hostToken: o.hostToken, desktopKey: o.desktopKey })
   const started = await start()
   const srv: OwnServer = {
     started,

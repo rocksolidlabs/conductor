@@ -279,7 +279,7 @@ export function assignmentWords(d: Pick<Decision, 'type'> & { request?: Pick<Dec
 
 /** Where a decision was asked, in words: `build's attempt 1` for an agent's, `the plan's gate deploy-ok` for a gate, `the comparison` for a selection. */
 export function askedWhere(d: Pick<Decision, 'origin' | 'gate' | 'asker'>): string {
-  if (d.origin === 'compare') return 'the comparison'
+  if (d.origin === 'compare') return 'the trial'
   if (d.origin === 'plan') return d.gate ? `the plan's gate ${d.gate}` : "the plan's gate"
   return d.asker ? `${d.asker.task}'s attempt ${d.asker.attempt}` : 'an agent'
 }
@@ -309,7 +309,7 @@ export function subjectWords(s: DecisionSubject | null | undefined, o: { ticket?
       }
     case 'comparison':
       return {
-        text: `the comparison at base ${short(s.base)}${s.digest ? `, digest ${s.digest.slice(0, 12)}` : ''}`,
+        text: `the trial at base ${short(s.base)}${s.digest ? `, digest ${s.digest.slice(0, 12)}` : ''}`,
         to: comparisonPath(o.ticket, s.run) || (s.run ? `/runs/${encodeURIComponent(s.run)}?view=tasks` : undefined),
       }
     case 'artifact':
@@ -361,8 +361,8 @@ export function confirmAuthorizes(d: Pick<Decision, 'origin' | 'type' | 'request
 }
 
 /** The finality words a selection says before its Send, for a candidate (CP1's I12, the plan's words) and for None of these. */
-export const SELECTION_FINAL = 'Final: the candidates not selected cannot be continued; a new comparison tries them again.'
-export const SELECTION_FINAL_NONE = 'Final: the comparison ends with no candidate selected; a new comparison tries the candidates again.'
+export const SELECTION_FINAL = 'Final: the candidates not selected cannot be continued; a new trial tries them again.'
+export const SELECTION_FINAL_NONE = 'Final: the trial ends with no candidate selected; a new trial tries the candidates again.'
 /** The rationale field's words: optional and kept with the answer, or a selection's, required. */
 export const RATIONALE_OPTIONAL = 'Why (optional, kept with the answer)…'
 export const RATIONALE_REQUIRED = 'Why (required: the record of this selection)…'
@@ -548,7 +548,7 @@ export function authorizesLine(d: Pick<Decision, 'origin'> & { request: Pick<Dec
  */
 export function askForMore(d: Pick<Decision, 'id' | 'origin' | 'state' | 'asker'>): { enabled: boolean; why: string } {
   if (d.origin === 'plan') return { enabled: false, why: `${d.id} is the plan's: no agent asked it, comment instead` }
-  if (d.origin === 'compare') return { enabled: false, why: `${d.id} is the comparison's: no agent asked it, comment instead` }
+  if (d.origin === 'compare') return { enabled: false, why: `${d.id} is the trial's: no agent asked it, comment instead` }
   if (d.state !== 'open') return { enabled: false, why: `${d.id} is ${d.state}` }
   if (!d.asker?.live) return { enabled: false, why: `${d.id}'s agent has ended its attempt: comment, answer or cancel it` }
   return { enabled: true, why: '' }

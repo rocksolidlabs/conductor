@@ -1,4 +1,7 @@
-import { MAX_SESSION_NAME, MAX_SUBMIT } from './protocol'
+import { ERR_MOVE_REFUSED, MAX_SESSION_NAME, MAX_SUBMIT } from './protocol'
+import { FOLDER_CANT, outsideWords, type AllowWay } from './folderAllow'
+import { moreLine } from './moreOptions'
+import { accountWords, clockWords, limited, WARN_PERCENT, type CapacityView } from './capacity'
 
 /**
  * Whether the launch dialog asks where the agent runs. There are two answers
@@ -125,13 +128,142 @@ export function takesFirstMessage(agent: { firstMessage?: boolean } | null | und
 }
 
 /**
- * The line under the agent's choice when it takes no first message: why, and which of the agents offered do (by name, as the catalog
- * names them), so that the words stay true of the catalog as it is.
+ * The line in place of `What should it do?` for an agent that takes no first message: that it starts at its prompt, and, for one that
+ * takes a task at all (it takes arguments: an agent, not a shell), where to type it.
  */
-export function noFirstMessageLine(offered: Array<{ name: string; firstMessage?: boolean }>): string {
-  const names = offered.filter(takesFirstMessage).map((a) => a.name)
-  const why = "Conductor types a first message only where it knows the agent's prompt"
-  if (names.length === 0) return `${why}, and knows none of these agents' prompts.`
-  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
-  return `${why}: ${list} here.`
+export function noTaskLine(agent: { name: string; allowArgs?: boolean }): string {
+  return agent.allowArgs ? `${agent.name} starts at its prompt. Type your task in its terminal.` : `${agent.name} starts at its prompt.`
 }
+
+/**
+ * The agent chip a key moves the Agent row's choice to from `current` (one Tab stop, the arrows within it, as a radio group does):
+ * the next or the previous of `ids`, round at the ends, the first or the last for Home and End; null for any other key or no chips.
+ */
+export function chipStep(ids: readonly string[], current: string, key: string): string | null {
+  if (!ids.length) return null
+  const at = Math.max(0, ids.indexOf(current))
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return ids[(at + 1) % ids.length]!
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return ids[(at - 1 + ids.length) % ids.length]!
+    case 'Home':
+      return ids[0]!
+    case 'End':
+      return ids[ids.length - 1]!
+  }
+  return null
+}
+
+/** How the Launch agent dialog says a launch the server refused: under Folder for the folder's refusal, else in the alert on top. */
+export interface LaunchRefusal {
+  /** `folder`: said under Folder, the field marked invalid and given the focus; `top`: the alert above the form. */
+  at: 'folder' | 'top'
+  words: string
+  /** The folder is outside the folders agents may use. */
+  outside?: boolean
+  /** A link to Settings' folders follows the words, then `after` (as the folder line draws it). */
+  settings?: boolean
+  after?: string
+}
+
+/**
+ * A refusal of POST /api/sessions in the dialog's words. invalid_cwd is the folder's, in the words the folder's line says (its kinds
+ * as the server's resolveCwd says them: outside the allowed roots, said with the way on there is from `way`; no such folder; a file;
+ * any other as a folder agents can't use, never the server's words); a launch as a chat its agent cannot run (`move_refused`) says
+ * the server's sentence and the way on; every other code is said on top as `Not started: <the server's words>.`, the code kept out
+ * of the words (the caller marks it on the alert).
+ */
+export function launchRefusal(code: string, message: string, way: AllowWay = 'settings'): LaunchRefusal {
+  const said = message.trim().replace(/[.\s]+$/, '')
+  if (code === 'invalid_cwd') {
+    if (/outside the allowed roots/i.test(said)) return { at: 'folder', ...outsideWords(way), outside: true }
+    if (/does not exist|no such file/i.test(said)) return { at: 'folder', words: 'There is no folder at this path.' }
+    if (/not a directory/i.test(said)) return { at: 'folder', words: 'This is a file, not a folder.' }
+    return { at: 'folder', words: FOLDER_CANT }
+  }
+  if (code === ERR_MOVE_REFUSED) return { at: 'top', words: `${said ? `Not started: ${said}.` : 'Not started.'} Set Run as to Terminal to launch it.` }
+  return { at: 'top', words: said ? `Not started: ${said}.` : 'Not started.' }
+}
+
+/**
+ * The line beside Launch agent's More options while it is closed: what is set inside it, so that nothing folded away goes unseen. A
+ * typed name in quotes, the model, the extra arguments as typed, each trimmed, joined with " · "; "" when all is as it comes.
+ * The caller passes only what the picked agent takes (no arguments for an agent that takes none, no model where Model is not shown).
+ */
+export function optionsSummary(o: { name?: string; model?: string; args?: string }): string {
+  const name = o.name?.trim() ?? ''
+  return moreLine([name && `"${name}"`, o.model, o.args])
+}
+
+/** The parts of a key press the Launch dialog reads to launch (a KeyboardEvent's). */
+export interface LaunchKey {
+  key: string
+  shiftKey: boolean
+  ctrlKey: boolean
+  metaKey: boolean
+  altKey: boolean
+  isComposing: boolean
+  repeat: boolean
+  keyCode?: number
+}
+
+/**
+ * Whether a key press in the Launch dialog launches: Ctrl or Cmd+Enter from any field, and Enter alone in the task box (`inTask`).
+ * Never Shift+Enter in the task box (a new line), never while an input method is composing (its Enter takes the word), never a key
+ * held down (a repeat), never with Alt. The dialog also sends nothing while a launch is out.
+ */
+export function launchKey(e: LaunchKey, inTask: boolean): boolean {
+  if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229 || e.repeat || e.altKey) return false
+  if (e.ctrlKey || e.metaKey) return true
+  return inTask && !e.shiftKey
+}
+
+/** Whether a launch's arguments name a model themselves: `--model`, `--model=<name>` or `-m`, as the agents' own flags spell it. */
+export function argsNameModel(args: readonly string[]): boolean {
+  return args.some((a) => a === '--model' || a.startsWith('--model=') || a === '-m')
+}
+
+/** Whether a launch's arguments hold one of the agent's yolo recipe arguments: the Yolo switch is the place for those. */
+export function argsHoldYolo(args: readonly string[], recipe: readonly string[] | undefined): boolean {
+  return !!recipe?.length && args.some((a) => recipe.includes(a))
+}
+
+/**
+ * The placeholder of Launch agent's Name: the name the task gives once one is typed (namePreview), `Made from the task` before, and
+ * for an agent that takes no task the name the server gives it, `<Agent> and a number`.
+ */
+export function namePlaceholderFor(agent: { name: string } | undefined, takesTask: boolean, task: string): string {
+  if (!agent) return ''
+  if (!takesTask) return `${agent.name} and a number`
+  return namePreview(task) || 'Made from the task'
+}
+
+/** The one line under Launch agent's Account when the usage should slow a launch: its words and colour. It never holds Launch. */
+export interface LaunchNote {
+  words: string
+  tone: 'warning' | 'error'
+}
+
+/**
+ * Whether the account's usage should slow a launch, by the judgement the crew's sheet uses (warningOf): a limit the provider says is
+ * reached; a window at warning or critical, or past WARN_PERCENT, named with its share and its reset (the error colour when the
+ * provider says critical); the agent signed out on the account. null when all is fine, or nothing is known yet.
+ */
+export function launchNote(view: Pick<CapacityView, 'state' | 'windows' | 'limits' | 'account'> | null | undefined, agent: { name: string } | undefined, timeZone?: string): LaunchNote | null {
+  if (!view || !agent) return null
+  const account = accountWords(view.account)
+  if (view.state === 'signed_out') return { words: `${agent.name} is signed out on ${account}. It will ask you to sign in when it starts.`, tone: 'warning' }
+  if (view.state !== 'ok') return null
+  if (limited(view.limits)) return { words: `${account} has reached a limit, its provider says. The agent may stop at once.`, tone: 'error' }
+  const near = view.windows.filter((w) => w.severity === 'warning' || w.severity === 'critical' || w.percent >= WARN_PERCENT)
+  if (!near.length) return null
+  const rank = (w: (typeof near)[number]) => (w.severity === 'critical' ? 2 : 1) * 1000 + w.percent
+  const worst = near.reduce((a, b) => (rank(b) > rank(a) ? b : a))
+  const at = worst.resetsAt ? Date.parse(worst.resetsAt) : NaN
+  const resets = Number.isNaN(at) ? '' : `, resets ${clockWords(at, timeZone)}`
+  return { words: `${account} is near a limit: ${worst.name} ${worst.percent}% used${resets}. The agent may stop before then.`, tone: worst.severity === 'critical' ? 'error' : 'warning' }
+}
+

@@ -489,10 +489,10 @@ var compareRows = []string{"Behaviour", "Complexity", "Dependency changes", "Che
 
 // requestRules is each request kind's rule for its brief, in Kinds' order.
 var requestRules = []RequestRule{
-	{Kind: KindCompare, Rule: "A compare request's brief holds exactly one comparison/1: its columns the candidates' task ids in the comparison's order (one without a standing result included, its cells saying so), its rows labelled " +
+	{Kind: KindCompare, Rule: "A compare request's brief holds exactly one comparison/1: its columns the candidates' task ids in the trial's order (one without a standing result included, its cells saying so), its rows labelled " +
 		strings.Join(compareRows[:len(compareRows)-1], ", ") + " and " + compareRows[len(compareRows)-1] +
-		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks) and their receipts (check: refs). Every ref of every item that names a run names a run of this comparison's chain, and it cites no brief:, decision: or capture: ref and no ref of a kind this rule does not name. " +
-		"It holds no decision/1: the selection is the person's, on the comparison. It proposes no command of a task, a review or a decision: a lane is the person's to command."},
+		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks) and their receipts (check: refs). Every ref of every item that names a run names a run of this trial's chain, and it cites no brief:, decision: or capture: ref and no ref of a kind this rule does not name. " +
+		"It holds no decision/1: the selection is the person's, on the trial. It proposes no command of a task, a review or a decision: a lane is the person's to command."},
 }
 
 // RequestRules is each request kind's rule for its brief. The caller must
@@ -523,17 +523,17 @@ type CompareShape struct {
 // no table to hold one to. The error is an *Invalid (invalid_brief).
 func CheckCompareBrief(b Brief, cmp CompareShape) error {
 	if len(cmp.Columns) == 0 || len(cmp.Runs) == 0 {
-		return invalidBrief("items", "the comparison's candidates could not be read: ask again")
+		return invalidBrief("items", "the trial's candidates could not be read: ask again")
 	}
 	table := -1
 	for i, it := range b.Items {
 		field := fmt.Sprintf("items[%d]", i)
 		switch it.Kind {
 		case ItemDecision:
-			return invalidBrief(field, "a compare brief holds no decision/1: the selection is the person's, on the comparison")
+			return invalidBrief(field, "a compare brief holds no decision/1: the selection is the person's, on the trial")
 		case ItemProposal:
 			if it.Proposal != nil && slices.Contains(cmp.Commands, it.Proposal.Op) {
-				return invalidBrief(field+".op", "a compare brief proposes no %s: a lane is the person's to command, on the comparison", it.Proposal.Op)
+				return invalidBrief(field+".op", "a compare brief proposes no %s: a lane is the person's to command, on the trial", it.Proposal.Op)
 			}
 		case ItemComparison:
 			if table >= 0 {
@@ -548,7 +548,7 @@ func CheckCompareBrief(b Brief, cmp CompareShape) error {
 	c := b.Items[table].Comparison
 	field := fmt.Sprintf("items[%d]", table)
 	if c == nil || !slices.Equal(c.Columns, cmp.Columns) {
-		return invalidBrief(field+".columns", "the candidates' task ids in the comparison's order: %s", strings.Join(cmp.Columns, ", "))
+		return invalidBrief(field+".columns", "the candidates' task ids in the trial's order: %s", strings.Join(cmp.Columns, ", "))
 	}
 	for _, label := range compareRows {
 		if !slices.ContainsFunc(c.Rows, func(r Row) bool { return strings.EqualFold(strings.TrimSpace(r.Label), label) }) {
@@ -561,7 +561,7 @@ func CheckCompareBrief(b Brief, cmp CompareShape) error {
 			continue
 		}
 		if !slices.Contains(cmp.Columns, r.Task) || !slices.Contains(cmp.Runs, r.Run) {
-			return invalidBrief(fmt.Sprintf("%s.evidence[%d]", field, j), "%s names no candidate of the comparison (%s)", r, strings.Join(cmp.Columns, ", "))
+			return invalidBrief(fmt.Sprintf("%s.evidence[%d]", field, j), "%s names no candidate of the trial (%s)", r, strings.Join(cmp.Columns, ", "))
 		}
 		cited = cited || r.Kind == RefCandidate
 	}
@@ -584,11 +584,11 @@ func CheckCompareBrief(b Brief, cmp CompareShape) error {
 			at := fmt.Sprintf("items[%d].%s", i, fr.field)
 			switch {
 			case fr.ref.Kind == RefBrief || fr.ref.Kind == RefDecision || fr.ref.Kind == RefCapture:
-				return invalidBrief(at, "a compare brief cites no %s: ref: the run it is of is read from the record it names, so this comparison cannot be told from another's", fr.ref.Kind)
+				return invalidBrief(at, "a compare brief cites no %s: ref: the run it is of is read from the record it names, so this trial cannot be told from another's", fr.ref.Kind)
 			case !compareRefKinds[fr.ref.Kind]:
-				return invalidBrief(at, "a compare brief cites no %s: ref: the rule that holds a compare brief to its own comparison has not judged that kind", fr.ref.Kind)
+				return invalidBrief(at, "a compare brief cites no %s: ref: the rule that holds a compare brief to its own trial has not judged that kind", fr.ref.Kind)
 			case fr.ref.Run != "" && !slices.Contains(cmp.Runs, fr.ref.Run):
-				return invalidBrief(at, "%s names run %s, not a run of this comparison: a compare brief cites its own comparison's runs alone", fr.ref, fr.ref.Run)
+				return invalidBrief(at, "%s names run %s, not a run of this trial: a compare brief cites its own trial's runs alone", fr.ref, fr.ref.Run)
 			}
 		}
 	}

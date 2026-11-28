@@ -53,7 +53,7 @@ export function selectionPanelWords(c: Pick<Comparison, 'settled' | 'state' | 's
   if (!c) return ''
   const sel = c.selection
   if (!sel) {
-    if (c.state === 'ended') return 'This comparison ended with no candidate to select: no lane has a standing result, or the run had no room for a selection. Launch a new comparison to try again.'
+    if (c.state === 'ended') return 'This trial ended with no result to select. Run a new trial to try again.'
     return c.settled ? 'The selection opens next: every lane has ended.' : 'The selection opens when every lane has ended. Nothing is selected by default.'
   }
   if (sel.state === 'superseded' || record?.state === 'superseded') {
@@ -99,7 +99,7 @@ export function moreFindingsWords(r: { findings: string[]; findingsTotal?: numbe
  * a draft would read the person's answer, which is never Brakeman's input, and the server refuses it (409 selection_made).
  */
 export function askClosedWords(state: string | undefined): string {
-  return state === 'answered' || state === 'selected' || state === 'none' ? 'The selection is answered: Brakeman drafts a comparison before it, never after.' : ''
+  return state === 'answered' || state === 'selected' || state === 'none' ? 'The selection is answered: Brakeman sums up a trial before it, never after.' : ''
 }
 
 /** A review's verdict in words: a crew review's approved or needs_changes (a person's request_changes the same). */
@@ -113,14 +113,14 @@ export function verdictWord(v: string): string {
  * (`req`, which moves before the comparison is read again). `open` while the request may still brief; `briefed` once a brief is kept.
  */
 export function brakemanWords(b: ComparisonSupporting['brakeman'], req?: Pick<BrakemanRequest, 'state' | 'why' | 'sessionId' | 'config' | 'hasBrief'> | null): { words: string; open: boolean; briefed: boolean } {
-  if (!b || (!b.request && !b.why)) return { words: 'Brakeman was not asked to compare these candidates.', open: false, briefed: false }
+  if (!b || (!b.request && !b.why)) return { words: 'Brakeman was not asked for a summary.', open: false, briefed: false }
   if (!b.request) return { words: b.why!, open: false, briefed: false }
   const state = req?.state ?? b.state ?? ''
-  if (b.brief || req?.hasBrief || state === 'briefed') return { words: `Brakeman's draft (${b.request})`, open: false, briefed: true }
-  if (state === 'queued') return { words: `Brakeman's draft is queued (${b.request})`, open: true, briefed: false }
-  if (state === 'starting' || state === 'running') return { words: `Brakeman is drafting (${b.request})`, open: true, briefed: false }
+  if (b.brief || req?.hasBrief || state === 'briefed') return { words: `Brakeman's summary (${b.request})`, open: false, briefed: true }
+  if (state === 'queued') return { words: `Brakeman's summary is queued (${b.request})`, open: true, briefed: false }
+  if (state === 'starting' || state === 'running') return { words: `Brakeman is writing its summary (${b.request})`, open: true, briefed: false }
   const why = req ? stateWords(req) : b.why || state
-  return { words: `No draft from ${b.request}${why ? `: ${why}` : ''}`, open: false, briefed: false }
+  return { words: `No summary from ${b.request}${why ? `: ${why}` : ''}`, open: false, briefed: false }
 }
 
 /** A candidate's short commit, in the panel's words: "approach-b at 4b825dc". */
@@ -166,12 +166,12 @@ export function compareRunOf(ids: readonly string[], named: string | undefined, 
 export function reviewHold(c: Pick<Comparison, 'candidates' | 'selection' | 'state'> | null | undefined, task: string): { title: string; words: string } | null {
   if (!c || !c.candidates.some((x) => x.task === task)) return null
   const a = appliedSelection(c.selection)
-  if (a === 'none' || (!a && (c.state === 'none' || c.state === 'ended'))) return { title: 'No candidate was selected', words: 'no candidate was selected: launch a new comparison' }
+  if (a === 'none' || (!a && (c.state === 'none' || c.state === 'ended'))) return { title: 'No candidate was selected', words: 'no candidate was selected: run a new trial' }
   if (!a && c.selection?.state === 'answered')
     return { title: 'The selection is answered, not applied yet', words: `${c.selection.decision} is answered and not applied yet: Yardmaster applies it next, or when the run is continued if it is stopped; a repair waits for it` }
   if (!a) return { title: 'The selection is not applied yet', words: 'select a candidate first: a repair before the selection would make the candidates unlike' }
   if (a.task === task) return null
-  return { title: `${task} was not selected`, words: `${task} was not selected in ${c.selection!.decision}: launch a new comparison to try it again` }
+  return { title: `${task} was not selected`, words: `${task} was not selected in ${c.selection!.decision}: run a new trial to try it again` }
 }
 
 /**

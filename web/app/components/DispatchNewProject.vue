@@ -36,17 +36,45 @@ const policyTouched = ref(false)
 const error = ref('')
 const submitting = ref(false)
 
+/** The draft left for Settings through the folder line's link: the next opening takes it back, once. */
+interface LeftDraft {
+  key: string
+  name: string
+  cwd: string
+  tracker: Tracker
+  trackerUrl: string
+  closeRequires: CloseRequirement[]
+  policyTouched: boolean
+}
+const left = useState<LeftDraft | null>('dispatch-new-project-left', () => null)
+
+// The dialog's foot stays still while it is open (useStillDialog): the folder's line, which arrives on its own, never moves Make the
+// project or Cancel under a pointer on its way to them; a tracker elsewhere, picked by the person, grows it for its URL's field.
+const formRef = useTemplateRef<HTMLFormElement>('form')
+const still = useStillDialog(formRef, open)
+watch(tracker, () => void still.regrow(), { flush: 'post' })
+function leave() {
+  left.value = { key: key.value, name: name.value, cwd: cwd.value, tracker: tracker.value, trackerUrl: trackerUrl.value, closeRequires: [...closeRequires.value], policyTouched: policyTouched.value }
+  open.value = false
+}
+
 watch(open, (o) => {
   if (!o) return
-  key.value = ''
-  name.value = ''
-  cwd.value = ''
-  tracker.value = 'native'
-  trackerUrl.value = ''
-  closeRequires.value = ['acceptance']
-  policyTouched.value = false
+  const d = left.value
+  left.value = null
+  key.value = d?.key ?? ''
+  name.value = d?.name ?? ''
+  cwd.value = d?.cwd ?? ''
+  tracker.value = d?.tracker ?? 'native'
+  trackerUrl.value = d?.trackerUrl ?? ''
+  closeRequires.value = d ? [...d.closeRequires] : ['acceptance']
+  policyTouched.value = d?.policyTouched ?? false
   error.value = ''
+  void still.pin()
 })
+
+/** The folder as the project is made with it, trimmed: the line checks that text. */
+const cwdSent = computed(() => cwd.value.trim())
 
 /** The store's default for the tracker, until the person ticks a requirement. */
 watch(tracker, (t) => {
@@ -78,7 +106,7 @@ async function submit() {
     const body = {
       key: key.value,
       name: name.value.trim(),
-      ...(cwd.value.trim() ? { cwd: cwd.value.trim() } : {}),
+      ...(cwdSent.value ? { cwd: cwdSent.value } : {}),
       tracker: tracker.value,
       ...(tracker.value === 'external' ? { trackerUrl: trackerUrl.value.trim() } : {}),
       closeRequires: closeRequiresOf(closeRequires.value),
@@ -99,7 +127,7 @@ async function submit() {
 <template>
   <UModal v-model:open="open" title="New project" description="A project holds tickets under its key: CND-1, CND-2 and on." :dismissible="!submitting" :close="{ disabled: submitting }" :ui="{ content: 'max-w-lg' }">
     <template #body>
-      <form class="flex flex-col gap-4" data-new-project @submit.prevent="submit">
+      <form ref="form" class="flex flex-col gap-4" data-new-project @submit.prevent="submit">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-new-project-error />
         <div class="grid grid-cols-[8rem_minmax(0,1fr)] gap-3">
           <UFormField label="Key" name="key" :error="keyProblem || undefined">
@@ -110,7 +138,8 @@ async function submit() {
           </UFormField>
         </div>
         <UFormField label="Repository folder" name="cwd" hint="optional">
-          <DirInput v-model="cwd" placeholder="none" name="cwd" picker-title="The project's repository" />
+          <DirInput v-model="cwd" placeholder="none" name="cwd" picker-title="The project's repository" lined />
+          <FolderAllowLine :path="cwdSent" @use="(p: string) => (cwd = p)" @leave="leave" />
         </UFormField>
         <UFormField label="Tracker" name="tracker">
           <URadioGroup v-model="tracker" :items="trackerItems" variant="card" size="sm" :ui="{ fieldset: 'grid grid-cols-1 gap-2 sm:grid-cols-2' }" data-new-project-tracker />

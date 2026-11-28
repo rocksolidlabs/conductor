@@ -197,7 +197,7 @@ export function usePreviewOpen() {
     }
     // window.open with noopener answers null whether or not it opened: a tab held back is not told apart, so the words say both.
     window.open(url, '_blank', 'noopener,noreferrer')
-    toast.add({ title: 'Opening the preview', description: 'If no tab opened, the browser held it back: click Open preview again.', color: 'neutral', icon: 'i-lucide-external-link' })
+    toast.add({ title: 'Opening the preview', description: 'If no tab opened, it was held back: press Open preview again.', color: 'neutral', icon: 'i-lucide-external-link' })
   }
   return { newTab, prime }
 }

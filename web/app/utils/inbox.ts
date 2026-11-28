@@ -246,7 +246,7 @@ export function reconcileDelivery(prev: readonly DeliveryStep[] | undefined, nex
 
 /** The step a reply's word gives, or null when it says nothing (an older owner). */
 function replyStep(reply: ReplyWord): Omit<DeliveryStep, 'step'> | null {
-  if (reply === 'accepted') return { state: 'done', words: "taken: the owner's reply to this browser's request said so" }
+  if (reply === 'accepted') return { state: 'done', words: "taken: the owner's reply to this device's request said so" }
   if (reply.startsWith('refused:')) return { state: 'refused', words: reply.slice('refused:'.length).trim() || 'refused' }
   return null
 }
@@ -600,9 +600,10 @@ export function questionRef(session: string, question: string): string {
 }
 
 /** Where a question's browser notification goes when tapped: below lg its item on the decision page, at lg and up its session. */
-export function notificationTarget(width: number, session: string, question?: string): string {
+export function notificationTarget(width: number, session: string, question?: string, place = `/sessions/${session}`): string {
   if (width < LG && question) return `/decisions?item=${encodeURIComponent(questionRef(session, question))}`
-  return `/sessions/${session}`
+  // The session's place: a crew's member inside its crew (UX3 R72), else its page.
+  return place
 }
 
 /** What Open on your phone offers: the page's address as a QR code, or, on a loopback origin, the words why a phone cannot reach it. */

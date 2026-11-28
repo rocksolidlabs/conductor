@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,11 +27,11 @@ var update = flag.Bool("update", false, "write the fixtures' expected events")
 // The argv of a chat's child, element for element, as design 4 lists it:
 // the command, print mode with stream-json, the protocol's arguments, the
 // resumed conversation, the model, --permission-mode default (a yolo
-// session's yolo arguments in its place), the terminal's arguments and
-// Conductor's MCP config with --strict-mcp-config, once, so that no other
-// tool server is loaded (alone, with the server's MCP off); with a
-// permission host, the permission tool and exactly one --settings, the
-// floor. Never --bare, --setting-sources or the SDK's stdio prompt route;
+// session's yolo arguments in its place), Conductor's MCP config with
+// --strict-mcp-config, once, so that no other tool server is loaded
+// (alone, with the server's MCP off); with a permission host, the
+// permission tool and exactly one --settings, the floor; each of those in
+// one word, and then the terminal's arguments. Never --bare, --setting-sources or the SDK's stdio prompt route;
 // an argument of the terminal's that would set one of the chat's own flags
 // is refused.
 func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
@@ -44,17 +45,17 @@ func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
 		want []string
 	}{
 		{"a chat", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Model: []string{"--model=opus"}, LaunchArgs: []string{"--fallback-model=sonnet"}, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--model=opus", "--permission-mode", "default", "--fallback-model=sonnet", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--model=opus", "--permission-mode", "default", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--fallback-model=sonnet"})},
 		{"a yolo session", ClaudeLaunch{Command: []string{"claude"}, Protocol: []string{"--effort=high"}, Conversation: conv, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions"}, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--effort=high", "--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
+			join([]string{"claude"}, stream, []string{"--effort=high", "--resume", conv, "--dangerously-skip-permissions", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
 		{"a chat with its permission host", ClaudeLaunch{Command: []string{"/opt/claude", "--x"}, Conversation: conv, HooksDir: hooks, PermissionHost: true},
-			join([]string{"/opt/claude", "--x"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol.json"})},
+			join([]string{"/opt/claude", "--x"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool=mcp__conductor__permission", "--settings=" + hooks + "/claude-protocol.json"})},
 		{"a yolo session with its permission host", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions"}, HooksDir: hooks, PermissionHost: true},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol-yolo.json"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--dangerously-skip-permissions", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool=mcp__conductor__permission", "--settings=" + hooks + "/claude-protocol-yolo.json"})},
 		{"a chat with its permission host and the server's MCP off", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, NoMCP: true, PermissionHost: true},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--strict-mcp-config", "--settings", hooks + "/claude-protocol.json"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--strict-mcp-config", "--settings=" + hooks + "/claude-protocol.json"})},
 		{"a yolo launch with no recipe", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Yolo: true, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
 		{"a chat with the server's MCP off", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, NoMCP: true},
 			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--strict-mcp-config"})},
 	}
@@ -289,7 +290,7 @@ func TestClaudeReplayNamesTheRef(t *testing.T) {
 // edit with its counts, background work, a result with usage.
 func TestClaudeFixturesReplay(t *testing.T) {
 	names, _ := filepath.Glob(fixture("*.jsonl"))
-	if len(names) != 6 {
+	if len(names) != 8 {
 		t.Fatalf("%d fixtures", len(names))
 	}
 	got := map[string]*recorder{}
@@ -542,7 +543,7 @@ func TestClaudeGate(t *testing.T) {
 			t.Errorf("Qualified(%q) = %v", v, got)
 		}
 	}
-	if Qualified("acp-v1", "9.9.9") {
+	if Qualified("acp-v2", "9.9.9") {
 		t.Error("a protocol with no driver is qualified")
 	}
 	if !versionAtLeast(ClaudeMinVersion, "2.1.248") {
@@ -557,7 +558,10 @@ func TestClaudeGate(t *testing.T) {
 	if err := Check(nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(&catalog.ProtocolRecipe{Name: "codex-app-server"}); err == nil {
+	if err := Check(&catalog.ProtocolRecipe{Name: "codex-app-server"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(&catalog.ProtocolRecipe{Name: "acp-v2"}); err == nil {
 		t.Fatal("a protocol Conductor does not speak yet was taken")
 	}
 
@@ -964,5 +968,322 @@ func TestClaudeArgsRefuseShortFlags(t *testing.T) {
 		if err := launch(good...); err != nil {
 			t.Errorf("%q refused: %v", good, err)
 		}
+	}
+}
+
+// I19, row 12: a message the session marked Expand (the operator's own
+// typed line) goes without client_composed, its text unchanged; every
+// other message, before and after it, still carries the mark.
+func TestClaudeExpandLeavesTheMarkOff(t *testing.T) {
+	in := &discard{}
+	c := NewClaude(in, strings.NewReader(""), ClaudeOptions{})
+	msgs := []session.Message{
+		{Ref: "r0", Text: "/compact"},
+		{Ref: "r1", Text: "What is in @notes.txt?", Expand: true},
+		{Ref: "r2", Text: "@/home/someone/.conductor/x"},
+	}
+	for _, m := range msgs {
+		if err := c.Send(context.Background(), m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines := written(t, in)
+	if len(lines) != len(msgs) {
+		t.Fatalf("%d lines for %d messages", len(lines), len(msgs))
+	}
+	for i, l := range lines {
+		cc, has := l["client_composed"]
+		if msgs[i].Expand {
+			if has {
+				t.Fatalf("the expanded message kept the mark: %v", l)
+			}
+		} else if !has || cc != true {
+			t.Fatalf("message %d lost the mark: %v", i, l)
+		}
+		body, _ := l["message"].(map[string]any)
+		if l["type"] != "user" || body["content"] != msgs[i].Text || !uuidShape.MatchString(l["uuid"].(string)) {
+			t.Fatalf("message %d: %v", i, l)
+		}
+		if _, ok := l["parent_tool_use_id"]; !ok {
+			t.Fatalf("message %d without parent_tool_use_id: %v", i, l)
+		}
+	}
+}
+
+// A result that names a message written and not replayed accepts it (a
+// command the agent's program answers itself, with no replay); a result
+// naming a message the driver did not write, or none, accepts nothing, and
+// never the oldest written in its place.
+func TestClaudeAcceptsByTheResult(t *testing.T) {
+	pr, pw := io.Pipe()
+	c := NewClaude(&discard{}, pr, ClaudeOptions{})
+	c.sends = []pendingSend{{uuid: "u-1", ref: "m1"}, {uuid: "u-2", ref: "m2"}}
+	rec := &recorder{}
+	done := make(chan error, 1)
+	go func() { done <- c.Read(context.Background(), rec) }()
+	for _, l := range []string{
+		`{"type":"result","subtype":"success","num_turns":0,"user_message_uuid":"u-9","user_message_uuids":["u-8"]}`,
+		`{"type":"result","subtype":"success","num_turns":0,"user_message_uuid":""}`,
+		`{"type":"result","subtype":"success","num_turns":0,"user_message_uuid":7}`,
+		`{"type":"result","subtype":"success","num_turns":0,"user_message_uuids":["u-2"]}`,
+	} {
+		if _, err := pw.Write([]byte(l + "\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pw.Close()
+	if err := <-done; !errors.Is(err, io.EOF) {
+		t.Fatalf("Read ended %v", err)
+	}
+	acc := rec.kinds("accepted")
+	if len(acc) != 1 || acc[0].ref != "m2" {
+		t.Fatalf("accepted %+v", acc)
+	}
+	if ends := rec.kinds("turn_ended"); len(ends) != 4 {
+		t.Fatalf("%d turns ended", len(ends))
+	}
+	if r := rec.render(); !strings.Contains(r, "accepted m2\nturn_started\nturn_ended") {
+		t.Fatalf("the order:\n%s", r)
+	}
+	c.mu.Lock()
+	left := slices.Clone(c.sends)
+	c.mu.Unlock()
+	if len(left) != 1 || left[0].ref != "m1" {
+		t.Fatalf("still waiting: %+v", left)
+	}
+}
+
+// A replay line that is only a command's own output, under an id the
+// driver did not write (how /compact says "Compacted"), is the agent's
+// words; any other replay naming no message written is nothing, and one
+// naming a message written is its acknowledgement alone.
+func TestClaudeLocalCommandIsTheAgentsWords(t *testing.T) {
+	pr, pw := io.Pipe()
+	c := NewClaude(&discard{}, pr, ClaudeOptions{})
+	c.sends = []pendingSend{{uuid: "u-1", ref: "m1"}}
+	rec := &recorder{}
+	done := make(chan error, 1)
+	go func() { done <- c.Read(context.Background(), rec) }()
+	line := func(uuid, content string, replay bool) string {
+		b, _ := json.Marshal(map[string]any{"type": "user", "uuid": uuid, "isReplay": replay, "message": map[string]any{"role": "user", "content": content}})
+		return string(b)
+	}
+	for _, l := range []string{
+		line("a-1", "<local-command-stdout>Compacted </local-command-stdout>", true),
+		line("a-2", "<local-command-stdout></local-command-stdout>", true),
+		line("a-3", "<local-command-stdout>one</local-command-stdout><local-command-stdout>two</local-command-stdout>", true),
+		line("a-4", "Compacted", true),
+		line("a-5", "<local-command-stdout>not a replay</local-command-stdout>", false),
+		line(strings.Repeat("x", 65), "<local-command-stdout>a long id</local-command-stdout>", true),
+		line("u-1", "<local-command-stdout>mine</local-command-stdout>", true),
+		line("", "<local-command-stdout>no id</local-command-stdout>", true),
+	} {
+		if _, err := pw.Write([]byte(l + "\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pw.Close()
+	if err := <-done; !errors.Is(err, io.EOF) {
+		t.Fatalf("Read ended %v", err)
+	}
+	texts := rec.kinds("text")
+	if len(texts) != 1 || texts[0].ref != "local:a-1" || texts[0].text != "Compacted" || !texts[0].fin {
+		t.Fatalf("texts %+v", texts)
+	}
+	if acc := rec.kinds("accepted"); len(acc) != 1 || acc[0].ref != "m1" {
+		t.Fatalf("accepted %+v", acc)
+	}
+}
+
+// The hand-built fixture of row 12, in the real stream's shapes: an
+// unmarked @file answered by the model, /compact answered by the program
+// itself, a command the session cannot run, answered with no replay, and a
+// local command the program runs (its output in a synthetic line before
+// the message's replay): each message accepted, none left to go
+// unconfirmed, the lines the driver does not read (each message's
+// lifecycle, the request's status, a hook's run) changing nothing.
+func TestClaudeExpandFixtureReplays(t *testing.T) {
+	rec, c, err := replay(t, bytes.NewReader(readFixture(t, "hand-built-expand.jsonl")))
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("Read ended %v", err)
+	}
+	var acc []string
+	for _, e := range rec.kinds("accepted") {
+		acc = append(acc, e.ref)
+	}
+	if !slices.Equal(acc, []string{"m301", "m302", "m303", "m304"}) {
+		t.Fatalf("accepted %q", acc)
+	}
+	r := rec.render()
+	for _, want := range []string{`"Compacted"`, `"/paint isn't available in this environment."`, `"one"`, `"Context: 12% of the window is used."`} {
+		if !strings.Contains(r, want) {
+			t.Errorf("no %s in\n%s", want, r)
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.sends {
+		if strings.HasPrefix(s.ref, "m30") {
+			t.Fatalf("%s still waits for its acknowledgement", s.ref)
+		}
+	}
+}
+
+// Row 12: the driver hands the session the agent's commands from the
+// initialize answer once it passed the shape check (the payload's commands
+// alone, nothing of what sits beside them), then each system/commands_changed
+// list whole; system/init's names only where no list came. A list that is
+// not one, or holds an entry that is no command, changes nothing; past
+// 1,000 entries the rest is not read.
+func TestClaudeReadsCommands(t *testing.T) {
+	start := func(t *testing.T, initCommands string) (*recorder, *io.PipeWriter, chan error) {
+		t.Helper()
+		pr, pw := io.Pipe()
+		in := &discard{}
+		c := NewClaude(in, pr, ClaudeOptions{})
+		rec := &recorder{}
+		done := make(chan error, 1)
+		go func() { done <- c.Read(context.Background(), rec) }()
+		begun := make(chan error, 1)
+		go func() { begun <- c.Begin(context.Background()) }()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for !strings.Contains(in.String(), "initialize") {
+			select {
+			case <-ctx.Done():
+				t.Fatal("no initialize written")
+			case <-time.After(time.Millisecond):
+			}
+		}
+		answer := `{"type":"control_response","response":{"subtype":"success","request_id":"conductor-init-1","response":{"claude_code_version":"2.1.332","capabilities":[],"account":{"commands":[{"name":"leaked"}]}` + initCommands + `},"pending_permission_requests":[]}}`
+		if _, err := pw.Write([]byte(answer + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-begun; err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		return rec, pw, done
+	}
+	feed := func(t *testing.T, pw *io.PipeWriter, done chan error, lines ...string) {
+		t.Helper()
+		for _, l := range lines {
+			if _, err := pw.Write([]byte(l + "\n")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		pw.Close()
+		if err := <-done; !errors.Is(err, io.EOF) {
+			t.Fatalf("Read ended %v", err)
+		}
+	}
+	lists := func(rec *recorder) [][]session.Command {
+		var out [][]session.Command
+		for _, e := range rec.kinds("commands") {
+			out = append(out, e.cmds)
+		}
+		return out
+	}
+
+	t.Run("the initialize answer, then a change", func(t *testing.T) {
+		rec, pw, done := start(t, `,"commands":[{"name":"compact","description":"Shorten it","argumentHint":"","builtin":true},{"name":"fix-issue","description":"Fix one","argumentHint":"<number>","aliases":["fi",7]},{"name":"model","description":42,"argumentHint":["x"]}]`)
+		feed(t, pw, done,
+			`{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000001","slash_commands":["other"],"capabilities":[]}`,
+			`{"type":"system","subtype":"commands_changed","commands":"a string"}`,
+			`{"type":"system","subtype":"commands_changed","commands":[{"name":"compact"},1,2]}`,
+			`{"type":"system","subtype":"commands_changed","commands":[{"name":"compact"},{"name":3}]}`,
+			`{"type":"system","subtype":"commands_changed","commands":[{"name":"compact"},{"name":"release","description":"Write the notes"}]}`,
+		)
+		got := lists(rec)
+		if len(got) != 2 {
+			t.Fatalf("%d lists: %+v", len(got), got)
+		}
+		first := got[0]
+		if len(first) != 3 || first[0].Name != "compact" || first[0].Words != "Shorten it" ||
+			first[1].Name != "fix-issue" || first[1].Hint != "<number>" || len(first[1].Aliases) != 0 ||
+			first[2].Name != "model" || first[2].Words != "" || first[2].Hint != "" {
+			t.Fatalf("the initialize answer's list %+v", first)
+		}
+		if len(got[1]) != 2 || got[1][1].Name != "release" || got[1][1].Words != "Write the notes" {
+			t.Fatalf("the change %+v", got[1])
+		}
+		for _, l := range got {
+			for _, c := range l {
+				if c.Name == "leaked" || c.Name == "other" {
+					t.Fatalf("read %q from beside the list", c.Name)
+				}
+			}
+		}
+	})
+	t.Run("the init's names where no list came", func(t *testing.T) {
+		rec, pw, done := start(t, "")
+		feed(t, pw, done, `{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000001","slash_commands":["compact","clear"],"capabilities":[]}`)
+		got := lists(rec)
+		if len(got) != 1 || len(got[0]) != 2 || got[0][1].Name != "clear" || got[0][1].Words != "" {
+			t.Fatalf("lists %+v", got)
+		}
+	})
+	t.Run("a list past 1,000", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString(`,"commands":[`)
+		for i := range 1500 {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, `{"name":"c%d"}`, i)
+		}
+		b.WriteString("]")
+		rec, pw, done := start(t, b.String())
+		feed(t, pw, done)
+		got := lists(rec)
+		if len(got) != 1 || len(got[0]) != 1000 {
+			t.Fatalf("%d lists, the first of %d", len(got), len(got[0]))
+		}
+	})
+}
+
+// unnamedRecorder is a recorder that also takes an acknowledgement by no
+// name, as the session does.
+type unnamedRecorder struct{ *recorder }
+
+func (u unnamedRecorder) AcceptedUnnamed(ref string) {
+	u.add(event{kind: "accepted_unnamed", ref: ref})
+}
+
+// A replay that names no message is told to a session that takes it as
+// taken by no name, the oldest written; one that names its message is told
+// as named.
+func TestClaudeReplayByNoNameSaysSo(t *testing.T) {
+	in := &discard{}
+	pr, pw := io.Pipe()
+	c := NewClaude(in, pr, ClaudeOptions{})
+	rec := unnamedRecorder{&recorder{}}
+	done := make(chan error, 1)
+	go func() { done <- c.Read(context.Background(), rec) }()
+	for _, ref := range []string{"a", "b"} {
+		if err := c.Send(context.Background(), session.Message{Ref: ref, Text: ref}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs := written(t, in)
+	line := func(uuid string) string {
+		m := map[string]any{"type": "user", "isReplay": true, "session_id": "s", "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": "x"}}
+		if uuid != "" {
+			m["uuid"] = uuid
+		}
+		b, _ := json.Marshal(m)
+		return string(b) + "\n"
+	}
+	for _, l := range []string{line(msgs[1]["uuid"].(string)), line("")} {
+		if _, err := io.WriteString(pw, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pw.Close()
+	if err := <-done; !errors.Is(err, io.EOF) {
+		t.Fatalf("Read: %v", err)
+	}
+	named, unnamed := rec.kinds("accepted"), rec.kinds("accepted_unnamed")
+	if len(named) != 1 || named[0].ref != "b" || len(unnamed) != 1 || unnamed[0].ref != "a" {
+		t.Fatalf("named %+v, by no name %+v", named, unnamed)
 	}
 }

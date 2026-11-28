@@ -3,7 +3,8 @@ import type { UiDocReply } from '~/utils/protocol'
 import { readRecent, writeRecent, type Recent } from '~/utils/palette'
 import { readPins, writePins, type Pin } from '~/utils/pins'
 import { clampSidebarSize, sidebarBounds, type Folds, type SidebarMode } from '~/utils/sidebar'
-import { LAYOUT_WRITE_QUERY, contentOf, isKept, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, sameContent, UI_NAMES, UI_WRITE_DELAY, type UiLayout, type UiName, type UiPalette, type UiPins } from '~/utils/uiState'
+import { readRunTiles, takeKept, writeRunTiles } from '~/utils/runTiles'
+import { LAYOUT_WRITE_QUERY, contentOf, isKept, layoutForServer, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, RUN_TILES_LAST_KEY, sameContent, UI_NAMES, UI_WRITE_DELAY, type UiLayout, type UiName, type UiPalette, type UiPins } from '~/utils/uiState'
 
 function storage(): Storage | null {
   try {
@@ -26,6 +27,8 @@ function plainPin(p: Pin): Pin {
 /** The documents' content as last read from or written to the server, by name: what a write compares with, so an unchanged one is not sent. */
 const kept: Partial<Record<UiName, object>> = {}
 const timers: Partial<Record<UiName, ReturnType<typeof setTimeout>>> = {}
+/** Whether this app follows the other tabs' tile choices (one storage listener for the app). */
+let followingTabs = false
 
 /**
  * The documents changed in this browser and not yet kept by the server (a reload within UI_WRITE_DELAY of a change, a server not
@@ -54,7 +57,8 @@ function markUnsent(name: UiName, on: boolean) {
 
 /**
  * The app's screens' state, kept by the server (docs/plans/sync-seams.md, OS-2): the layout (the editor's layout and splits, the
- * sidebar's mode, width and folds, the crew graph's switches, the run and project pages' views), the palette's recents and the pinned
+ * sidebar's mode, width and folds, the crew graph's switches, the run and project pages' views, the run page's last layout of its
+ * tiles and Activity), the palette's recents and the pinned
  * sessions. Local storage is the cache read first, so the page draws at once; the server's documents are read once the workbench token
  * is held, after the first paint, and a change is written a second after it is made (UI_WRITE_DELAY), so a drag writes once. The
  * server's layout and pins take the place of the browser's; the recents merge (each key's greater count and later use). A server
@@ -69,9 +73,28 @@ export function useUiState() {
   const server = useState<'none' | 'reading' | 'read' | 'absent'>('uiServer', () => 'none')
   const { request } = useApi()
   const token = useWorkbenchToken()
+  // Another tab of this origin stored its tile choices: this tab's layout follows, so what it shows and what it saves next is theirs.
+  if (import.meta.client && !followingTabs) {
+    followingTabs = true
+    window.addEventListener('storage', (e) => {
+      if (e.key !== RUN_TILES_LAST_KEY) return
+      const tiles = layoutFromStorage(storage()).runTiles
+      const { runTiles: _, ...rest } = layout.value
+      layout.value = tiles ? { ...rest, runTiles: tiles } : rest
+    })
+  }
+
+  /**
+   * The layout with the run tiles as this origin's storage holds them now: every tab of the origin writes its tile choices there, so
+   * a tab open a while never puts back the list it read at its start over another tab's later choice.
+   */
+  function current(): UiLayout {
+    const tiles = layoutFromStorage(storage()).runTiles
+    return tiles ? { ...layout.value, runTiles: tiles } : layout.value
+  }
 
   function content(name: UiName): object {
-    if (name === 'layout') return layout.value
+    if (name === 'layout') return layoutForServer(current())
     if (name === 'palette') return { v: 1, recents: recents.value } satisfies UiPalette
     // A pin as the person keeps it: its name's verdict is the server's to set (OS-1c), never sent back.
     return { v: 1, pins: pins.value.map(plainPin) } satisfies UiPins
@@ -104,8 +127,12 @@ export function useUiState() {
     }
   }
 
-  /** Adopts the server's layout: the browser's cache and the settings the app holds in its state. */
+  /**
+   * Adopts the server's layout, as it was read: the browser's cache and the settings the app holds in its state, the run page's tiles
+   * record among them (takeKept), so a run page takes the server's choices from the storage it reads, never from a tab's memory.
+   */
   function adoptLayout(l: UiLayout) {
+    if (l.runTiles) writeRunTiles(storage(), takeKept(readRunTiles(storage()), l.runTiles))
     layout.value = l
     layoutToStorage(storage(), l)
     const sb = l.sidebar
@@ -171,7 +198,7 @@ export function useUiState() {
     load,
     /** Lays `patch` over the layout, keeps it in this browser and writes it to the server. */
     setLayout(patch: Omit<Partial<UiLayout>, 'v'>) {
-      const next = patchLayout(layout.value, patch)
+      const next = patchLayout(current(), patch)
       if (sameContent(next, layout.value)) return
       layout.value = next
       layoutToStorage(storage(), next)

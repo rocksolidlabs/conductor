@@ -6,6 +6,10 @@
 //
 //   stub-protocol.mjs --version          prints "2.1.331 (Claude Code)" (STUB_PROTOCOL_VERSION changes the number)
 //   stub-protocol.mjs -p ... --resume ID speaks stream-json on stdin and stdout, on the conversation ID
+//   stub-protocol.mjs app-server ...     is Codex's app server (its second mode, stub-protocol-codex.mjs; with
+//                                        STUB_PROTOCOL_AGENT=codex, --version too)
+//   stub-protocol.mjs acp | --acp ...    is an agent's Agent Client Protocol server (its third mode,
+//                                        stub-protocol-acp.mjs; with STUB_PROTOCOL_AGENT=acp, --version too)
 //
 // Each turn's message goes into $HOME/.stub-sessions/<conversation>.txt as "chat: <message>" when that folder is there (the
 // terminal stub's transcript, which a terminal resumed on the conversation prints).
@@ -37,21 +41,49 @@
 //                cannot see), padded (a command whose end lies 40 empty lines down, a description beside it), nbsp (a command
 //                of 800 no-break spaces before its last word), described (a short command with its description, as every real
 //                Bash call has), seven (a command of six lines), edit or bigedit (an Edit of a deep path, its change small or
-//                twenty lines long) or withdraw (short, its request given up once <conversation>.withdraw exists, as a cancelled call
-//                ends its POST). Allowed, the step runs (its output "ran: <command's first line>") and <conversation>.allowed
+//                twenty lines long), skill (a call of the Skill tool for the folder's command hello, as the model makes one) or
+//                withdraw (short, its request given up once <conversation>.withdraw exists, as a cancelled call ends its POST). Allowed, the step runs (its output "ran: <command's first line>") and <conversation>.allowed
 //                is written; denied, the step fails and the answer's message is written to <conversation>.denied.
 //   "question"   a report and a question through Conductor's own tools, as an agent calls them (mcp__conductor__report with a
 //                progress, then mcp__conductor__ask "Shall I go on?"): each a step announced in the stream, the question put to the
 //                session's attention route with the session's own agent token, marked the agent's own (ask), as `conductor mcp`
 //                does; the turn then ends, the question kept, and the person's answer comes as the next message. With the word
 //                "choices" the question is "Pears or plums?" with the choices Pears and Plums, as the tool sends them
+//
+// A message written without client_composed (the operator's own typed line, which Claude Code expands: row 12 of
+// docs/plans/chat-or-terminal.md) is taken as the real agent takes one, in the shapes internal/agentproto's
+// hand-built-expand fixture records, and its mark is appended to <conversation>.marks ("marked" or "unmarked") when
+// $HOME/.stub-sessions is there:
+//   "/compact"          the program compacts the conversation itself: its own "Compacted" line, the message's replay as
+//                       command tags, a result with no model turn
+//   "/clear"            the program takes up a new conversation, which its init names (the clear's notice)
+//   "/<a listed name>"  one of STUB_COMMANDS (fix-issue): the replay as command tags, then "stub ran: /<name> <args>"
+//   "/<another name>"   no replay: "/<name> isn't available in this environment." and a result naming the message
+//   "@<path>"           at a word's start, a file inside its folder: the words are "stub attached: <path>, ..."
+// A marked message is answered as above, whatever it holds.
+//
+// Its initialize answer lists its own commands (STUB_COMMAND_LIST, a made-up set in this project's words), and each time
+// <conversation>.commands in $HOME/.stub-sessions changes it sends system/commands_changed with the list and one command more for
+// each of the file's lines (`name|words|hint`; a line that begins with `^` goes before the built-in ones, and a file of one `-`
+// lists none).
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { createInterface } from 'node:readline'
 
-const version = process.env.STUB_PROTOCOL_VERSION || '2.1.331'
 const args = process.argv.slice(2)
+// Codex's app server (a chat's child of Codex): the stub's second mode, in a file of its own (stub-protocol-codex.mjs), which
+// answers until its input ends and exits itself.
+if (process.env.STUB_PROTOCOL_AGENT === 'codex' || args.includes('app-server')) {
+  await import('./stub-protocol-codex.mjs')
+  await new Promise(() => {})
+}
+// An agent's Agent Client Protocol server: the stub's third mode, in a file of its own (stub-protocol-acp.mjs).
+if (process.env.STUB_PROTOCOL_AGENT === 'acp' || args.includes('acp') || args.includes('--acp')) {
+  await import('./stub-protocol-acp.mjs')
+  await new Promise(() => {})
+}
+const version = process.env.STUB_PROTOCOL_VERSION || '2.1.331'
 if (args.includes('--version')) {
   process.stdout.write(`${version} (Claude Code)\n`)
   process.exit(0)
@@ -62,6 +94,8 @@ if (!args.includes('-p')) {
 }
 const resume = args.indexOf('--resume')
 const session = resume >= 0 ? args[resume + 1] : '00000000-0000-4000-8000-000000000001'
+// The conversation its init names: the session's, until an unmarked /clear takes up a new one, as the program does.
+let conversation = session
 const permissionMode = args.includes('--dangerously-skip-permissions') ? 'bypassPermissions' : 'default'
 
 if (process.env.STUB_PROTOCOL_CHILD === '1') spawn('sleep', ['600'], { stdio: 'ignore' }).unref()
@@ -118,6 +152,7 @@ const deepPath = () => join(process.cwd(), 'src', 'services', 'accounts', 'inter
 /** The tool and input of a call to ask about: a Bash command, or an Edit (`edit`: a small change; `bigedit`: a long one). */
 function askCall(kind) {
   if (kind === 'edit') return { tool: 'Edit', input: { file_path: deepPath(), old_string: 'alpha', new_string: 'alpha and beta' } }
+  if (kind === 'skill') return { tool: 'Skill', input: { skill: 'hello' } }
   if (kind === 'bigedit') return { tool: 'Edit', input: { file_path: deepPath(), old_string: 'alpha', new_string: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n') } }
   return { tool: 'Bash', input: askInput(kind) }
 }
@@ -145,7 +180,7 @@ async function ask(kind) {
     // the request went: the documented deny
   }
   watching = false
-  const first = (input.command ?? input.file_path).split('\n')[0]
+  const first = (input.command ?? input.file_path ?? input.skill).split('\n')[0]
   if (answer.behavior === 'allow') {
     if (existsSync(kept)) writeFileSync(keptFile('allowed'), `${call}\n`)
     toolResult(call, `ran: ${first}`, false, { stdout: `ran: ${first}`, stderr: '', interrupted: false, isImage: false })
@@ -193,7 +228,7 @@ async function steps(text) {
     const lines = [...old.map((l) => ` ${l}`), '+gamma']
     toolResult(call, 'The file was edited.', false, { type: 'update', filePath: path, structuredPatch: [{ oldStart: 1, oldLines: old.length, newStart: 1, newLines: old.length + 1, lines }] })
   }
-  const m = /\bask (short|long|hidden|withdraw|padded|nbsp|described|seven|edit|bigedit)\b/.exec(text)
+  const m = /\bask (short|long|hidden|withdraw|padded|nbsp|described|seven|edit|bigedit|skill)\b/.exec(text)
   if (m) await ask(m[1])
   if (/\bhold\b/.test(text) && existsSync(kept)) {
     writeFileSync(keptFile('held'), 'held\n')
@@ -201,9 +236,100 @@ async function steps(text) {
   }
 }
 
+// The commands the stub's program runs itself when a message is not marked (row 12), beside /compact.
+const STUB_COMMANDS = ['fix-issue']
+
+// The commands its initialize answer lists (row 12): a made-up set in this project's own words.
+const STUB_COMMAND_LIST = [
+  { name: 'compact', description: 'Shorten the conversation so far', argumentHint: '', builtin: true },
+  { name: 'clear', description: 'Start a new conversation', argumentHint: '', aliases: ['reset'] },
+  { name: 'model', description: 'Choose the model', argumentHint: '<name>' },
+  { name: 'fix-issue', description: "Fix an issue of this folder's tracker", argumentHint: '<number>' },
+]
+
+// <conversation>.commands, when it changes: system/commands_changed with the list and the file's commands after it.
+let listed = ''
+setInterval(() => {
+  const file = keptFile('commands')
+  if (!existsSync(file)) return
+  const text = readFileSync(file, 'utf8')
+  if (text === listed) return
+  listed = text
+  // A file of one "-" lists no command at all; a line that begins with "^" puts its command before the built-in ones.
+  if (text.trim() === '-') {
+    send({ type: 'system', subtype: 'commands_changed', commands: [], session_id: session, uuid: uuid() })
+    return
+  }
+  const lines = text.split('\n').filter(Boolean)
+  const parse = (l) => {
+    const [name, description = '', argumentHint = ''] = l.replace(/^\^/, '').split('|')
+    return { name, description, argumentHint }
+  }
+  const first = lines.filter((l) => l.startsWith('^')).map(parse)
+  const more = lines.filter((l) => !l.startsWith('^')).map(parse)
+  send({ type: 'system', subtype: 'commands_changed', commands: [...first, ...STUB_COMMAND_LIST, ...more], session_id: session, uuid: uuid() })
+}, 50).unref()
+
+/** An unmarked message the stub's program answers itself (row 12): true when it was, and the turn is over. */
+function unmarkedCommand(m, text) {
+  const cmd = /^\/([A-Za-z0-9_][A-Za-z0-9_.:-]*)(?:\s+([\s\S]*))?$/.exec(text)
+  if (!cmd) return false
+  const [, name, rest = ''] = cmd
+  const init = () => send({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: conversation, tools: ['Bash', 'Read'], mcp_servers: [],
+    model: 'stub', permissionMode, claude_code_version: version, output_style: 'default', capabilities: ['interrupt_receipt_v1', 'msg_lifecycle_v1'], uuid: uuid() })
+  const tags = `<command-name>/${name}</command-name>\n<command-message>${name}</command-message>\n<command-args>${rest}</command-args>`
+  const result = (words, turnsUsed) => send({ type: 'result', subtype: 'success', is_error: false, num_turns: turnsUsed, result: words,
+    session_id: session, total_cost_usd: cost, usage: { input_tokens: 0, output_tokens: 0 }, user_message_uuid: m.uuid, user_message_uuids: [m.uuid], uuid: uuid() })
+  if (name === 'clear') {
+    // The program forgets the conversation and takes up a new one: its init names it.
+    conversation = `00000000-0000-4000-8000-${String(Date.now() % 1e12).padStart(12, '0')}`
+    init()
+    send({ type: 'user', message: { role: 'user', content: tags }, session_id: session, parent_tool_use_id: null, uuid: m.uuid, isReplay: true })
+    result('', 0)
+    return true
+  }
+  if (name === 'compact') {
+    send({ type: 'system', subtype: 'status', status: 'compacting', session_id: session, uuid: uuid() })
+    init()
+    send({ type: 'user', message: { role: 'user', content: '<local-command-stdout>Compacted </local-command-stdout>' }, session_id: session, parent_tool_use_id: null, uuid: uuid(), isReplay: true })
+    send({ type: 'user', message: { role: 'user', content: tags }, session_id: session, parent_tool_use_id: null, uuid: m.uuid, isReplay: true })
+    result('', 0)
+    return true
+  }
+  init()
+  if (!STUB_COMMANDS.includes(name)) {
+    const words = `/${name} isn't available in this environment.`
+    send({ type: 'assistant', message: { model: '<synthetic>', id: uuid(), type: 'message', role: 'assistant', content: [{ type: 'text', text: words }],
+      stop_reason: 'stop_sequence', usage: { input_tokens: 0, output_tokens: 0 } }, parent_tool_use_id: null, session_id: session, uuid: uuid() })
+    result(words, 0)
+    return true
+  }
+  send({ type: 'user', message: { role: 'user', content: tags }, session_id: session, parent_tool_use_id: null, uuid: m.uuid, isReplay: true })
+  const words = `stub ran: /${name}${rest ? ` ${rest}` : ''}`
+  send({ type: 'assistant', message: { model: 'stub', id: id('msg'), type: 'message', role: 'assistant', content: [{ type: 'text', text: words }],
+    stop_reason: null, usage: { input_tokens: 2, output_tokens: 3 } }, parent_tool_use_id: null, session_id: session, uuid: uuid() })
+  cost += 0.001
+  result(words, 1)
+  return true
+}
+
+/** The files an unmarked message attaches (row 12): each @path at a word's start naming a file inside the folder. */
+function attached(text) {
+  const out = []
+  for (const [, path] of text.matchAll(/(?:^|\s)@([^\s]+)/g)) {
+    const full = resolve(process.cwd(), path)
+    if ((full === process.cwd() || full.startsWith(process.cwd() + sep)) && existsSync(full)) out.push(path)
+  }
+  return out
+}
+
 async function turn(m) {
   const text = typeof m.message?.content === 'string' ? m.message.content : ''
-  send({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: session, tools: ['Bash', 'Read'], mcp_servers: [],
+  const marked = m.client_composed === true
+  if (existsSync(kept)) appendFileSync(keptFile('marks'), `${marked ? 'marked' : 'unmarked'}\n`)
+  if (!marked && unmarkedCommand(m, text.trim())) return
+  const files = marked ? [] : attached(text)
+  send({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: conversation, tools: ['Bash', 'Read'], mcp_servers: [],
     model: 'stub', permissionMode, claude_code_version: version, output_style: 'default',
     capabilities: process.env.STUB_PROTOCOL_NO_RECEIPT === '1' ? ['msg_lifecycle_v1'] : ['interrupt_receipt_v1', 'msg_lifecycle_v1'],
     uuid: uuid() })
@@ -229,9 +355,11 @@ async function turn(m) {
       tool_use_result: { stdout: 'notes.txt', stderr: '', interrupted: false, isImage: false } })
   }
   const msg = id('msg')
-  const words = /\bmarkdown\b/.test(text)
-    ? 'stub chat: **bold** words <img src=x onerror="document.title=1"> and a list:\n\n- one\n- two\n\n[plain](http://example.invalid/) [safe](https://example.invalid/)'
-    : `stub chat: ${text}`
+  const words = files.length > 0
+    ? `stub attached: ${files.join(', ')}`
+    : /\bmarkdown\b/.test(text)
+      ? 'stub chat: **bold** words <img src=x onerror="document.title=1"> and a list:\n\n- one\n- two\n\n[plain](http://example.invalid/) [safe](https://example.invalid/)'
+      : `stub chat: ${text}`
   send({ type: 'stream_event', event: { type: 'message_start', message: { id: msg, type: 'message', role: 'assistant', content: [], model: 'stub' } },
     parent_tool_use_id: null, session_id: session, uuid: uuid() })
   send({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, parent_tool_use_id: null, session_id: session, uuid: uuid() })
@@ -275,7 +403,7 @@ lines.on('line', (line) => {
     if (sub === 'initialize') {
       if (process.env.STUB_PROTOCOL_INIT === 'none') return
       const response = { subtype: 'success', request_id: m.request_id,
-        response: { output_style: 'default', pid: process.pid, claude_code_version: version, current_permission_mode: permissionMode, capabilities: ['ui_surface_v1'] },
+        response: { output_style: 'default', pid: process.pid, claude_code_version: version, current_permission_mode: permissionMode, capabilities: ['ui_surface_v1'], commands: STUB_COMMAND_LIST },
         pending_user_dialog_requests: [] }
       if (process.env.STUB_PROTOCOL_INIT !== 'bad') response.pending_permission_requests = []
       send({ type: 'control_response', response })

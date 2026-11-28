@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { closeWords, conflictWords, forgetModel, hasModel, isDirty, markSaved, noteVersion, savedAt } from './editorModels'
+import { closeWords, conflictWords, forgetModel, hasModel, isDirty, markSaved, noteVersion, savedAt, unsavedNow } from './editorModels'
 
 describe('a save completing', () => {
   it('marks the version it sent saved, and what was typed since stays unsaved', () => {
@@ -42,6 +42,19 @@ describe('the editor\'s saved versions', () => {
     forgetModel('/r/a.go')
     expect(hasModel('/r/a.go')).toBe(false)
     expect(isDirty('/r/a.go', 9)).toBe(false)
+  })
+})
+
+describe('unsavedNow: a model unsaved with no editor of it mounted (UX3 R72)', () => {
+  it('is its edits as its editor saw them last, and nothing for a path never read', () => {
+    markSaved('/kept/a.txt', 3)
+    noteVersion('/kept/a.txt', 3)
+    expect(unsavedNow('/kept/a.txt')).toBe(false)
+    noteVersion('/kept/a.txt', 5)
+    expect(unsavedNow('/kept/a.txt')).toBe(true)
+    forgetModel('/kept/a.txt')
+    expect(unsavedNow('/kept/a.txt')).toBe(false)
+    expect(unsavedNow('/kept/never.txt')).toBe(false)
   })
 })
 

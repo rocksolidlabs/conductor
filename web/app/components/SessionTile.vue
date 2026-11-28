@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
 import type { TerminalTransport } from '~/utils/transport/types'
-import { isEnded } from '~/utils/attention'
+import { answerDigit, isEnded, markedByPerson } from '~/utils/attention'
 import { agentInitials } from '~/utils/sessions'
 import { sessionStatus, type MarkView } from '~/utils/status'
 import { TILE_FONT_SIZE, TILE_SCROLLBACK } from '~/utils/tile'
@@ -16,9 +16,24 @@ const props = defineProps<{
   createTransport: () => TerminalTransport
   /** The state the foot says, where the page says it in words of its own (a run's member: the Crews pages' vocabulary); else the session's. */
   status?: MarkView
+  /** The tile's member will get the next line from its run's message bar: its frame carries the primary ring. */
+  receiving?: boolean
+  /** Resume (or Relaunch) is drawn with its word, not as an icon alone. */
+  resumeWord?: boolean
 }>()
 
-const emit = defineEmits<{ select: [] }>()
+const emit = defineEmits<{ select: []; digit: [n: number] }>()
+
+/**
+ * A number key on the frame itself (not its terminal, not a field), handed to the page: a run's tile answers its question with it.
+ * A held key's repeats are taken and answer nothing (answerDigit).
+ */
+function frameKey(e: KeyboardEvent) {
+  if (e.altKey || e.ctrlKey || e.metaKey || !/^[1-9]$/.test(e.key)) return
+  e.preventDefault()
+  const n = answerDigit(e)
+  if (n) emit('digit', n)
+}
 
 const events = useEvents()
 const now = useNow()
@@ -33,7 +48,7 @@ const host = computed(() => (props.session.kind === 'hosted' ? hostName.value : 
 const hostTitle = computed(() => (props.session.kind === 'hosted' ? `hosted · ${hostName.value}` : 'server'))
 // A tile that asks says the start of its question where the host was; the whole question is its title and joins the tile's name.
 const ask = computed(() => (needsInput.value ? tileAsk(props.session) : null))
-const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.value} Enter opens it in full.` : `${props.session.name}: a live terminal. Enter opens it in full.`))
+const label = computed(() => (ask.value ? `${props.session.name} ${markedByPerson(props.session.attention) ? 'needs you.' : 'asks:'} ${ask.value} Enter opens it in full.` : `${props.session.name}: a live terminal. Enter opens it in full.`))
 </script>
 
 <template>
@@ -44,7 +59,8 @@ const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.val
     </div>
     <div
       class="group flex h-full min-h-0 flex-col overflow-hidden rounded-lg border bg-elevated/40 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary"
-      :class="needsInput ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented focus-within:border-accented'"
+      :class="needsInput ? 'border-warning ring-2 ring-warning/60' : [props.receiving && 'ring-2 ring-primary', 'border-default hover:border-accented focus-within:border-accented']"
+      :data-receiving="props.receiving || undefined"
       role="group"
       tabindex="0"
       data-session-tile
@@ -52,22 +68,26 @@ const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.val
       :aria-label="label"
       @keydown.enter.self.prevent="emit('select')"
       @keydown.space.self.prevent="emit('select')"
+      @keydown.self="frameKey"
     >
       <div class="flex cursor-pointer items-center gap-2 border-b border-default px-2.5 py-1 text-xs shrink-0 select-none" :class="$slots.leading && 'pl-8'" data-tile-header @dblclick="emit('select')">
         <span class="flex-none font-mono text-[10px] font-semibold text-muted">{{ agentInitials(props.session.agentId) }}</span>
         <span class="min-w-0 flex-1 truncate text-[13px] font-semibold" :title="props.session.name" data-tile-name>{{ props.session.name }}</span>
         <EventMarkBadge :session-id="props.session.id" :finished="own.key === 'finished'" icon />
         <YoloBadge v-if="props.session.yolo" icon />
-        <ResumeButton v-if="isEnded(props.session.status)" :session="props.session" stay icon-only size="xs" />
-        <UTooltip text="Open in full (or double-click here)">
+        <ResumeButton v-if="isEnded(props.session.status)" :session="props.session" stay :icon-only="!props.resumeWord" size="xs" />
+        <!-- One more button of the page's own (a run's tile: show it large), before the open button. -->
+        <slot name="header-action" />
+        <UTooltip text="Full size (or double-click here)">
           <UButton icon="i-lucide-maximize-2" size="xs" color="neutral" variant="ghost" :aria-label="`Open ${props.session.name}`" data-tile-open @click.stop="emit('select')" />
         </UTooltip>
       </div>
       <div class="flex-1 min-h-0" data-tile-terminal>
         <TerminalView :create-transport="props.createTransport" fit="tile" compact :auto-focus="false" :font-size="TILE_FONT_SIZE" :scrollback="TILE_SCROLLBACK" />
       </div>
-      <!-- The page's own answer to the tile's question (a run's tile: its choices as buttons), between the terminal and the foot. -->
-      <div v-if="$slots.ask" class="shrink-0 border-t border-default px-2.5 py-1.5" data-tile-ask-bar>
+      <!-- The page's own answer to the tile's question (a run's tile: the question whole and its choices), between the terminal and
+           the foot: at most half the tile, scrolling inside past that. -->
+      <div v-if="$slots.ask" class="max-h-[50%] shrink-0 overflow-y-auto border-t border-default px-2.5 py-1.5" data-tile-ask-bar>
         <slot name="ask" />
       </div>
       <!-- The foot: the state's cell first, outside the slot, so a run page's tiles keep their branch and diff after it. -->

@@ -22,6 +22,14 @@ func TestCodexMCPEnvNamesBrakeman(t *testing.T) {
 	}
 }
 
+// Conductor's MCP server for Codex is not handed CONDUCTOR_PROTOCOL, so it
+// lists no permission tool to Codex's model: Codex asks in its own stream.
+func TestCodexMCPServerListsNoPermissionTool(t *testing.T) {
+	if strings.Contains(codexMCPEnv, `"CONDUCTOR_PROTOCOL"`) {
+		t.Fatalf("Codex's MCP server is handed CONDUCTOR_PROTOCOL: %s", codexMCPEnv)
+	}
+}
+
 // Codex gives an MCP tool 60 s unless its server says otherwise; Brakeman's
 // act can wait longer for a launch, so the registration Codex is launched
 // with gives Conductor's tools MCPToolTimeout, in Codex's seconds.

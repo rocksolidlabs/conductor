@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { holdsHidden, markHidden, markWhole } from '../utils/hiddenMarks'
-import { canonical, inputDigest, messageBytes, parseStrict, plainOfTool, plainWords, sha256Sync, SHORT_INPUT_ROWS, SHORT_ROW_CHARS, shownInput, summaryLine } from '../utils/permissionInput'
+import { canonical, inputDigest, messageBytes, parseStrict, plainOfTool, plainWords, sha256Sync, SHORT_INPUT_ROWS, SHORT_ROW_CHARS, shownInput, SKILL_GRANT, summaryLine } from '../utils/permissionInput'
 import { MAX_PERMISSION_MESSAGE, permissionAnswerValid } from '../utils/protocol'
 import { permissionEnd } from '../utils/transcript'
 
@@ -62,6 +62,17 @@ describe('the permission question', () => {
     expect(src).toContain('part.cut || part.total !== props.entry.inputBytes ? { ...shown, exact: false } : shown')
   })
 
+  it('asksASkillByName: a skill reads "Run a skill?", its line the skill\'s name, said once what an Allow grants, Allow once and Deny alone', () => {
+    expect(plainWords(plainOfTool('Skill'))).toBe('Run a skill?')
+    const input = '{"skill":"hello"}'
+    expect(shownInput(entryFor('Skill', input), enc(input))).toMatchObject({ line: 'hello', exact: true })
+    expect(summaryLine({ plain: 'skill', summary: input })).toBe('hello')
+    expect(SKILL_GRANT).toBe('A skill can run the tools its own file allows without asking again.')
+    expect(src).toMatch(/<p v-if="entry\.plain === 'skill' && open"[^>]*data-permission-skill-grant>\{\{ SKILL_GRANT \}\}<\/p>/)
+    expect(src.match(/<UButton label="/g)).toHaveLength(2)
+    expect(src).not.toMatch(/allow_always|allow_session/)
+  })
+
   it("waitsVisibly: while Allow once waits it has a disabled control's neutral look, and one line says what it waits for", () => {
     expect(src).toMatch(/<UButton label="Allow once" size="sm" :color="allowable \? 'warning' : 'neutral'" :variant="allowable \? 'solid' : 'outline'" :disabled="!allowable"/)
     expect(src).toContain("if (!drawn.value) return 'Open the call above and read it whole to allow it.'")
@@ -106,7 +117,7 @@ describe('the permission question', () => {
     expect(src).toMatch(/<template v-if="canAnswer">[\s\S]*data-permission-allow[\s\S]*data-permission-deny[\s\S]*<\/template>\s*<p v-else[^>]*data-permission-operator-only>Only the person who runs this server can answer\.<\/p>/)
     // The page's view of who answers: the chat's own welcome when it has one, else the page's word, and a read-only view never.
     const view = readFileSync(new URL('./ChatView.vue', import.meta.url), 'utf8')
-    expect(view).toContain('const canAnswer = computed(() => !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))')
+    expect(view).toContain('const canAnswer = computed(() => !props.tile && !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))')
     expect(view).toContain(':can-answer="canAnswer"')
   })
 
@@ -214,5 +225,9 @@ describe('the permission question', () => {
     expect(src).toMatch(/<dt v-if="r\.key\.pieces\.length" class="[^"]*\[overflow-wrap:anywhere\][^"]*">/)
     expect(src).toMatch(/<dd class="[^"]*\[overflow-wrap:anywhere\][^"]*"><MarkedText :pieces="r\.value\.pieces" \/><\/dd>/)
     expect(src).toMatch(/<dd class="[^"]*\[overflow-wrap:anywhere\][^"]*"><MarkedText :pieces="cwd\.pieces" \/><\/dd>/)
+  })
+  it('saysTheReasonGoesWithADeny: the field for the agent names a deny, the old words gone', () => {
+    expect(src).toContain('placeholder="Why you deny, for the agent (optional)"')
+    expect(src).not.toContain('Why, for the agent')
   })
 })

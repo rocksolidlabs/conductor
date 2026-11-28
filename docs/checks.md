@@ -38,7 +38,7 @@ make mobile-android-notices    # every package the Android release build carries
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)
-make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
+make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine, and the flags an arguments field reads from each CLI's help (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
 python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/ and mobile/)
 python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py, live_setup.py, go_test_groups.py, ios_project.py and android_project.py: the phone shell's iOS and Android projects held to what they must not ship; ios_boot.py and android_boot.py: their fetches tried again)
@@ -48,10 +48,22 @@ python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests
 app's tests: `web/app/utils/designRules.test.ts` reads the app's sources
 and `docs/design/system.md` and fails when a rule is broken (an icon-only
 button with no tooltip, a cut whose box does not set its width, a state
-mapped to a status colour outside `utils/status.ts`, a zinc grey) or when
-the file and the code disagree (a rule with no mark, the Status table
-against `STATUS_LOOK`, the floors against `CONTRAST_FLOORS`). Each rule of
-`system.md` names its checks.
+mapped to a status colour outside `utils/status.ts`, a zinc grey, Yolo in a
+fold, a fold on the settings page, "browser" in a template's text)
+or when the file and the code disagree (a rule with no mark, the Status
+table against `STATUS_LOOK`, the floors against `CONTRAST_FLOORS`). Each
+rule of `system.md` names its checks.
+
+`DESIGN.md` at the root is generated: `make design-md` writes it
+(`web/build/designMd.ts`) from the tokens (`main.css`, `app.config.ts`,
+Nuxt UI's and Tailwind's themes, Nuxt UI's corner steps and the class its
+button draws, `web/public/brand/tokens.css`), the tagline and section
+headings of `docs/design/brand.md` and the rules' headings in
+`docs/design/system.md`, and `web/build/designMd.test.ts`, among the
+app's tests, fails with the difference when the committed file is not
+what it makes. A change to a token, to `brand.md`'s tagline or headings
+or to a rule's heading, or an upgrade of Nuxt UI or Tailwind, runs
+`make design-md` and commits the file with it.
 
 `make design-capture` is not a check: it is a maintainer's step at a
 release, on the draft release's checklist. It builds the app and the
@@ -243,6 +255,9 @@ and one guard, one snapshot of the busy day, is 53 reads in 0.1 to
 `CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` (from
 `web/`, after `make web-build build-go`) prints its address and the path of
 a file only its owner reads that holds its token, and holds it until Ctrl+C.
+Install its browser once with `npx playwright install chromium` in `web/`.
+The day serves the built app, so run `make web-build build-go` again after
+each change; the page asks for the token in that file.
 `dayPage` and `useTheme` (`web/e2e/fixtures.ts`) set the colour mode the way
 the app keeps it (`conductor-color-mode`): a `colorScheme` context does not
 switch this app, which opens dark whatever the system prefers.
