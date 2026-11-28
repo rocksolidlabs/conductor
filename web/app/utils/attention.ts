@@ -9,9 +9,18 @@ export function waitsForTerminal(a: Pick<Attention, 'state' | 'source'> | undefi
   return a?.state === 'needs_input' && a.source === 'submit'
 }
 
-/** The heading a question's card shows for a session that needs input: the terminal's for a held turn, else `<agent> asks`. */
+/** A person's own mark (Mark as Needs you, posted with the workbench's token): no question of the agent's. */
+export function markedByPerson(a: Pick<Attention, 'state' | 'source'> | undefined): boolean {
+  return a?.state === 'needs_input' && a.source === 'admin'
+}
+
+/**
+ * The heading a question's card shows for a session that needs input: the terminal's for a held turn, `<agent> needs you` for a
+ * person's own mark, else `<agent> asks`, before the agent's own question.
+ */
 export function waitingHeading(a: Pick<Attention, 'state' | 'source'> | undefined, agentName: string): string {
-  return waitsForTerminal(a) ? 'Type in the terminal to go on' : `${agentName} asks`
+  if (waitsForTerminal(a)) return 'Type in the terminal to go on'
+  return markedByPerson(a) ? `${agentName} needs you` : `${agentName} asks`
 }
 
 /**

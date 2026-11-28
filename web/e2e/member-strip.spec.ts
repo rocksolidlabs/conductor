@@ -163,7 +163,7 @@ test("a member's tab opens that member in this page's place: one Back leaves the
   }
 })
 
-const MEMBER_TERMINAL = 'Crew members run in their terminals.'
+const MEMBER_TERMINAL = 'Crew members stay in their terminals.'
 
 test("a member's Terminal | Chat: both sides drawn, Chat dimmed with why; a press shows why and sends nothing", async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })

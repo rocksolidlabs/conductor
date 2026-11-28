@@ -44,7 +44,7 @@ for (const size of SIZES) {
       const panel = page.getByRole('dialog', { name: 'Alerts' })
       await expect(panel.locator('[data-routing-matrix]')).toBeVisible({ timeout: MEASURE_WAIT_MS })
       await expect(panel.getByText('Notification on this device', { exact: true })).toBeVisible()
-      await expect(panel.getByText('When a session needs input, and for the events routed to This device:')).toBeVisible()
+      await expect(panel.getByText('When a session needs you, and for the events routed to This device:')).toBeVisible()
       await expect(panel.getByText('Where each kind of event goes on this device.', { exact: false })).toBeVisible()
       expect(await panel.innerText(), 'Alerts names no browser').not.toMatch(/browser/i)
     } finally {

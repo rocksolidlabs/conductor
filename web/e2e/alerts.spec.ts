@@ -27,7 +27,7 @@ test('your menu opens Alerts with the switches and the rules; a destination togg
   await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
   let panel = await openFromMenu(page)
   await expect(panel.getByText('Notification on this device', { exact: true })).toBeVisible()
-  await expect(panel.getByText('When a session needs input, and for the events routed to This device:')).toBeVisible()
+  await expect(panel.getByText('When a session needs you, and for the events routed to This device:')).toBeVisible()
   // The old words are gone (UX3 R86).
   await expect(panel.getByText(/browser/i)).toHaveCount(0)
   // Under the switches, where each event goes; inside the panel the switches have no way to the rules: they are here.

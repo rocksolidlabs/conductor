@@ -19,7 +19,7 @@ const background = computed(() => {
 
 <template>
   <div class="flex flex-col gap-3" data-alert-switches>
-    <p class="text-xs text-muted">When a session needs input, and for the events routed to This device:</p>
+    <p class="text-xs text-muted">When a session needs you, and for the events routed to This device:</p>
     <USwitch
       :model-value="alerts.settings.value.notifications"
       label="Notification on this device"

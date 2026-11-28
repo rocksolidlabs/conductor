@@ -11,9 +11,9 @@ export const MOVES_TO_TERMINAL = 'Moves to the terminal when this turn ends.'
 export const AFTER_FIRST_REPLY = "Moves to Chat after the agent's first reply."
 export const MOVING = 'The session is moving; try again in a moment.'
 /** A move to Chat at rest ends what the agent left running in its terminal (the move's notice says it was ended). */
-export const ENDS_TERMINAL_WORK = 'Moving to Chat ends what the agent left running in its terminal.'
+export const ENDS_TERMINAL_WORK = 'Moving to Chat stops what the agent left running in its terminal.'
 /** A crew's member runs in its terminal (UX3 R13): its Chat side is drawn dimmed, and says this on hover, on focus and at a press. */
-export const MEMBER_TERMINAL = 'Crew members run in their terminals.'
+export const MEMBER_TERMINAL = 'Crew members stay in their terminals.'
 
 /** What the switch is drawn from: the session's way and its noted move (the welcome, the `way` message), and the page's facts. */
 export interface SwitchFacts {
