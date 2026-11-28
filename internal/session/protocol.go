@@ -114,7 +114,7 @@ const (
 	QueuedWords         = "Sends when the turn ends."
 	TooManyQueuedWords  = "Too many messages are waiting."
 	PermissionCardWords = "Answer this request with its own buttons."
-	NoExpandWords       = "Not sent: from here a line goes to the agent as written."
+	NoExpandWords       = "Not sent: here a message goes to the agent as plain text. Send it again, or use Terminal for a command."
 
 	// What a permission request's entry says once it is no longer open,
 	// and what the agent is told with a deny.

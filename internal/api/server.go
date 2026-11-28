@@ -39,11 +39,15 @@ import (
 
 // Server holds the shared state behind every route.
 type Server struct {
-	notices  string // served at /third-party-notices.txt (WithNotices)
-	cfg      *config.Config
-	registry *session.Registry
-	links    *share.Store
-	hosts    *signal.Hub
+	// firstCommitEnv, when set, is set in the environment of every git of
+	// a first commit (crew.FirstCommitIn.GitEnv): the tests' way to keep
+	// the machine's system configuration out (GIT_CONFIG_NOSYSTEM).
+	firstCommitEnv atomic.Pointer[map[string]string]
+	notices        string // served at /third-party-notices.txt (WithNotices)
+	cfg            *config.Config
+	registry       *session.Registry
+	links          *share.Store
+	hosts          *signal.Hub
 	// machine is this start's key, sent to the hosts it accepts, and its
 	// own row's key among its hosts' machines (machine.go).
 	machine  *serverMachine

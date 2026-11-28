@@ -386,13 +386,21 @@ func TestFlagsRouteMarksWhatKeepsATerminal(t *testing.T) {
 	plain := claudeLike("plain", prog)
 	plain.Command = []string{prog, "plain"} // another command: its own identity
 	f := newFlagsEnv(t, []catalog.Agent{chat, plain})
-	flags := byFlagName(f.askUntil(t, "chat", flagsRead))
+	chatReply := f.askUntil(t, "chat", flagsRead)
+	if !chatReply.Chat {
+		t.Error("an agent with the chat way at its version: chat not said")
+	}
+	flags := byFlagName(chatReply)
 	for name, want := range map[string]bool{"--add-dir": true, "--verbose": true, "--permission-mode": true, "--effort": false, "--model": false} {
 		if flags[name].KeepsTerminal != want {
 			t.Errorf("chat %s: keepsTerminal %v", name, flags[name].KeepsTerminal)
 		}
 	}
-	for _, fl := range f.askUntil(t, "plain", flagsRead).Flags {
+	plainReply := f.askUntil(t, "plain", flagsRead)
+	if plainReply.Chat {
+		t.Error("an agent with no chat way: chat said")
+	}
+	for _, fl := range plainReply.Flags {
 		if fl.KeepsTerminal {
 			t.Errorf("an entry with no chat: %s marked", fl.Name)
 		}

@@ -166,6 +166,8 @@ func chatArgsWords(err error) string {
 	switch {
 	case errors.Is(err, agentproto.ErrAddedFolder):
 		return agentproto.AddedFolderWords
+	case errors.Is(err, agentproto.ErrOptionsEnd):
+		return agentproto.OptionsEndWords
 	case errors.As(err, &own):
 		return agentproto.OwnFlagWords(own.Flag)
 	case errors.As(err, &codexArg):

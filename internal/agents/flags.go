@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -110,8 +111,12 @@ const (
 	// at all (ErrHelpTooLong).
 	MaxHelp = 128 << 10
 
-	maxHelpLine       = 4096
-	maxFlags          = 256
+	maxHelpLine = 4096
+	maxFlags    = 256
+	// maxRowsRead is how many rows the parse takes before it joins the
+	// alias rows (which a help may write as rows of their own) and keeps
+	// maxFlags: the rows past it are not read at all.
+	maxRowsRead       = 2 * maxFlags
 	maxFlagAliases    = 4
 	maxFlagHolder     = 40
 	maxFlagAbout      = 240
@@ -128,6 +133,10 @@ var (
 	// ErrNoFlags is a help with no options section, or none with a row.
 	ErrNoFlags = errors.New("the help lists no flags Conductor can read")
 )
+
+// helpWatch is how often a help read looks at the size of what the program
+// has written so far.
+var helpWatch = 20 * time.Millisecond
 
 // helpTimeout bounds a help read: the program is killed past it. A variable
 // as probeTimeout is; ProbeProcess.Timeout overrides it.
@@ -158,8 +167,11 @@ func helpArgsOf(r *FlagsRecipe) []string {
 // error are ONE regular file in the run's folder, never a pipe: a CLI that
 // exits before a pipe has taken its help (Claude Code, read so on a Mac)
 // writes a file whole, and Antigravity prints its help on standard error.
-// The file is read after the program is reaped, to MaxHelp bytes: a longer
-// help is res.TooLong, and none of it is returned. Any exit status counts.
+// The file is bounded while the program runs too: once it passes MaxHelp
+// bytes (looked at every helpWatch) the program and its group are ended,
+// and the read is res.TooLong. The file is read after the program is
+// reaped, to MaxHelp bytes: a longer help is res.TooLong, and none of it is
+// returned. Any exit status counts.
 func (r *ProbeProcess) Help(ctx context.Context, command, args []string, env map[string]string) (string, ProbeResult) {
 	timeout := helpTimeout
 	if r.Timeout > 0 {
@@ -167,6 +179,7 @@ func (r *ProbeProcess) Help(ctx context.Context, command, args []string, env map
 	}
 	var text string
 	var tooLong bool
+	var overflow atomic.Bool
 	var readErr error
 	const name = "help.txt"
 	res := r.exec(ctx, timeout, command, args, env, func(cmd *exec.Cmd, dir string) (func(), error) {
@@ -175,7 +188,30 @@ func (r *ProbeProcess) Help(ctx context.Context, command, args []string, env map
 			return nil, err
 		}
 		cmd.Stdout, cmd.Stderr = f, f
-		return func() { _ = f.Close() }, nil
+		stop := make(chan struct{})
+		watched := make(chan struct{})
+		go func() {
+			defer close(watched)
+			t := time.NewTicker(helpWatch)
+			defer t.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-t.C:
+				}
+				if st, err := f.Stat(); err == nil && st.Size() > MaxHelp {
+					overflow.Store(true)
+					r.cut()
+					return
+				}
+			}
+		}()
+		return func() {
+			close(stop)
+			<-watched
+			_ = f.Close()
+		}, nil
 	}, func(dir string) {
 		f, err := os.Open(filepath.Join(dir, name))
 		if err != nil {
@@ -194,6 +230,8 @@ func (r *ProbeProcess) Help(ctx context.Context, command, args []string, env map
 		}
 	})
 	switch {
+	case overflow.Load():
+		text, res = "", ProbeResult{Ran: true, TooLong: true, Error: ErrHelpTooLong.Error()}
 	case !res.Ran:
 	case readErr != nil:
 		res = ProbeResult{Error: "the help could not be read: " + readErr.Error()}
@@ -278,6 +316,9 @@ func ParseFlags(a catalog.Agent, help string) ([]Flag, error) {
 			continue
 		}
 		if m := flagRow.FindStringSubmatch(line); m != nil && len(m[2]) <= maxHolderInHelp {
+			if len(rows) == maxRowsRead {
+				break
+			}
 			f := Flag{Value: ValueNone}
 			names := strings.Split(m[1], ", ")
 			f.Name = names[0]
@@ -316,26 +357,36 @@ func ParseFlags(a catalog.Agent, help string) ([]Flag, error) {
 	if sections == 0 || len(rows) == 0 {
 		return nil, ErrNoFlags
 	}
-	// R9: a row that is only another flag's alias joins that flag.
-	aliasOf := map[int]int{}
+	// R9: a row that is only another flag's alias joins that flag: the
+	// rows are found by name through one map, each alias in the order the
+	// help writes it.
+	byName := make(map[string]int, len(rows))
+	for i, r := range rows {
+		if _, seen := byName[r.flag.Name]; !seen {
+			byName[r.flag.Name] = i
+		}
+	}
+	gone := map[int]bool{}
+	joined := map[int][]string{}
 	for i, r := range rows {
 		if len(r.flag.Aliases) > 0 || len(r.words) != 1 {
 			continue
 		}
 		if m := aliasRow.FindStringSubmatch(strings.TrimSpace(r.words[0])); m != nil {
-			if t := slices.IndexFunc(rows, func(o row) bool { return o.flag.Name == m[1] }); t >= 0 && t != i {
-				aliasOf[i] = t
+			if t, ok := byName[m[1]]; ok && t != i {
+				gone[i] = true
+				joined[t] = append(joined[t], r.flag.Name)
 			}
 		}
 	}
-	var kept []row
+	kept := make([]row, 0, len(rows))
 	for i, r := range rows {
-		if _, gone := aliasOf[i]; gone {
+		if gone[i] {
 			continue
 		}
-		for j := range rows {
-			if t, ok := aliasOf[j]; ok && t == i && len(r.flag.Aliases) < maxFlagAliases && !slices.Contains(r.flag.Aliases, rows[j].flag.Name) {
-				r.flag.Aliases = append(r.flag.Aliases, rows[j].flag.Name)
+		for _, n := range joined[i] {
+			if len(r.flag.Aliases) < maxFlagAliases && !slices.Contains(r.flag.Aliases, n) {
+				r.flag.Aliases = append(r.flag.Aliases, n)
 			}
 		}
 		kept = append(kept, r)

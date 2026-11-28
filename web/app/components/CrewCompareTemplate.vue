@@ -8,6 +8,7 @@ import {
   draftOnOpen,
   FOLDER_CHECK_MS,
   notSavedWords,
+  trialCheckLine,
   trialFolderLine,
   inMore,
   optionsLine,
@@ -137,8 +138,10 @@ function cancel() {
   open.value = false
 }
 
-// The folder, asked of the server FOLDER_CHECK_MS after it last changed; only the latest answer counts.
+// The folder, asked of the server FOLDER_CHECK_MS after it last changed; only the latest answer counts. folderChecked is the folder
+// whose answer the line now shows (data-folder-checked), '' before one: what a walk waits for before it reads the line.
 const folderLine = ref('')
+const folderChecked = ref('')
 let folderTimer: number | undefined
 let folderSeq = 0
 async function checkFolder(folder: string) {
@@ -149,16 +152,20 @@ async function checkFolder(folder: string) {
   }
   let line = ''
   try {
-    await api.gitCheck(folder)
+    line = trialCheckLine(await api.gitCheck(folder))
   } catch (e) {
     line = trialFolderLine(e instanceof ApiError ? { code: e.code, message: e.message } : null)
   }
-  if (n === folderSeq) folderLine.value = line
+  if (n === folderSeq) {
+    folderLine.value = line
+    folderChecked.value = folder
+  }
 }
 watch(
   () => draft.value.folder.trim(),
   (folder) => {
     window.clearTimeout(folderTimer)
+    folderChecked.value = ''
     if (!folder) {
       folderSeq++
       folderLine.value = ''
@@ -271,7 +278,7 @@ function onKey(e: KeyboardEvent) {
               <UInput :model-value="draft.check" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" data-compare-check @update:model-value="typeCheck(String($event ?? ''))" />
             </UFormField>
             <UFormField label="Folder" name="folder" :error="folderLine || marked('folder')">
-              <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" data-compare-cwd @update:model-value="patch({ folder: $event })" />
+              <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" data-compare-cwd :data-folder-checked="folderChecked" @update:model-value="patch({ folder: $event })" />
             </UFormField>
           </div>
 

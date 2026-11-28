@@ -1095,9 +1095,9 @@ func TestProposeAnswersGitsOwnFailure(t *testing.T) {
 	commitFile(t, p.repo, "later.txt", "later\n")
 	unreadable(secret)
 	failed(map[string]any{"crew": saved.ID, "base": secret}, "the base")
-	// HEAD's own commit unreadable, HEAD still naming it: git's failure
-	// through the repository's check (crew.CheckRepo), never "a
-	// repository without a commit".
+	// HEAD's own commit unreadable, HEAD still naming it: git's failure,
+	// at the base's read (the repository's check, crew.CheckRepo, reads
+	// HEAD by its name alone), never "a repository without a commit".
 	unreadable(commitFile(t, p.repo, "last.txt", "last\n"))
-	failed(map[string]any{"crew": saved.ID}, "the working directory's repository")
+	failed(map[string]any{"crew": saved.ID}, "the base")
 }

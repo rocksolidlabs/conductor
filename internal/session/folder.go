@@ -144,6 +144,11 @@ func (f *Folder) Path() string {
 // Close closes the folder; what is under way finishes or fails.
 func (f *Folder) Close() error { return f.root.Close() }
 
+// Root opens the folder again as an os.Root of its own, for work in it
+// that names nothing by its path (a crew's first commit,
+// crew.EnsureFirstCommit); the caller closes it.
+func (f *Folder) Root() (*os.Root, error) { return f.root.OpenRoot(".") }
+
 // Lstat describes rel, a path relative to the folder, through the
 // folder's root, a link at its last element not followed: nothing outside
 // the folder is looked at, whatever a link on the way names.

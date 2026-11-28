@@ -229,6 +229,8 @@ test("a line the page put in the box opens no list: its Enter sends it, as writt
     await box(page).click()
     await box(page).press('End')
     await expect(page.locator('[data-chat-view] [data-chat-help="plain"]')).toBeVisible()
+    // The box's own judgement of this line and this cursor: no list for it.
+    await expect(box(page)).toHaveAttribute('data-chat-list-for', '8:8:none')
     await expect(menu(page)).toHaveCount(0)
     const n = marks(conv).length
     await box(page).press('Enter')

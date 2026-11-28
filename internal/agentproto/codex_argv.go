@@ -164,8 +164,12 @@ func codexTake(args []string, res *CodexResume) ([]string, error) {
 		}
 		switch name {
 		case "-c", "--config", "--enable", "--disable":
+			// A value is a setting or a feature's name, never a word that
+			// starts with a dash: one would be read as the next option, or
+			// as the end of them ("--"), by the app server's parser, and what
+			// the driver adds after the overrides with it.
 			v, ok := next()
-			if !ok || v == "" {
+			if !ok || v == "" || strings.HasPrefix(v, "-") {
 				return nil, &CodexArgError{Flag: name}
 			}
 			out = append(out, name, v)
