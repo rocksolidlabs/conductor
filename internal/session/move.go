@@ -709,6 +709,9 @@ func (s *Local) renewTerminalLocked() {
 func (s *Local) moved(to, why string) {
 	var out applied
 	out.event = "moved"
+	// Sent to every viewer as it is made, after a move to the terminal too:
+	// a page that stays attached has it live, as a read of the transcript.
+	out.anyWay = true
 	s.mu.Lock()
 	words := MovedToTerminalWords
 	if to == WayProtocol {

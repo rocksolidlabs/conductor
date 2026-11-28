@@ -1066,8 +1066,12 @@ func (s *Local) endProtocolLocked() func() {
 // activity entries, the entries' TRANSCRIPT frames (sendEntries), the
 // requests' replies, the claims, the submissions' words, the sender woken.
 type applied struct {
-	event    string
-	id       string
+	event string
+	id    string
+	// anyWay sends its entries whichever way the session runs now: a
+	// move's notice, made once the session runs its new way, the terminal
+	// among them.
+	anyWay   bool
 	captured []capturedPiece
 	attn     *attnChange
 	records  []ActivityEntry
@@ -1182,7 +1186,7 @@ func (s *Local) sendApplied(out applied) {
 		s.notifyChange()
 	}
 	if len(out.entries) > 0 {
-		s.sendEntries(out.entries)
+		s.sendEntries(out.entries, out.anyWay)
 	}
 	for _, r := range out.replies {
 		go func() {
