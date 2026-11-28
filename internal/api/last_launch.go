@@ -1,10 +1,11 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // The last launch (UX3 R89): what Launch agent, the welcome and New agent
@@ -115,25 +116,42 @@ func checkLen(argv []string) int {
 	return n
 }
 
-// sound reports whether d is a record this server writes: a broken one
-// is read as none, and the next launch writes a whole one over it.
+// keptText reports whether s is a text the record keeps: valid UTF-8, at
+// most max bytes.
+func keptText(s string, max int) bool { return len(s) <= max && utf8.ValidString(s) }
+
+// sound reports whether d is a record this server writes, held to every
+// bound a write holds: a broken one is read as none, and the next launch
+// writes a whole one over it.
 func (d lastLaunch) sound() bool {
-	if d.V != 1 || len(d.Models) > lastLaunchAgents || len(d.Order) != len(d.Models) {
+	if d.V != 1 || len(d.Models) > lastLaunchAgents || len(d.Order) != len(d.Models) || !keptText(d.Folder, lastLaunchText) {
 		return false
 	}
+	seen := make(map[string]bool, len(d.Order))
 	for _, id := range d.Order {
 		m, ok := d.Models[id]
-		if !ok || len(m.Names) > lastLaunchNames || (m.Way != "" && m.Way != lastWayTerminal && m.Way != lastWayProtocol) {
+		if !ok || seen[id] || len(m.Names) > lastLaunchNames || !keptText(m.Model, lastLaunchModelLen) || (m.Way != "" && m.Way != lastWayTerminal && m.Way != lastWayProtocol) {
 			return false
+		}
+		seen[id] = true
+		for _, n := range m.Names {
+			if !keptText(n, lastLaunchModelLen) {
+				return false
+			}
 		}
 	}
 	if t := d.Trial; t != nil {
-		if len(t.Agents) > lastTrialAgents || len(t.Folder) > lastTrialFolderLen || len(t.Checks) > lastTrialFolders {
+		if len(t.Agents) > lastTrialAgents || !keptText(t.Folder, lastTrialFolderLen) || len(t.Checks) > lastTrialFolders {
 			return false
 		}
 		for _, c := range t.Checks {
-			if len(c.Folder) > lastTrialFolderLen || checkLen(c.Check) > lastTrialCheckLen {
+			if !keptText(c.Folder, lastTrialFolderLen) || checkLen(c.Check) > lastTrialCheckLen {
 				return false
+			}
+			for _, w := range c.Check {
+				if !utf8.ValidString(w) {
+					return false
+				}
 			}
 		}
 	}
@@ -151,10 +169,10 @@ func keptWay(way string) string {
 // after is d with the launch of agent in folder with model, the way way.
 func (d lastLaunch) after(agent, folder, model, way string) lastLaunch {
 	model = strings.TrimSpace(model)
-	if len(model) > lastLaunchModelLen {
+	if !keptText(model, lastLaunchModelLen) {
 		model = ""
 	}
-	if len(folder) > lastLaunchText || !utf8.ValidString(folder) {
+	if !keptText(folder, lastLaunchText) {
 		folder = ""
 	}
 	next := lastLaunch{V: 1, Agent: d.Agent, Folder: folder, Models: map[string]lastLaunchModel{}, Trial: d.Trial, ChatNoted: d.ChatNoted}
@@ -195,11 +213,17 @@ func (d lastLaunch) after(agent, folder, model, way string) lastLaunch {
 // kept as none.
 func (d lastLaunch) afterTrial(agents []string, folder string, check []string) lastLaunch {
 	folder = strings.TrimSpace(folder)
-	if len(folder) > lastTrialFolderLen || !utf8.ValidString(folder) {
+	if !keptText(folder, lastTrialFolderLen) {
 		folder = ""
 	}
 	if checkLen(check) > lastTrialCheckLen {
 		check = nil
+	}
+	for _, w := range check {
+		if !utf8.ValidString(w) {
+			check = nil
+			break
+		}
 	}
 	if check == nil {
 		check = []string{}
@@ -248,8 +272,9 @@ func (s *Server) readLastLaunch() lastLaunch {
 }
 
 // changeLastLaunch writes the record as change makes it of the one kept.
-// A record that cannot be written, or would be past its bound, is said in
-// the log and the one kept stays; what was asked for stands.
+// A record that cannot be written, or would be past its bound as it is
+// written (store.Encode, the bytes the read is held to), is said in the
+// log and the one kept stays; what was asked for stands.
 func (s *Server) changeLastLaunch(change func(lastLaunch) lastLaunch) {
 	if s.store == nil {
 		return
@@ -257,7 +282,7 @@ func (s *Server) changeLastLaunch(change func(lastLaunch) lastLaunch) {
 	s.lastLaunchMu.Lock()
 	defer s.lastLaunchMu.Unlock()
 	next := change(s.readLastLaunch())
-	if b, err := json.Marshal(next); err != nil || len(b) > maxLastLaunch {
+	if b, err := store.Encode(next); err != nil || len(b) > maxLastLaunch {
 		s.log.Warn("launch: the last launch is past its bound, not kept", "bytes", len(b))
 		return
 	}

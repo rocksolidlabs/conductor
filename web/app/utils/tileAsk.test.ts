@@ -17,6 +17,11 @@ describe('tileAskOf', () => {
     expect(a?.kind === 'choices' && a.line).toMatchObject({ kind: 'question', id: 'q1', on: 'review', options })
   })
 
+  it("reads a person's mark with no words as one, and a mark with words from the workbench as a question", () => {
+    expect(tileAskOf('review', asks({ source: 'admin', message: undefined, id: undefined }), yes)).toMatchObject({ who: 'review needs you.', question: 'Marked by a person.', kind: 'terminal' })
+    expect(tileAskOf('review', asks({ source: 'admin' }), yes)).toMatchObject({ who: 'review asks:', question })
+  })
+
   it('says where a question the tile cannot answer is answered, from the same cases as a reply field', () => {
     // No choices, a startup screen, a permission dialog whose choices were not read, a line typed and not entered: its terminal.
     // (A line typed and not entered carries no choices: the server posts it with none.)

@@ -28,6 +28,22 @@ const noted = async () => (await own.api.ok<{ chatNoted?: boolean }>('GET', '/ap
 /** What this page keeps of it. */
 const notedHere = (page: Page) => page.evaluate(() => localStorage.getItem('conductor.chatTermsNoted'))
 
+/** A page whose read of the server's record waits as long as the test may run: only a hang bounds it (the product's 3 s is not the test's). */
+async function waitingPage(browser: Parameters<typeof dayPage>[0]): Promise<Page> {
+  const page = await dayPage(browser, { server: own.started })
+  await page.addInitScript((ms) => ((window as Window & { conductorLastLaunchMs?: number }).conductorLastLaunchMs = ms), test.info().timeout)
+  return page
+}
+
+/** Counts the marks the page sends (POST /api/launch/chat-noted), from now on: a request counts as it is sent, before its answer. */
+function countMarks(page: Page): () => number {
+  let n = 0
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/launch/chat-noted') n++
+  })
+  return () => n
+}
+
 test('the note is marked shown once drawn, not when a move that goes back was pressed, and a new page does not draw it again', async ({ browser }) => {
   budget(3 * (STEP_MS + 2 * LONG_MS) + 12 * STEP_MS + 4 * LONG_MS)
   // Each run starts with the note never drawn on this server (a repeat of the test meets the last run's mark).
@@ -36,7 +52,8 @@ test('the note is marked shown once drawn, not when a move that goes back was pr
 
   // A press of Chat whose move goes back to the terminal: the note was never drawn, so nothing is marked.
   const bad = await launch(own.api, sessions, 'e2e terms goes back', 'claude-bad')
-  let page = await dayPage(browser, { server: own.started })
+  let page = await waitingPage(browser)
+  const marks = countMarks(page)
   try {
     const view = await openSession(page, bad.s.id)
     await firstTurn(page, own.api, bad.s.id)
@@ -46,6 +63,8 @@ test('the note is marked shown once drawn, not when a move that goes back was pr
     await expect(line).not.toHaveText('The session is moving; try again in a moment.', { timeout: LONG_MS })
     await expect(view).toHaveAttribute('data-session-way', 'terminal')
     await expect(page.locator('[data-chat-terms]')).toHaveCount(0)
+    // Judged once the move has gone back, long after the press: a mark sent at the press would have been counted as it was sent.
+    expect(marks(), 'no mark sent at the press').toBe(0)
     expect(await notedHere(page), 'not marked here at the press').toBeNull()
     expect(await noted(), 'not marked on the server at the press').toBe(false)
 
@@ -58,13 +77,14 @@ test('the note is marked shown once drawn, not when a move that goes back was pr
     await expect(page.locator('[data-chat-view] [data-chat-terms]')).toBeVisible()
     await expect.poll(() => notedHere(page)).toBe('1')
     await expect.poll(noted, { timeout: STEP_MS }).toBe(true)
+    expect(marks(), 'one mark, once drawn').toBe(1)
   } finally {
     await page.context().close()
   }
 
   // A new browser context, as the desktop app's page is after a start: its storage is empty, and the server's mark holds.
   const again = await launch(own.api, sessions, 'e2e terms new page')
-  page = await dayPage(browser, { server: own.started })
+  page = await waitingPage(browser)
   try {
     expect(await notedHere(page)).toBeNull()
     const view = await openSession(page, again.s.id)
