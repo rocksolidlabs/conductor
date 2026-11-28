@@ -3,14 +3,15 @@ import type { AgentInfo, SessionInfo } from '~/composables/useSessions'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { ApiError } from '~/composables/useApi'
 import { launchListNote, serverAgents } from '~/utils/agents'
-import { splitArgs } from '~/utils/argv'
+import { joinArgv, splitArgs } from '~/utils/argv'
 import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { accountChoices, accountOfLaunch, capacityKey, faceWords, modelProblem, type CapacityQuery } from '~/utils/capacity'
 import { argsNameModel, chipStep, launchKey, launchNote, launchRefusal, messageProblem, namePlaceholderFor, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
 import { effectiveYolo, hasYoloRecipe, yoloSummary, yoloUnavailable } from '~/utils/yolo'
 import { offersRunAs, readRunAs, writeRunAs } from '~/utils/launchWay'
-import { afterLaunch, launchStorage, readLast, withRecord, writeLast, type LastLaunch } from '~/utils/lastLaunch'
+import { afterLaunch, launchStorage, readLast, recordWays, recordWithin, withRecord, writeLast, type LastLaunch } from '~/utils/lastLaunch'
+import type { AllowWay } from '~/utils/folderAllow'
 import type { SessionWay } from '~/utils/protocol'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -46,9 +47,13 @@ const messageError = computed(() => (takesMessage.value ? messageProblem(message
 const namePlaceholder = computed(() => namePlaceholderFor(selected.value, takesMessage.value, message.value))
 
 // Run as: Terminal | Chat (issue 1174), for an agent that can run as a chat, on this server, never a clone: a launch as a chat
-// starts in its terminal and moves to Chat by itself. It comes back as that agent was last launched in this browser, read at every
-// opening and pick, written at Launch alone (a side pressed and then cancelled is not kept); the first time it is Terminal.
+// starts in its terminal and moves to Chat by itself. It comes back as that agent was last launched: as the server's record of the
+// last launch says (it outlasts a restart, which this page's storage does not in the desktop app), else as this browser kept it; read
+// at every opening and pick, written at Launch alone (a side pressed and then cancelled is not kept); the first time it is Terminal.
 const runAs = ref<SessionWay>('terminal')
+/** Each agent's way of its last launch, from the server's record as the page's first opening read it, and each launch since. */
+const keptWays = new Map<string, SessionWay>()
+const wayOf = (agentId: string): SessionWay => keptWays.get(agentId) ?? readRunAs(browserStorage(), agentId)
 const showsRunAs = computed(() => !cloning.value && state.runsOn === 'server' && offersRunAs(selected.value))
 function browserStorage(): Storage | null {
   try {
@@ -58,7 +63,7 @@ function browserStorage(): Storage | null {
   }
 }
 watch([open, () => state.agentId], ([v, agentId]) => {
-  if (v) runAs.value = agentId ? readRunAs(browserStorage(), agentId) : 'terminal'
+  if (v) runAs.value = agentId ? wayOf(agentId) : 'terminal'
 })
 
 // Clone with options… (#434): the dialog titled for the clone of a session, filled in with its launch, on this server, the name
@@ -135,6 +140,8 @@ watch([open, launchModal.asked], async ([v]) => {
   catalogRead.value = false
   if (p?.cwd !== undefined) state.cwd = p.cwd
   if (p?.args !== undefined) state.args = p.args
+  // An opening for another agent that gives no arguments: the arguments typed for the last one are not this one's.
+  else if (p?.agentId && p.agentId !== state.agentId) state.args = ''
   // Each agent's model and arguments, kept while this opening lasts: what is in the fields now is the prefill's agent's, or the
   // picked one's.
   perAgent.clear()
@@ -154,9 +161,13 @@ watch([open, launchModal.asked], async ([v]) => {
   )
   loading.value = true
   if (memory && !memoryTaken) {
-    const recorded = await Promise.race([api.lastLaunch().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), LAST_LAUNCH_WAIT_MS))])
+    const before = runAs.value
+    const recorded = await recordWithin(() => api.lastLaunch())
     if (opening !== openings) return
     memory = withRecord(memory, recorded)
+    for (const [id, w] of recordWays(recorded)) keptWays.set(id, w)
+    // Run as as the record says, unless a side was pressed meanwhile.
+    if (state.agentId && runAs.value === before) runAs.value = wayOf(state.agentId)
   }
   lastMemory.value = memory ?? { models: {} }
   if (memory) {
@@ -210,7 +221,7 @@ const yoloShown = computed({
   get: () => (selected.value && !hasYoloRecipe(selected.value) ? false : yolo.value),
   set: (on: boolean) => (yolo.value = on),
 })
-const YOLO_TIP = 'Skips permission prompts: the agent runs commands and changes files without asking you. It starts as your Settings default says.'
+const YOLO_TIP = 'The agent runs commands and changes files without asking you.'
 
 // Account and model (docs/plans/capacity.md, PR-5): for an agent whose tool's login folder Conductor can move (the adapters
 // GET /api/accounts lists), on this server, and not for a clone, which keeps its source's unless its body names others. What the
@@ -309,8 +320,6 @@ const perAgent = new Map<string, { model: string; args: string }>()
 /** The memory of the last launch, as this opening read it; whether the page's first opening has taken its agent and folder. */
 const lastMemory = ref<LastLaunch>({ models: {} })
 let memoryTaken = false
-/** How long the first opening waits for the server's record of the last launch before it goes on without. */
-const LAST_LAUNCH_WAIT_MS = 3000
 /** The model names typed at this agent's last launches, offered as Model's suggestions. */
 const modelNames = computed(() => lastMemory.value.models[state.agentId]?.names ?? [])
 const modelListId = useId()
@@ -346,13 +355,13 @@ function readDefaultFolder() {
     () => {},
   )
 }
-const folderPlaceholder = computed(() => (cloning.value ? `${cloning.value.name}'s directory` : selected.value?.cwd || defaultFolder.value))
+const folderPlaceholder = computed(() => (cloning.value ? `${cloning.value.name}'s folder` : selected.value?.cwd || defaultFolder.value))
 const cwdRefused = ref<(LaunchRefusal & { cwd: string }) | null>(null)
 /** The folder's refusal while the field still holds the folder refused. */
 const folderRefusal = computed(() => (cwdRefused.value && cwdRefused.value.cwd === state.cwd ? cwdRefused.value : null))
 // The line under Folder (FolderAllowLine, R30): what the server's check says of the folder, and in the desktop app Allow this folder.
 // It is checked again before every launch, and a folder it says cannot be used is not sent.
-const folderLine = useTemplateRef<{ check: () => Promise<boolean>; blocks: boolean }>('folderLine')
+const folderLine = useTemplateRef<{ check: () => Promise<boolean>; blocks: boolean; way: AllowWay }>('folderLine')
 const folderFocused = ref(false)
 /**
  * The folder as the launch sends it, the one place that decides it: the field's text, or for a clone none when the field holds
@@ -527,6 +536,7 @@ async function submit() {
       way: showsRunAs.value && runAs.value === 'protocol' ? 'protocol' : undefined,
     })
     if (showsRunAs.value) writeRunAs(browserStorage(), state.agentId, runAs.value)
+    keptWays.set(state.agentId, showsRunAs.value ? runAs.value : 'terminal')
     // Remembered only once the server took the launch: never the arguments, the task, the name, the account or Yolo.
     const kept = launchStorage()
     writeLast(kept, afterLaunch(readLast(kept), { agent: state.agentId, folder: state.cwd, model: takesAccount.value ? model.value : '', moreOpen: moreOpen.value }))
@@ -539,7 +549,7 @@ async function submit() {
     message.value = ''
     perAgent.delete(state.agentId)
   } catch (e) {
-    const r = launchRefusal(e instanceof ApiError ? e.code : '', (e as Error).message)
+    const r = launchRefusal(e instanceof ApiError ? e.code : '', (e as Error).message, folderLine.value?.way)
     if (r.at === 'folder') {
       cwdRefused.value = { ...r, cwd: state.cwd }
       // The line checks the folder again: where it says why, it says so in place of this refusal.
@@ -609,7 +619,7 @@ async function submit() {
             <DirInput v-model="state.cwd" :placeholder="folderPlaceholder" name="cwd" picker-title="Where the session runs" lined />
             <FolderAllowLine ref="folderLine" :path="folderSent" :focused="folderFocused" :off="folderUnchecked" @use="(p: string) => (state.cwd = p)" @allowed="onFolderAllowed" @leave="open = false" />
             <template v-if="folderRefusal && !lineBlocks" #error>
-              <span data-launch-folder-refused>{{ folderRefusal.words }}<template v-if="folderRefusal.outside && isDesktop"> <NuxtLink to="/settings?section=folders" class="underline" data-launch-folder-settings @click="open = false">Add it in Settings</NuxtLink></template></span>
+              <span data-launch-folder-refused>{{ folderRefusal.words }}<template v-if="folderRefusal.settings"> <NuxtLink to="/settings?section=folders" class="underline" data-launch-folder-settings @click="open = false">Settings</NuxtLink>{{ folderRefusal.after }}</template></span>
             </template>
           </UFormField>
           <p v-if="accountsUnread" class="text-xs text-muted" data-launch-accounts-unread>No Account or Model to choose: the accounts could not be read ({{ accountsUnread }}). The server picks the account as for a launch that names none.</p>
@@ -651,7 +661,7 @@ async function submit() {
         </template>
 
         <template v-else>
-          <UFormField v-if="selected?.allowArgs" label="Extra arguments" name="args" hint="appended to the command">
+          <UFormField v-if="selected?.allowArgs" label="Extra arguments" name="args">
             <UInput v-model="state.args" placeholder="--model opus" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" />
           </UFormField>
           <UFormField label="Run this in a terminal on this computer" name="command">
@@ -701,7 +711,7 @@ async function submit() {
                 <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" :yolo-args="recipeArgs" :cwd="state.cwd" above autocapitalize="off" autocorrect="off" spellcheck="false" data-launch-args />
               </UFormField>
               <p v-if="selected?.allowArgs && runsView.argv.length" class="text-xs text-muted [overflow-wrap:anywhere]" data-launch-runs>
-                Runs: <code class="font-mono" data-mono="command">{{ runsView.argv.join(' ') }}</code><template v-if="takesAccount && model.trim()"> · model {{ model.trim() }}</template>
+                Runs: <code class="font-mono" data-mono="command">{{ joinArgv(runsView.argv) }}</code><template v-if="takesAccount && model.trim()"> · model {{ model.trim() }}</template>
               </p>
             </div>
           </template>

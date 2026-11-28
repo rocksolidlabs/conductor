@@ -96,6 +96,11 @@ test('the cursor is in What should it do? as the dialog opens, Shift+Enter is a 
   await expect(task).toBeFocused()
 
   const launches = await holdLaunches(page)
+  // Every launch the page sends from now on, held or not.
+  let posts = 0
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/sessions') posts++
+  })
   await page.keyboard.type('say hello')
   await page.keyboard.press('Shift+Enter')
   await page.keyboard.type('twice')
@@ -105,11 +110,14 @@ test('the cursor is in What should it do? as the dialog opens, Shift+Enter is a 
   await page.keyboard.press('Enter')
   await expect.poll(() => launches.held.length, { message: 'Enter sent the launch' }).toBe(1)
   expect(launches.held[0]!.request().postDataJSON()).toMatchObject({ agentId: 'prompted', message: 'say hello\ntwice' })
-  // Pressed again while the launch is out: nothing more is sent. The held launch is then refused, and the refusal shown.
+  // Pressed again while the launch is out: nothing more is sent. The held launch is then refused with the hold still on, so that a
+  // second launch would be held and counted, and judged once the refusal is drawn.
   await page.keyboard.press('Enter')
-  await launches.refuse()
+  await launches.held[0]!.abort()
   await expect(dialog.locator('[data-launch-error]')).toBeVisible()
+  expect(posts, 'the second Enter sent nothing').toBe(1)
   expect(launches.held, 'the second Enter sent nothing').toHaveLength(1)
+  await launches.refuse()
   // The dialog stays, with what was typed.
   await expect(task).toHaveValue('say hello\ntwice')
 })
@@ -327,6 +335,21 @@ test("a server that cannot check a folder (an older one) still says its refusal 
   await expect(dialog.locator('[data-launch-folder-line]')).toHaveCount(0)
   await expect(folder).toHaveAttribute('aria-invalid', 'true')
   await expect(folder).toBeFocused()
+  // A folder outside the folders agents may use, in a plain tab: the line's words for the way on there is, with no "yet".
+  const away = realpathSync(mkdtempSync(join(tmpdir(), 'conductor-e2e-away-')))
+  try {
+    await folder.fill(away)
+    await dialog.locator('[data-launch-message-input]').click()
+    const again = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
+    await dialog.locator('[data-launch-submit]').click()
+    expect((await again).status()).toBe(400)
+    const refused = dialog.locator('[data-launch-folder-refused]')
+    await expect(refused).toContainText("Agents can't use this folder.")
+    await expect(refused).not.toContainText('yet')
+    await expect(refused).not.toContainText('allowed roots')
+  } finally {
+    rmSync(away, { recursive: true, force: true })
+  }
   await page.unroute((u) => u.pathname === '/api/roots/check')
 })
 
@@ -380,6 +403,12 @@ test('each agent keeps its own model and arguments while the dialog is open, and
   await expect(runs).toContainText('--add-dir ../shared')
   await expect(runs).toContainText('· model opus')
   await expect(runs.locator('[data-mono="command"]')).not.toContainText('model opus')
+  // Where each argument begins and ends: one argument of two words is quoted, and a quote inside a word shows as the word it is.
+  await args.fill('--append-system-prompt "be brief"')
+  await expect(runs.locator('[data-mono="command"]')).toContainText("--append-system-prompt 'be brief'")
+  await args.fill('--append-system-prompt="be brief"')
+  await expect(runs.locator('[data-mono="command"]')).toContainText(`'--append-system-prompt="be' 'brief"'`)
+  await args.fill('--add-dir ../shared')
   // Another agent: its own fields, empty; back, the first's again.
   await pick(dialog, PROMPTED_CODEX)
   await expect(model).toHaveValue('')
@@ -574,6 +603,10 @@ test('after a restart of the server the dialog still starts from the last launch
   }
   await own.restart()
   const page = await dayPage(browser, { server: own.started })
+  // The page waits for the server's record as long as this test may run: only a hang bounds the read (the product's 3 s is not the test's).
+  await page.addInitScript((ms) => ((window as Window & { conductorLastLaunchMs?: number }).conductorLastLaunchMs = ms), test.info().timeout)
+  await page.reload()
+  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
   expect(await page.evaluate(() => localStorage.getItem('conductor.launch.last'))).toBeNull()
   const dialog = await openLaunch(page)
   await expect(dialog.getByRole('radio', { name: re(PROMPTED) })).toHaveAttribute('aria-checked', 'true')
@@ -581,4 +614,28 @@ test('after a restart of the server the dialog still starts from the last launch
   const more = await openMore(dialog)
   await expect(more.locator('[data-launch-model-input]')).toHaveValue('claude-e2e-model')
   await expect(more.locator('[data-launch-model-names] option')).toHaveAttribute('value', 'claude-e2e-model')
+})
+
+test('arguments typed for one agent never come back for another: an opening for another agent that gives none has none', async ({ browser }) => {
+  const s = await own.api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'plain', name: 'args stay with their agent' })
+  made.push(s.id)
+  const page = await dayPage(browser, { server: own.started, path: `/sessions/${s.id}` })
+  let dialog = await openOnPrompted(page)
+  let more = await openMore(dialog)
+  await more.locator('[data-launch-args]').fill('--add-dir ../mine')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dialog).toHaveCount(0)
+  // Launch <the other agent> here, from the palette: an opening that names another agent and gives no arguments.
+  await page.keyboard.press('Alt+/')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await palette.locator('input[data-palette-input]').fill(`Launch ${PROMPTED_CODEX} here`)
+  const here = palette.locator('[data-palette-row="action:launch-here:prompted-codex"]')
+  await expect(here).toBeVisible()
+  await here.click()
+  dialog = page.getByRole('dialog')
+  await expect(dialog.getByRole('radio', { name: re(PROMPTED_CODEX) })).toHaveAttribute('aria-checked', 'true')
+  more = await openMore(dialog)
+  await expect(more.locator('[data-launch-args]')).toHaveValue('')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
 })

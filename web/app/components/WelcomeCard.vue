@@ -2,8 +2,8 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import { QUICK_START_URL } from '~/utils/about'
 import { lookAgain, onWindowsOnly, pageRequests, programsToLookFor, settleChecks, welcomeOffer } from '~/utils/agents'
-import { launchStorage, readLast, withRecord } from '~/utils/lastLaunch'
-import { EXAMPLES_FAILED, examplesToast, LAST_READ_WAIT_MS, welcomeTips, welcomeWords } from '~/utils/welcome'
+import { launchStorage, readLast, recordWithin, withRecord } from '~/utils/lastLaunch'
+import { EXAMPLES_FAILED, examplesToast, welcomeTips, welcomeWords } from '~/utils/welcome'
 
 // The first-run welcome (#359; the UX review's P17; UX3): one sentence, one button that launches the first agent this machine has, the
 // other agents on one line, and the other ways to start folded. It shows where the server has no session at all: the home, and the
@@ -26,12 +26,12 @@ const requests = pageRequests()
 /**
  * The agent launched last (UX3 R33): the server's record of the last launch (R89, kept in its data directory, so it outlasts a
  * restart) over this app's own memory of it. Read with the agents, so that the main button names it from the first answer and never
- * changes under the pointer; a record that does not come in LAST_READ_WAIT_MS leaves this app's memory alone.
+ * changes under the pointer; a record that does not come in its wait (lastLaunchWaitMs) leaves this app's memory alone.
  */
 const last = ref<string>()
 function readLastAgent(): Promise<string | undefined> {
   const local = readLast(launchStorage())
-  const record = Promise.race([api.lastLaunch().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), LAST_READ_WAIT_MS))])
+  const record = recordWithin(() => api.lastLaunch())
   return record.then((rec) => withRecord(local, rec).agent)
 }
 /**

@@ -161,8 +161,11 @@ function ranked<T>(items: readonly T[], typed: string, spellings: (t: T) => stri
   return [...exact, ...starts, ...holds]
 }
 
-/** A control or format character (a newline, a bidi mark, a zero-width one): a value holding one is never written by a pick. */
-const UNSEEN = /[\p{Cc}\p{Cf}\u2028\u2029]/u
+/**
+ * A control or format character (a newline, a bidi mark, a zero-width one), or a letter that draws as blank (the Hangul fillers,
+ * the blank Braille pattern): a value holding one is never written by a pick.
+ */
+const UNSEEN = /[\p{Cc}\p{Cf}\u2028\u2029\u115F\u1160\u2800\u3164\uFFA0]/u
 
 /**
  * A value as the line writes it, by the rule splitArgs reads back (utils/argv.ts): a plain word as it is; one with white space or
@@ -261,12 +264,28 @@ export function holdsYolo(line: string, flags: readonly AgentFlag[]): boolean {
  * own refusal) and, for an agent with a chat way (`chat`), a lone `--`, which every chat refuses.
  */
 export function keepsTerminal(line: string, flags: readonly AgentFlag[], chat: boolean): boolean {
-  const words = splitArgs(line)
-  for (const w of words) {
-    if (w === '--') return chat
-    if (w.startsWith('-') && flagOf(flags, w)?.keepsTerminal) return true
+  return terminalWords(line, flags, chat).length > 0
+}
+
+/** The words of the line that keep its session in its terminal (keepsTerminal), each once, as typed before any `=`. */
+export function terminalWords(line: string, flags: readonly AgentFlag[], chat: boolean): string[] {
+  const out: string[] = []
+  for (const w of splitArgs(line)) {
+    if (w === '--') {
+      if (chat && !out.includes('--')) out.push('--')
+      break
+    }
+    const name = w.split('=', 1)[0]!
+    if (w.startsWith('-') && flagOf(flags, w)?.keepsTerminal && !out.includes(name)) out.push(name)
   }
-  return false
+  return out
+}
+
+/** The line under the field for those words: `With --add-dir, this session stays in its terminal.` (two or more joined by and). */
+export function terminalLine(words: readonly string[]): string {
+  if (!words.length) return ''
+  const list = words.length === 1 ? words[0]! : `${words.slice(0, -1).join(', ')} and ${words.at(-1)}`
+  return `With ${list}, this session stays in its terminal.`
 }
 
 /**
@@ -297,7 +316,9 @@ export function folderRows(line: string, ctx: ArgContext, folders: readonly { pa
     // the row would show it, holds a mark a person cannot see.
     const word = valueWord(f.path, ctx.joined)
     if (word === null || UNSEEN.test(f.name)) continue
-    rows.push({ key: f.path, label: f.name, text: line.slice(0, ctx.from) + word + line.slice(ctx.to), cursor: ctx.from + word.length })
+    // The cursor stays inside a closing quote, so that a child typed next is part of the same argument.
+    const inside = word.length > f.path.length && /["']$/.test(word) ? 1 : 0
+    rows.push({ key: f.path, label: f.name, text: line.slice(0, ctx.from) + word + line.slice(ctx.to), cursor: ctx.from + word.length - inside })
   }
   return rows
 }

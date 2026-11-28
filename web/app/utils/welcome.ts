@@ -26,9 +26,6 @@ export const welcomeWords = {
   failed: (words?: string) => `The agents could not be read: ${words?.trim() || 'The server did not answer.'}`,
 } as const
 
-/** How long the welcome waits for the server's record of the last launch before it goes on with this app's memory alone. */
-export const LAST_READ_WAIT_MS = 3000
-
 /** The toast after the welcome loaded the example crews, in the words Crews says: how many were added, or that they were there. */
 export function examplesToast(added: number): { title: string; color: 'success' | 'neutral' } {
   if (!added) return { title: 'The examples are here already', color: 'neutral' }

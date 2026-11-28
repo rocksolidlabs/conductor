@@ -577,12 +577,16 @@ stream-json --verbose --include-partial-messages
 conversation read at the move), the model flag the terminal was started
 with, `--permission-mode default` (for a session whose terminal was a
 yolo launch, the catalog's `Yolo.Args` alone, never the adapter's
-`YoloInject` or `InjectFor`), the terminal's launch arguments,
-`--mcp-config <hooks>/claude-protocol-mcp.json` (Conductor's MCP server,
-`timeout` 8 hours), `--permission-prompt-tool mcp__conductor__permission`,
-and exactly one `--settings <hooks>/claude-protocol.json` (the floor:
-design 7; for a yolo session `claude-protocol-yolo.json`, the floor and
-the yolo key in one file). `--strict-mcp-config`, always: Conductor's
+`YoloInject` or `InjectFor`),
+`--mcp-config=<hooks>/claude-protocol-mcp.json` (Conductor's MCP server,
+`timeout` 8 hours), `--strict-mcp-config`,
+`--permission-prompt-tool=mcp__conductor__permission`, exactly one
+`--settings=<hooks>/claude-protocol.json` (the floor: design 7; for a yolo
+session `claude-protocol-yolo.json`, the floor and the yolo key in one
+file), each in one word, and then the terminal's launch arguments: no word
+of the person's can become one of the chat's flags or their value, nor can
+one of them become the value of a last flag of the person's. A session
+whose arguments hold a lone `--` keeps to its terminal. `--strict-mcp-config`, always: Conductor's
 MCP server is the only tool server a chat's child loads (none with the
 server's MCP off); the person's own tool servers and a folder's stay
 with the session's terminal (#1118). A launch's own `--mcp-config`

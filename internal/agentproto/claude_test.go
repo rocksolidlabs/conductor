@@ -27,11 +27,11 @@ var update = flag.Bool("update", false, "write the fixtures' expected events")
 // The argv of a chat's child, element for element, as design 4 lists it:
 // the command, print mode with stream-json, the protocol's arguments, the
 // resumed conversation, the model, --permission-mode default (a yolo
-// session's yolo arguments in its place), the terminal's arguments and
-// Conductor's MCP config with --strict-mcp-config, once, so that no other
-// tool server is loaded (alone, with the server's MCP off); with a
-// permission host, the permission tool and exactly one --settings, the
-// floor. Never --bare, --setting-sources or the SDK's stdio prompt route;
+// session's yolo arguments in its place), Conductor's MCP config with
+// --strict-mcp-config, once, so that no other tool server is loaded
+// (alone, with the server's MCP off); with a permission host, the
+// permission tool and exactly one --settings, the floor; each of those in
+// one word, and then the terminal's arguments. Never --bare, --setting-sources or the SDK's stdio prompt route;
 // an argument of the terminal's that would set one of the chat's own flags
 // is refused.
 func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
@@ -45,17 +45,17 @@ func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
 		want []string
 	}{
 		{"a chat", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Model: []string{"--model=opus"}, LaunchArgs: []string{"--fallback-model=sonnet"}, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--model=opus", "--permission-mode", "default", "--fallback-model=sonnet", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--model=opus", "--permission-mode", "default", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--fallback-model=sonnet"})},
 		{"a yolo session", ClaudeLaunch{Command: []string{"claude"}, Protocol: []string{"--effort=high"}, Conversation: conv, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions"}, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--effort=high", "--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
+			join([]string{"claude"}, stream, []string{"--effort=high", "--resume", conv, "--dangerously-skip-permissions", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
 		{"a chat with its permission host", ClaudeLaunch{Command: []string{"/opt/claude", "--x"}, Conversation: conv, HooksDir: hooks, PermissionHost: true},
-			join([]string{"/opt/claude", "--x"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol.json"})},
+			join([]string{"/opt/claude", "--x"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool=mcp__conductor__permission", "--settings=" + hooks + "/claude-protocol.json"})},
 		{"a yolo session with its permission host", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions"}, HooksDir: hooks, PermissionHost: true},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol-yolo.json"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--dangerously-skip-permissions", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool=mcp__conductor__permission", "--settings=" + hooks + "/claude-protocol-yolo.json"})},
 		{"a chat with its permission host and the server's MCP off", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, NoMCP: true, PermissionHost: true},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--strict-mcp-config", "--settings", hooks + "/claude-protocol.json"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--strict-mcp-config", "--settings=" + hooks + "/claude-protocol.json"})},
 		{"a yolo launch with no recipe", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Yolo: true, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config=" + hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
 		{"a chat with the server's MCP off", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, NoMCP: true},
 			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--strict-mcp-config"})},
 	}

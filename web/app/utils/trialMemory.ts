@@ -1,8 +1,10 @@
+import { joinArgv } from './argv'
 import type { TrialAgent } from './compareTemplate'
 
 /**
- * What New agent trial keeps of the last trial the server took, per viewer (localStorage), so that the next one starts where the last
- * left off: the agents in order, the folder, and for each of the last MAX_FOLDER_CHECKS folders the Check line last used there. Never
+ * What New agent trial keeps of the last trial the server took, per viewer (localStorage) and on the server (its record of the last
+ * launch, GET /api/launch/last `trial`, which outlasts a restart; in the desktop app the page's storage does not), so that the next one
+ * starts where the last left off: the agents in order, the folder, and for each of the last MAX_FOLDER_CHECKS folders the Check line last used there. Never
  * an arguments line (it can hold a key), an account, a name, an approach, what each agent was told or a ticket. Every read and write is
  * guarded: a store that throws or holds something else is as none, and the form works without it.
  */
@@ -37,6 +39,20 @@ export function readTrialMemory(store: Pick<Storage, 'getItem'> | null): TrialMe
   } catch {
     return null
   }
+}
+
+/**
+ * The server's record of the last trial as the memory: its agents, its folder, and each folder's Check line as its words written out
+ * (each quoted where it needs to be). Null for none, or for anything that is not such a record.
+ */
+export function trialFromRecord(t: unknown): TrialMemory | null {
+  if (!t || typeof t !== 'object') return null
+  const v = t as { agents?: unknown; folder?: unknown; checks?: unknown }
+  if (!strings(v.agents) || typeof v.folder !== 'string' || !Array.isArray(v.checks)) return null
+  const checks = v.checks
+    .filter((c): c is { folder: string; check: string[] } => !!c && typeof c.folder === 'string' && strings(c.check))
+    .map((c) => ({ folder: c.folder, check: joinArgv(c.check) }))
+  return { agents: v.agents.slice(0, MAX_AGENTS), folder: v.folder, checks: checks.slice(0, MAX_FOLDER_CHECKS) }
 }
 
 /** The memory after a trial the server took: its agents and folder, its Check line first for its folder. */

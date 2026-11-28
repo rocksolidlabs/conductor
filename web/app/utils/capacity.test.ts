@@ -423,7 +423,7 @@ describe("the usage beside Launch agent's Account", () => {
     expect(faceWords(view({ windows: [win('5-hour', WARN_PERCENT)] }))[0]!.tone).toBe('warning')
     expect(faceWords(view({ windows: [win('5-hour', WARN_PERCENT - 1)] }))[0]!.tone).toBe('default')
     expect(faceWords(view({ windows: [win('5-hour', 99, 'critical')] }))[0]!.tone).toBe('error')
-    expect(faceWords(view({ windows: [] }))).toEqual([{ text: 'No windows reported', tone: 'default' }])
+    expect(faceWords(view({ windows: [] }))).toEqual([{ text: 'No usage reported', tone: 'default' }])
   })
   it("says any other state by its title, and nothing where there is nothing to read", () => {
     const title = (state: string) => faceWords(view({ state }))

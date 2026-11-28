@@ -189,13 +189,14 @@ func TestChatChildLoadsConductorsToolServerAlone(t *testing.T) {
 				t.Errorf("--strict-mcp-config %d times in %q", strict, argv)
 			}
 			own := filepath.Join(agents.HooksDir(c.srv.cfg.DataDir), agentproto.ClaudeProtocolMCP)
-			i := slices.Index(argv, "--mcp-config")
+			// In one word: no word after it can be read as its value.
+			i := slices.Index(argv, "--mcp-config="+own)
 			switch {
 			case !tc.mcp && named != 0:
 				t.Errorf("an MCP config with the server's MCP off in %q", argv)
-			case tc.mcp && (named != 1 || i < 0 || i+2 >= len(argv) || argv[i+1] != own):
-				t.Errorf("want Conductor's own --mcp-config %s once in %q", own, argv)
-			case tc.mcp && argv[i+2] != "--strict-mcp-config":
+			case tc.mcp && (named != 1 || i < 0 || i+1 >= len(argv)):
+				t.Errorf("want Conductor's own --mcp-config=%s once in %q", own, argv)
+			case tc.mcp && argv[i+1] != "--strict-mcp-config":
 				t.Errorf("--strict-mcp-config does not follow Conductor's MCP config in %q", argv)
 			}
 		})

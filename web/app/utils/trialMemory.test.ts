@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_FOLDER_CHECKS, TRIAL_MEMORY_KEY, checkFor, readTrialMemory, rememberTrial, rememberedAgents, withTrial } from './trialMemory'
+import { MAX_FOLDER_CHECKS, TRIAL_MEMORY_KEY, checkFor, readTrialMemory, rememberTrial, rememberedAgents, trialFromRecord, withTrial } from './trialMemory'
 
 /** A store in memory, as localStorage is. */
 function store(init: Record<string, string> = {}) {
@@ -59,5 +59,21 @@ describe("what New agent trial keeps of the last trial", () => {
     // Nothing usable: the form's own starting agents then.
     expect(rememberedAgents(null, catalog)).toBeNull()
     expect(rememberedAgents(withTrial(null, { agents: ['gone', 'gone'], folder: '/x', check: '' }), [catalog[0]!, catalog[1]!, catalog[4]!])).toBeNull()
+  })
+})
+
+describe("the server's record of the last trial", () => {
+  it('is the memory, each Check line written out from its words, and none for anything else', () => {
+    expect(trialFromRecord({ agents: ['claude', 'codex'], folder: '/repo', checks: [{ folder: '/repo', check: ['go', 'test', './...'] }, { folder: '/b', check: ['npm', 'run', 'the tests'] }, { folder: '/c', check: [] }] })).toEqual({
+      agents: ['claude', 'codex'],
+      folder: '/repo',
+      checks: [
+        { folder: '/repo', check: 'go test ./...' },
+        { folder: '/b', check: "npm run 'the tests'" },
+        { folder: '/c', check: '' },
+      ],
+    })
+    for (const bad of [null, undefined, 'x', { agents: 'claude', folder: '', checks: [] }, { agents: [], folder: 1, checks: [] }, { agents: [], folder: '' }]) expect(trialFromRecord(bad)).toBeNull()
+    expect(trialFromRecord({ agents: [], folder: '', checks: [{ folder: '/a', check: [1] }, null] })).toEqual({ agents: [], folder: '', checks: [] })
   })
 })

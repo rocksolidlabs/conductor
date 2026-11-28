@@ -20,6 +20,11 @@ const EXPECT_MS = 15_000
 
 /** The crews a test saved, deleted after it. */
 const made: string[] = []
+// The server keeps the last trial it took (GET /api/launch/last), which a new form starts from: each test starts from none, never
+// from what an earlier test or spec saved (AGENTS.md, "Count only what the test made").
+test.beforeEach(({ state }) => {
+  rmSync(join(state.data, 'launch', 'last.json'), { force: true })
+})
 test.afterEach(async ({ api }) => {
   for (const id of made.splice(0)) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
 })
@@ -289,6 +294,10 @@ test("a folder agents may not use, and a repository with no commit, are marked a
     await pick(outside, 400)
     await expect(folder).toHaveAttribute('aria-invalid', 'true')
     await expect(save).toBeDisabled()
+    // One line under Folder, the folder's own: never the server's words beside it.
+    await expect(form.locator('[data-launch-folder-line]')).toHaveCount(1)
+    await expect(form.locator('[data-launch-folder-line]')).toContainText("Agents can't use this folder")
+    await expect(dialog).not.toContainText(/allowed root|Working directory/i)
     // A repository with no commit: the press would be refused, and the form says so under Folder in the server's sentence.
     await pick(started, 200)
     await expect(dialog).toContainText('This folder has no commit yet. Make its first commit yourself, then launch.')
