@@ -73,7 +73,8 @@ and moves the board for them.
   one pull request: `Fixes #N` once for each issue, and each issue's
   commits a series of their own, so that one can be reverted alone. No
   pull request, no review round and no by-hand check per row. One review
-  of the whole at the end: a defect a person would hit and any security
+  of the whole at the end, the Codex adversarial review in it (below): a
+  defect a person would hit and any security
   defect are fixed in the pull request (a bug in the stream is fixed in
   the stream, below); a finding that is neither is filed or dropped, not
   chased through more rounds; a second round is for a boundary only.
@@ -88,13 +89,46 @@ and moves the board for them.
 - Open a draft PR at the first commit, and tick the template's checklist.
   `Fixes #N` finishes the issue; `Part of #N` leaves it open. Say in the PR
   body which agent or person made it, with a session link when there is one.
+- **Every pull request gets a Codex adversarial review before it is
+  opened, and what is committed afterwards gets one before it is marked
+  ready**: a second model questioning the design, not only the lines. The
+  draft at the first commit is opened once that commit has had its
+  review. For a bundle, the review before ready is the bundle's one
+  review of the whole at the end (above), run when its last part has
+  landed, in passes with a focus each when the bundle is large. A fix
+  made to answer a finding of that review is reviewed again only where
+  the bundle rule allows a second round, at a boundary; Verification
+  names the head the review read and the commits made after it. The
+  review comes from the Codex plugin for Claude Code
+  (`openai/codex-plugin-cc`). A person types
+  `/codex:adversarial-review --base origin/main <focus>`; an agent cannot
+  invoke that command and runs the same review through the plugin's
+  script, from the worktree under review, with the plugin's root read from
+  `~/.claude/plugins/installed_plugins.json`:
+
+  ```bash
+  node "<root>/scripts/codex-companion.mjs" adversarial-review --wait \
+    --base origin/main "<focus: the risks this change touches>"
+  ```
+
+  It reads committed work only, so commit first. A finding is a claim:
+  check it in the code, then fix it or say why not, and list the findings
+  and their answers under Verification (a security finding goes to a
+  draft advisory instead, below). When the review cannot run (no sign-in,
+  or no capacity on a second try), the pull request is not opened, or
+  stays a draft, and a maintainer is told at once: no other review stands
+  in for it, and no pull request is marked ready with this review listed
+  as not run. A maintainer runs it for a contributor's pull request.
+  (2026-11-27: a bundle of some eighty parts was marked ready with the
+  review listed as not run.)
 - Keep the Project board current: an issue goes on it when it is filed
   (Backlog, or Ready), moves to In progress when its branch is cut and to
   In review when its PR is pushed; Done follows the merge by itself. New
   issues do not land on the board on their own.
 - Before every push run the checks for each affected surface
   (`docs/checks.md`). Report a check that did not run as not run, never as
-  passed. Mark the PR ready when it is complete and green.
+  passed. Mark the PR ready when it is complete and green, and its Codex
+  review is answered (above).
 - Answer every review comment: fix it, or reply why not, then resolve the
   thread. A maintainer merges. Merged is done, and GitHub closes the issue.
 - Blocked or handing off: push, leave one PR comment saying what is left,
