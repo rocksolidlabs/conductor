@@ -3,6 +3,7 @@ import type { CrewCriterion } from './protocol'
 import { hasOpenQuote, splitArgs } from './argv'
 import { checkProblems, toCrewCheck, TASK_LIMITS, type DraftCheck } from './crews'
 import { GIT_CAN_WORKTREE, GIT_FIRST_COMMIT } from './dirInput'
+import { FOLDER_CANT } from './folderAllow'
 import { moreLine } from './moreOptions'
 
 /**
@@ -310,11 +311,14 @@ export function checkNote(line: string): string {
 export const FOLDER_CHECK_MS = 300
 
 /**
- * What the form says under Folder when the server refused to look at it (GET /api/git/check's error): its refusal of a folder agents
- * may not use (`invalid_cwd`), in its words, which holds the button; '' for any other error.
+ * What the form says under Folder when the server refused to look at it (GET /api/git/check's error), beside the folder's own line
+ * (FolderAllowLine), which says a folder agents can't use, a missing one and a file: one line under Folder, so nothing for those; for
+ * another refusal of the folder (`invalid_cwd`), that agents can't use it, never the server's words, which holds the button; '' for
+ * any other error.
  */
 export function trialFolderLine(answer: { code?: string; message?: string } | null): string {
-  return answer?.code === 'invalid_cwd' ? sentence(answer.message ?? '') : ''
+  if (answer?.code !== 'invalid_cwd') return ''
+  return /allowed root|does not exist|no such file|not a directory/i.test(answer.message ?? '') ? '' : FOLDER_CANT
 }
 
 /**

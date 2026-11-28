@@ -294,6 +294,10 @@ test("a folder agents may not use, and a repository with no commit, are marked a
     await pick(outside, 400)
     await expect(folder).toHaveAttribute('aria-invalid', 'true')
     await expect(save).toBeDisabled()
+    // One line under Folder, the folder's own: never the server's words beside it.
+    await expect(form.locator('[data-launch-folder-line]')).toHaveCount(1)
+    await expect(form.locator('[data-launch-folder-line]')).toContainText("Agents can't use this folder")
+    await expect(dialog).not.toContainText(/allowed root|Working directory/i)
     // A repository with no commit: the press would be refused, and the form says so under Folder in the server's sentence.
     await pick(started, 200)
     await expect(dialog).toContainText('This folder has no commit yet. Make its first commit yourself, then launch.')

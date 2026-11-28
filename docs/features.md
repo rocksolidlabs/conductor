@@ -201,6 +201,14 @@ that order.
   agent on a folder outside those agents may use: Allow this folder, the home
   folder's question, a link's Use that folder, and the folder kept in
   Settings after the app restarts. On Windows the press is not offered yet.
+  The same press under the folder of a crew, an agent trial, a Dispatch
+  project and Brakeman, in the app on Windows and on a Mac (UX3 R76).
+- **What the dialogs remember across a start of the desktop app, by hand**
+  (UX3 R89). In the app on Windows and on a Mac: launch an agent as Chat,
+  save an agent trial, and see the note on Chat's terms; quit the app and
+  start it again: Launch agent comes back with that agent's Run as at Chat,
+  New agent trial with the trial's agents, folder and Check line, and Chat
+  pressed again draws no note.
 
 - **Claude Code's dialogs.** Their choices are read off the dialog (#288),
   checked in a PTY against Claude Code 2.1.304 on 2026-10-19: a digit picks
@@ -518,11 +526,15 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   holds Launch. The dialog remembers the last launch: its agent, its
   folder, each agent's model and the names typed (offered under Model),
   and how More options was left; never the arguments, the task, the
-  name, the account or Yolo. The server keeps the agent, the folder and
-  the models in its data directory (`GET /api/launch/last`), so they
-  come back after a restart (UX3 R27, R28, R29, R89; `capacity.test.ts`,
-  `lastLaunch.test.ts`, `last_launch_test.go`; `launch-dialog.spec.ts`,
-  `capacity.spec.ts`).
+  name, the account or Yolo. The server keeps the agent, the folder, the
+  models and each agent's Run as in its data directory (`GET
+  /api/launch/last`), so they come back after a restart, and in the desktop
+  app after it is quit and started again, whose page then keeps nothing of
+  its own (UX3 R27, R28, R29, R89; `capacity.test.ts`, `lastLaunch.test.ts`,
+  `last_launch_test.go`; `launch-dialog.spec.ts`, `launch-kept.spec.ts`,
+  `capacity.spec.ts`). The line under Extra arguments shows what runs, each
+  argument quoted where it holds a space or a quote; an opening for another
+  agent that names no arguments starts with none.
   Under Folder, one line says what the server's check (`GET
   /api/roots/check`) says of the folder named, checked as it is picked or
   typed and again before every launch; a folder agents cannot use is never
@@ -539,7 +551,12 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   A plain tab, an older app and a server whose folders its configuration sets
   show no button and say where the folder can be allowed. A folder allowed by
   a server that does not keep it says it lasts until Conductor restarts (UX3
-  R30, #1173; `folderAllow.test.ts`; `launch-folder.spec.ts`).
+  R30, #1173; `folderAllow.test.ts`; `launch-folder.spec.ts`). The same line,
+  and the same one press, are under the folder of a crew, an agent trial, a
+  Dispatch project and Brakeman, each checking the folder as its form sends
+  it; the crew's editor reads its folder again once it is allowed, and a
+  Dispatch project left for Settings through the line keeps what was typed
+  for its next opening (UX3 R76, #1164; `launch-folder.spec.ts`).
 - **Extra arguments and Model offer the agent's own flags and names** (UX3
   R48, R49, R50, R53, #1172). Extra arguments offers the agent's own flags as
   you type `--` (Claude Code and Codex, and Copilot CLI, Antigravity and
@@ -723,7 +740,10 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   puts the cursor in the first; Ctrl or Cmd with Enter presses it. A folder
   agents may not use is marked as it is picked. A save the server refuses
   keeps what was typed. The next trial starts from the last one's agents,
-  folder and that folder's check (never its arguments). Each agent's
+  folder and that folder's check (never its arguments), which the server
+  keeps too, so a trial started in the desktop app after it was quit and
+  started again starts there as well (`launch-kept.spec.ts`). Under Folder
+  one line says what Launch agent's says. Each agent's
   Arguments offers that agent's own flags and their values as you type `--`,
   the model flag and the model names its help gives among them. Saving makes
   the trial's crew, whose page shows an "Agent trial" block (Agent A, Agent
@@ -768,10 +788,13 @@ kept for the chat, as its terminal had it.
   (below `sm`, two items of More). Before the agent's first reply it says "Chat
   opens after the agent's first reply."; pressed during a turn, the move is made
   at the turn's end, with a line saying so; at rest, the Chat side says what a
-  move ends. The first time a person presses Chat on a device, one note in
+  move ends. The first time a person presses Chat, one note in
   the chat, under the move's notice, says the agent's own terms decide how its
   non-interactive mode may be used and counted, with a link to the agent's
-  site, and under it that in Chat the agent has Conductor's tools only. A refused move says the server's words. A link's
+  site, and under it that in Chat the agent has Conductor's tools only; once
+  drawn it is not drawn again, on any device, after a restart too (the server
+  keeps the mark, `POST /api/launch/chat-noted`; `chat-terms.spec.ts`). A
+  refused move says the server's words. A link's
   viewer sees the way as a label.
 - **Run as, at launch.** The Launch agent dialog offers **Run as: Terminal |
   Chat** for an agent that can run as a chat: the choice alone, nothing of
@@ -781,7 +804,9 @@ kept for the chat, as its terminal had it.
   typed as its task is typed into the terminal once. Pressing Terminal
   before then keeps it there. A move that cannot be made leaves it in its
   terminal, the switch saying why. The dialog comes back as that agent was
-  last launched on this device; the first time it is Terminal.
+  last launched, as the server keeps it; the first time it is Terminal. A
+  launch as Chat the server refuses says its sentence and `Set Run as to
+  Terminal to launch it.`
 - **The chat.** Where the terminal was: what the person wrote and what the
   agent wrote (Markdown without HTML, a link only to `https://`), each turn's
   steps in one line ("12 steps", "Working." while it runs) that opens to the

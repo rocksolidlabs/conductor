@@ -231,7 +231,7 @@ function fieldTarget(field: TrialField): string {
 
 /** The press: a draft with problems marks them and puts the cursor in the first; one without is posted. */
 async function press() {
-  if (creating.value || folderLine.value) return
+  if (creating.value || folderLine.value || allowBlocked.value) return
   pressed.value = true
   const first = problems.value[0]
   if (first) {
@@ -323,7 +323,7 @@ function onKey(e: KeyboardEvent) {
         </UTooltip>
         <div class="flex-1" />
         <UButton label="Cancel" color="neutral" variant="ghost" :disabled="creating" data-compare-cancel @click="cancel" />
-        <UButton label="Save trial" icon="i-lucide-save" :loading="creating" :disabled="!!folderLine" :aria-busy="creating" data-compare-create @click="press" />
+        <UButton label="Save trial" icon="i-lucide-save" :loading="creating" :disabled="!!folderLine || allowBlocked" :aria-busy="creating" data-compare-create @click="press" />
       </div>
     </template>
   </UModal>
