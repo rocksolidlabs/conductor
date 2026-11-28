@@ -180,7 +180,8 @@ export function answerLine(a: AllowAnswer, c: RootCheck, typed = c.path): Folder
   if (a.ok) {
     if (!a.saved) return { state: 'allowed_unsaved', words: 'Agents can use this folder until Conductor restarts. Add it in', settings: true, after: ' to keep it.', tone: 'warning', button: '', blocks: false }
     if (a.error) return { state: 'allowed_restarted', words: "Conductor keeps this folder. If agents can't use it once Conductor runs, restart Conductor.", tone: 'warning', button: '', blocks: false }
-    return { state: 'allowed_now', words: 'Agents can use this folder now.', tone: 'success', button: '', blocks: false }
+    // Kept: said, and where to take it back (the line's Settings link, which leaves the form as its other one does).
+    return { state: 'allowed_now', words: 'Agents can use this folder now. Saved in', settings: true, after: '.', tone: 'success', button: '', blocks: false }
   }
   switch (a.code) {
     case 'folder_is_link':

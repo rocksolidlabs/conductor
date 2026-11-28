@@ -545,7 +545,7 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   offers Allow this folder: one press asks the app (never the page) to allow
   exactly the folder the check named, the real one where a link leads
   elsewhere, and the launch goes on there with nothing else in the dialog lost
-  ("Agents can use this folder now."). A home folder, one above it, or one
+  ("Agents can use this folder now. Saved in Settings.", Settings a link). A home folder, one above it, or one
   that holds Conductor's data or an account's login asks first, Cancel holding
   the focus. A folder never allowed from the app's screens (the whole disk,
   Conductor's data or an account's login, a name with a comma, a hidden

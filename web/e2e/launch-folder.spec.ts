@@ -179,7 +179,10 @@ test('one press allows a folder agents cannot use yet, exactly the folder named,
   const allow = dialog.locator('[data-launch-allow]')
   await allow.click()
   await expect(line(dialog)).toHaveAttribute('data-folder-state', 'allowed_now')
-  await expect(line(dialog)).toHaveText('Agents can use this folder now.')
+  // Kept: said with its check mark, and Settings a link, where it can be taken back.
+  await expect(line(dialog)).toHaveText('Agents can use this folder now. Saved in Settings.')
+  await expect(line(dialog).locator('[data-folder-words] .text-success')).toHaveCount(1)
+  await expect(line(dialog).locator('[data-folder-settings]')).toHaveAttribute('href', '/settings?section=folders')
   expect(asked).toEqual([{ path: folder, confirmed: '' }])
   // Nothing else of the dialog is lost, and the launch starts there.
   await expect(dialog.locator('[data-launch-message-input]')).toHaveValue('say hello')
