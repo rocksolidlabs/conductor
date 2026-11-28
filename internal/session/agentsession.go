@@ -94,11 +94,25 @@ func (s *Local) SetAgentSession(as AgentSession) {
 // notifies OnChange.
 func (s *Local) ReportAgentSession(id, policy string, turn bool) {
 	s.mu.Lock()
-	next, changed := NextAgentSession(s.info.AgentSession, id, policy, turn)
+	prev := s.info.AgentSession
+	next, changed := NextAgentSession(prev, id, policy, turn)
 	if changed {
 		s.info.AgentSession = &next
 	}
+	// A chat whose agent took up another conversation (its /clear: the
+	// agent's own hook or stream names a new id) says so in the transcript,
+	// where the person reads what the agent still knows: what is above it no
+	// longer is. Only an id the policy took in place of the one held.
+	var out applied
+	cleared := false
+	if p := s.way.Load(); p != nil && changed && prev != nil && prev.ID != "" && next.ID != prev.ID {
+		s.noticeLocked(p, noticeCleared, ClearedWords, &out)
+		cleared = true
+	}
 	s.mu.Unlock()
+	if cleared {
+		s.sendApplied(out)
+	}
 	if changed {
 		s.notifyChange()
 		// A noted move waits for a conversation it can resume (move.go).

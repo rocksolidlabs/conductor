@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentFlag } from '../composables/useSessions'
-import { argContext, argRows, argWords, flagLabel, folderPrefix, folderRows, holdsYolo, keepsTerminal, listShows, replaceWord, terminalLine, terminalWords, typedAt, valueWord } from './argComplete'
+import { argContext, argRows, argWords, flagLabel, folderPrefix, folderRows, holdsYolo, keepsTerminal, listShows, needsValue, needsValueLine, replaceWord, terminalLine, terminalWords, typedAt, valueWord } from './argComplete'
 import { splitArgs } from './argv'
 
 // The flags of a made-up agent, as GET /api/catalog/{id}/flags answers them: the help's order.
@@ -25,8 +25,13 @@ describe('argWords', () => {
   it('splits as argv.ts does, with places, and holds an open quote to the line end', () => {
     expect(argWords('--a "b c" d')).toEqual([
       { start: 0, end: 3, text: '--a' },
-      { start: 4, end: 9, text: 'b c', quote: '"' },
+      { start: 4, end: 9, text: 'b c', quote: '"', close: 8 },
       { start: 10, end: 11, text: 'd' },
+    ])
+    // What follows a closing quote up to the next white space is the same word, as splitArgs reads it.
+    expect(argWords('"a b"c d')).toEqual([
+      { start: 0, end: 6, text: 'a bc', quote: '"', close: 4 },
+      { start: 7, end: 8, text: 'd' },
     ])
     expect(argWords("--a 'b c")).toEqual([
       { start: 0, end: 3, text: '--a' },
@@ -167,7 +172,7 @@ describe('a folder flag\'s value', () => {
     const ctx = argContext(line, 14, flags)
     expect(folderRows(line, ctx, [{ path: '/r/shared', name: 'shared' }])).toEqual([{ key: '/r/shared', label: 'shared', text: '--add-dir /r/shared --verbose', cursor: 19 }])
     const open = '--add-dir "/r/two'
-    expect(folderRows(open, argContext(open, open.length, flags), [{ path: '/r/two words', name: 'two words' }])[0]).toMatchObject({ text: '--add-dir "/r/two words"', cursor: 23 })
+    expect(folderRows(open, argContext(open, open.length, flags), [{ path: '/r/two words', name: 'two words' }])[0]).toMatchObject({ text: '--add-dir "/r/two words"', cursor: 24 })
     expect(folderRows(line, argContext(line, 3, flags), [{ path: '/x', name: 'x' }])).toEqual([])
   })
 
@@ -243,17 +248,23 @@ describe('keepsTerminal', () => {
 })
 
 describe('a folder picked in quotes', () => {
-  it('keeps the cursor inside its closing quote, so that a child typed next is the same argument', () => {
+  const pick = (path: string) => {
+    const line = '--add-dir '
+    return folderRows(line, argContext(line, line.length, flags), [{ path, name: 'x' }])[0]!
+  }
+  const typeAt = (text: string, at: number, keys: string) => text.slice(0, at) + keys + text.slice(at)
+  it('leaves the cursor after its closing quote: a child typed there is the same argument, a space and a flag are another', () => {
     for (const path of ['/r/two words', '/r/a"b c', "/r/it's here"]) {
-      const line = '--add-dir '
-      const [row] = folderRows(line, argContext(line, line.length, flags), [{ path, name: 'x' }])
-      const typed = row!.text.slice(0, row!.cursor) + '/sub' + row!.text.slice(row!.cursor)
-      expect(splitArgs(typed), path).toEqual(['--add-dir', path + '/sub'])
-      // Its children are then listed for what is typed inside the quote.
-      expect(folderPrefix(argContext(typed, row!.cursor + 4, flags), '/r/repo'), path).toBe(path + '/sub')
+      const row = pick(path)
+      expect(row.cursor, path).toBe(row.text.length)
+      const child = typeAt(row.text, row.cursor, '/sub')
+      expect(splitArgs(child), path).toEqual(['--add-dir', path + '/sub'])
+      // The list goes on to the folder's children, and to what is typed after the quote.
+      expect(folderPrefix(argContext(row.text, row.cursor, flags), '/r/repo'), path).toBe(path)
+      expect(folderPrefix(argContext(child, row.cursor + 4, flags), '/r/repo'), path).toBe(path + '/sub')
+      const next = typeAt(row.text, row.cursor, ' --mode plan')
+      expect(splitArgs(next), path).toEqual(['--add-dir', path, '--mode', 'plan'])
     }
-    const plain = folderRows('--add-dir ', argContext('--add-dir ', 10, flags), [{ path: '/r/plain', name: 'plain' }])[0]!
-    expect(plain.cursor).toBe(plain.text.length)
   })
 })
 
@@ -264,5 +275,30 @@ describe('the line under the field', () => {
     expect(terminalLine(terminalWords('--verbose --add-dir=/x -- go', flags, true))).toBe('With --verbose, --add-dir and --, this session stays in its terminal.')
     expect(terminalLine(terminalWords('-- fix', flags, false))).toBe('')
     expect(terminalLine(terminalWords('--effort high', flags, true))).toBe('')
+  })
+})
+
+describe('a short cluster', () => {
+  it('that holds a flag a chat refuses keeps the session in its terminal, as the server says', () => {
+    // A letter that takes a value (-w) ends the cluster: what follows is its value, as the server reads it.
+    expect(terminalWords('-wc', flags, true)).toEqual([])
+    expect(terminalWords('-hc', flags, true)).toEqual(['-hc'])
+    expect(terminalLine(terminalWords('-cw', flags, true))).toBe('With -cw, this session stays in its terminal.')
+    expect(terminalWords('-hw', flags, true)).toEqual([])
+  })
+})
+
+describe('a last flag that wants a value', () => {
+  it('is said and held, by the help: a required value only, never an optional one or a flag the list does not know', () => {
+    expect(needsValue('--effort', flags)).toBe('--effort')
+    expect(needsValue('--verbose --effort ', flags)).toBe('--effort')
+    expect(needsValueLine(needsValue('--effort', flags))).toBe('--effort needs a value.')
+    expect(needsValue('--effort high', flags)).toBe('')
+    expect(needsValue('--effort=', flags)).toBe('')
+    expect(needsValue('--worktree', flags)).toBe('')
+    expect(needsValue('-w', flags)).toBe('')
+    expect(needsValue('--not-listed', flags)).toBe('')
+    expect(needsValue('-- --effort', flags)).toBe('')
+    expect(needsValue('', flags)).toBe('')
   })
 })

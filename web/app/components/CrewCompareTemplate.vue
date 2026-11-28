@@ -48,24 +48,19 @@ const allowLine = useTemplateRef<{ blocks: boolean }>('allowLine')
 const allowBlocked = computed(() => !!allowLine.value?.blocks)
 
 /**
- * The dialog's top edge, fixed once it has opened where the modal centred it: More options then opens downward, its button staying
- * under the pointer, and the dialog grows to the window's bottom before its body scrolls.
+ * The dialog's top edge and height, fixed once it has opened where the modal centred it (useStillDialog): the folder's line and its
+ * check's words, which arrive on their own, never move Save trial or Cancel. More options, opened by the person, grows it downward,
+ * its button staying under the pointer, to the window's bottom before its body scrolls; the height it then has is held, closed too.
  */
-async function pinTop() {
-  // The dialog's content once it is drawn, then its opening animation ended: its box is then where the modal centred it.
-  for (let i = 0; i < 120 && open.value && !formRef.value; i++) await frame()
-  const content = formRef.value?.closest<HTMLElement>('[data-slot="content"]')
-  if (!content) return
-  await frame()
-  await Promise.all(content.getAnimations({ subtree: true }).map((a) => a.finished.catch(() => undefined)))
-  if (!open.value || !content.isConnected) return
-  const top = Math.round(content.getBoundingClientRect().top)
-  content.style.top = `${top}px`
-  content.style.setProperty('--tw-translate-y', '0px')
-  content.style.maxHeight = `calc(100dvh - ${top}px - 1rem)`
-}
+const still = useStillDialog(formRef, open)
 
 const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()))
+
+// More options opened by the person grows the dialog; closed, the dialog keeps its height, so that Save trial and Cancel stay where
+// they were: a button that moves away takes no press made then (the pointer goes down on it and comes up beside it).
+watch(moreOpen, (now) => {
+  if (now) void still.regrow()
+})
 
 /** Puts the cursor in the element `selector` names once it is drawn (a field of More options is drawn as the fold opens). */
 async function focusWhenDrawn(selector: string) {
@@ -138,7 +133,7 @@ watch(open, (o) => {
   // A new draft: the server's record of the last trial, which outlasts a restart, is read and taken while nothing was changed.
   if (fresh) void takeRecordedTrial()
   error.value = ''
-  void pinTop()
+  void still.pin()
 })
 let recordReads = 0
 /** The draft as a person changes it: its agents only once it had some (the catalog's late read gives a draft its first ones). */

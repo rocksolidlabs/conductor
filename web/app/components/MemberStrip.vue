@@ -9,8 +9,10 @@ import { backByHistory, backTitle, BACK_TO_CREW, memberTabs, stripsRun } from '~
  * crew (UX3 R72), at its run's page with `?session=`: a tab opens another member in its place (replace), so one Back leaves the crew's
  * members, and `Back to the crew` shows the run's own page (backByHistory). A member with no session yet is drawn and cannot be pressed.
  * A run the server no longer holds draws `Crews` in place of the way back, and no tabs.
- * More members than fit scroll inside the strip, the open one kept in view. Its room is taken as soon as the page knows the session is
- * a member, so that the terminal under it is fitted once; the title and the tabs fill in when the run is read.
+ * More members than fit scroll inside the strip, the open one kept in view; an edge that cuts members draws how many are past it
+ * (`+9`, a button beside the edge's fade, filled so that it shows on either theme), and a press of it scrolls that way. Its room is
+ * taken as soon as the page knows the session is a member, so that the terminal under it is fitted once; the title and the tabs fill
+ * in when the run is read.
  *
  * `inline`: the strip sits in the session bar's own row, left of the name, on a header wide enough for both (UX3 R12b); its tabs then
  * take at most part of the row and scroll inside it.
@@ -54,21 +56,37 @@ watch(run, (r) => r && !stripsRun(r) && emit('gone'), { immediate: true })
 // members are added, and when the strip's width changes (the window, the strip moving into the header's row).
 const list = useTemplateRef<HTMLElement>('list')
 const openName = computed(() => tabs.value.find((t) => t.selected)?.name ?? '')
-/** The tabs run past an edge of the strip: that edge fades, so a cut tab says there are more. */
-const more = ref<{ left: boolean; right: boolean }>({ left: false, right: false })
+/**
+ * The tabs past each edge of the strip, whole or cut: an edge with any draws its mark, the count beside the fade, so a person sees
+ * that the crew goes on and how far. A fade alone said nothing where the edge fell between two tabs, nor on the dark theme.
+ */
+const more = ref<{ left: number; right: number }>({ left: 0, right: 0 })
 function measureMore() {
   const el = list.value
   if (!el) return
-  const left = el.scrollLeft > 1
-  const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+  let [left, right] = [0, 0]
+  if (el.scrollWidth > el.clientWidth + 1) {
+    const box = el.getBoundingClientRect()
+    for (const t of el.querySelectorAll<HTMLElement>('[data-member-tab]')) {
+      const b = t.getBoundingClientRect()
+      if (b.left < box.left - 1) left++
+      else if (b.right > box.right + 1) right++
+    }
+  }
   if (left !== more.value.left || right !== more.value.right) more.value = { left, right }
 }
+/** The tabs' edges fade where they cut, as before; the marks beside them say how many. */
 const fade = computed(() => {
   const { left, right } = more.value
   if (!left && !right) return undefined
   const mask = `linear-gradient(to right, ${left ? 'transparent, black 1.5rem' : 'black'}, ${right ? 'black calc(100% - 1.5rem), transparent' : 'black'})`
   return { maskImage: mask, WebkitMaskImage: mask }
 })
+/** A press of an edge's mark: the strip scrolls that way by most of its width. */
+function scrollMore(dir: -1 | 1) {
+  const el = list.value
+  if (el) el.scrollBy({ left: dir * Math.max(80, el.clientWidth - 48), behavior: 'smooth' })
+}
 function keepInView(given?: HTMLElement) {
   measureMore()
   const el = list.value
@@ -83,13 +101,22 @@ function keepInView(given?: HTMLElement) {
   measureMore()
 }
 watch([list, openName, () => tabs.value.length], () => void nextTick(keepInView), { immediate: true })
+// The strip's room (the window, the strip moving into the header's row) keeps the open tab in view; the tabs' own width, which an
+// edge's mark drawn or gone changes, is only measured again, so a press that scrolled away is not undone.
+// (Not `room`: that is the prop the inline strip's width comes from.)
+const tabsBox = useTemplateRef<HTMLElement>('tabsBox')
 watch(
-  list,
-  (el, _prev, onCleanup) => {
-    if (!el) return
-    const observer = new ResizeObserver(() => keepInView())
-    observer.observe(el)
-    onCleanup(() => observer.disconnect())
+  [tabsBox, list],
+  ([box, el], _prev, onCleanup) => {
+    if (!box || !el) return
+    const outer = new ResizeObserver(() => keepInView())
+    const inner = new ResizeObserver(() => measureMore())
+    outer.observe(box)
+    inner.observe(el)
+    onCleanup(() => {
+      outer.disconnect()
+      inner.disconnect()
+    })
   },
   { immediate: true },
 )
@@ -122,35 +149,38 @@ const TAB = 'inline-flex flex-none items-center gap-1.5 rounded-md px-2 py-1 tex
     </UTooltip>
     <USeparator orientation="vertical" class="h-4 flex-none" />
     <span v-if="title" class="min-w-0 max-w-64 truncate text-sm font-semibold text-highlighted" :title="title" data-member-strip-title>{{ title }}</span>
-    <nav
-      v-if="tabs.length"
-      ref="list"
-      class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
-      :style="fade"
-      aria-label="Members of the crew"
-      data-member-tabs
-      :data-tabs-more="more.left && more.right ? 'both' : more.left ? 'left' : more.right ? 'right' : undefined"
-      @scroll.passive="measureMore"
-      @focusin="(e: FocusEvent) => keepInView(((e.target as HTMLElement).closest('[data-member-tab]') as HTMLElement | null) ?? undefined)"
-    >
-      <template v-for="t in tabs" :key="t.name">
-        <NuxtLink
-          v-if="t.sessionId"
-          :to="{ path: to, query: { session: t.sessionId } }"
-          replace
-          :class="[TAB, t.selected ? 'bg-elevated font-medium text-highlighted' : 'text-muted hover:bg-elevated/60 hover:text-default', 'focus-visible:outline-2 focus-visible:outline-primary']"
-          :aria-current="t.selected ? 'page' : undefined"
-          :data-member-tab="t.name"
-          :data-selected="t.selected ? '' : undefined"
-        >
-          <StatusMark :status="t.mark" />
-          <span class="whitespace-nowrap">{{ t.name }}</span>
-        </NuxtLink>
-        <span v-else :class="[TAB, 'cursor-default text-muted']" role="link" aria-disabled="true" :data-member-tab="t.name" data-member-tab-idle>
-          <StatusMark :status="t.mark" />
-          <span class="whitespace-nowrap">{{ t.name }}</span>
-        </span>
-      </template>
-    </nav>
+    <div v-if="tabs.length" ref="tabsBox" class="flex min-w-0 flex-1 items-center gap-1">
+      <UButton v-if="more.left" :label="`+${more.left}`" color="neutral" variant="soft" size="xs" class="flex-none tabular-nums" :aria-label="`${more.left} more ${more.left === 1 ? 'member' : 'members'} before`" tabindex="-1" data-tabs-edge="left" @click="scrollMore(-1)" />
+      <nav
+        ref="list"
+        class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
+        :style="fade"
+        aria-label="Members of the crew"
+        data-member-tabs
+        :data-tabs-more="more.left && more.right ? 'both' : more.left ? 'left' : more.right ? 'right' : undefined"
+        @scroll.passive="measureMore"
+        @focusin="(e: FocusEvent) => keepInView(((e.target as HTMLElement).closest('[data-member-tab]') as HTMLElement | null) ?? undefined)"
+      >
+        <template v-for="t in tabs" :key="t.name">
+          <NuxtLink
+            v-if="t.sessionId"
+            :to="{ path: to, query: { session: t.sessionId } }"
+            replace
+            :class="[TAB, t.selected ? 'bg-elevated font-medium text-highlighted' : 'text-muted hover:bg-elevated/60 hover:text-default', 'focus-visible:outline-2 focus-visible:outline-primary']"
+            :aria-current="t.selected ? 'page' : undefined"
+            :data-member-tab="t.name"
+            :data-selected="t.selected ? '' : undefined"
+          >
+            <StatusMark :status="t.mark" />
+            <span class="whitespace-nowrap">{{ t.name }}</span>
+          </NuxtLink>
+          <span v-else :class="[TAB, 'cursor-default text-muted']" role="link" aria-disabled="true" :data-member-tab="t.name" data-member-tab-idle>
+            <StatusMark :status="t.mark" />
+            <span class="whitespace-nowrap">{{ t.name }}</span>
+          </span>
+        </template>
+      </nav>
+      <UButton v-if="more.right" :label="`+${more.right}`" color="neutral" variant="soft" size="xs" class="flex-none tabular-nums" :aria-label="`${more.right} more ${more.right === 1 ? 'member' : 'members'}`" tabindex="-1" data-tabs-edge="right" @click="scrollMore(1)" />
+    </div>
   </div>
 </template>

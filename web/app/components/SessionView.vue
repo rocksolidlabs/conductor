@@ -4,7 +4,7 @@ import { answersInChat, liveAttention, offeredChoices, takesReply } from '~/util
 import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge, ChatQuote } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
-import { railView, type InspectorView } from '~/utils/inspector'
+import { railView, type FilesView, type InspectorView } from '~/utils/inspector'
 import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { firstMessageLine } from '~/utils/launch'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
@@ -115,6 +115,26 @@ const chatOffline = computed(() => transport.value.state !== 'open')
 // Below xl the inspector is not rendered: the header's Chat button opens the chat as a sheet (design 2c).
 const xl = useMedia('(min-width: 80rem)')
 const chatSheet = ref(false)
+// Below xl Files, Changes and Commits are a sheet too (the inspector is not drawn there): on a phone More's Files opens it.
+const filesSheet = ref(false)
+const filesSection = ref<FilesView>('explorer')
+/** A files view below xl: the sheet on it. False at xl, where the inspector shows it. */
+function filesSheetOn(v: InspectorView): boolean {
+  if (xl.value || (v !== 'explorer' && v !== 'changes' && v !== 'commits')) return false
+  filesSection.value = v
+  filesSheet.value = true
+  return true
+}
+/** A file, a change or a commit's change opened from the sheet: the sheet closes on the editor's tab. */
+function fromFilesSheet<A extends unknown[]>(f: (...a: A) => unknown) {
+  return (...a: A) => {
+    filesSheet.value = false
+    f(...a)
+  }
+}
+const sheetOpenFile = fromFilesSheet(openFile)
+const sheetOpenDiff = fromFilesSheet(openDiff)
+const sheetOpenCommitDiff = fromFilesSheet(openCommitDiff)
 /** The thread is in front of the person: on the inspector's People view where the inspector shows, or in the sheet. */
 const chatShown = computed(() => (xl.value && inspector.value && railView(tab.value) === 'people') || chatSheet.value)
 function showChat() {
@@ -651,7 +671,7 @@ async function refreshLinks() {
 
 async function signal(state: 'needs_input' | 'working' | 'clear') {
   try {
-    await api.setAttention(id.value, state, state === 'needs_input' ? 'Marked by a person.' : undefined)
+    await api.setAttention(id.value, state, undefined)
   } catch (e) {
     toast.add({ title: 'Signal failed', description: (e as Error).message, color: 'error' })
   }
@@ -725,6 +745,7 @@ function option(index: number, question?: string) {
 
 /** The header's Files button selects the rail's Explorer item, and collapses the panel when that already shows (4h). */
 function showFiles() {
+  if (filesSheetOn('explorer')) return
   if (inspector.value && tab.value === 'explorer') inspector.value = false
   else {
     tab.value = 'explorer'
@@ -781,6 +802,7 @@ watch(
       chatSheet.value = true
       return
     }
+    if (filesSheetOn(v)) return
     tab.value = v
     inspector.value = true
   },
@@ -863,6 +885,7 @@ function showView(v: InspectorView) {
     chatSheet.value = true
     return
   }
+  if (filesSheetOn(v)) return
   tab.value = railView(v)
   inspector.value = true
 }
@@ -1005,7 +1028,7 @@ palette.registerPage(() => {
             <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. Below sm Files, Share and
                  Fullscreen are the first items of More (D9), so that the name keeps its room. -->
             <!-- Files and Chat only below xl (#329): at xl the inspector rail has both, with the chat's count; here they said it twice. -->
-            <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" class="hidden sm:inline-flex xl:hidden" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles">Files</UButton>
+            <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" class="hidden sm:inline-flex xl:hidden" :class="(xl ? inspector && tab === 'explorer' : filesSheet) && 'ring-2 ring-primary/40'" @click="showFiles">Files</UButton>
             <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" class="hidden sm:inline-flex" data-share-button @click="share = true">Share</UButton>
             <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
             <IconButton v-if="chat.thread.value.capable" icon="i-lucide-users" color="neutral" variant="outline" label="People" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
@@ -1129,5 +1152,21 @@ palette.registerPage(() => {
   </UDashboardPanel>
 
   <ShareLinksModal v-model:open="share" :session-id="id" :session-name="current?.name" :chat="way === 'protocol'" />
+  <USlideover v-if="!xl && current" v-model:open="filesSheet" side="right" title="Files" :description="current.cwd" :ui="{ content: 'sm:max-w-md', body: 'flex min-h-0 flex-1 flex-col p-0 sm:p-0' }">
+    <template #body>
+      <FilesPane
+        v-model:section="filesSection"
+        :request="requestFile"
+        :cwd="current.cwd"
+        :raw-url="rawUrl"
+        :activity="activity"
+        class="flex-1 min-h-0"
+        data-files-sheet
+        @open="sheetOpenFile"
+        @open-diff="sheetOpenDiff"
+        @open-commit-diff="sheetOpenCommitDiff"
+      />
+    </template>
+  </USlideover>
   <ChatSheet v-model:open="chatSheet" title="People" :thread="chat.thread.value" role="control" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
 </template>

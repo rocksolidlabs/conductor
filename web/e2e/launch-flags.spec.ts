@@ -427,3 +427,25 @@ test("a lone -- says the session stays in its terminal, as --add-dir does, and a
     await page.context().close()
   }
 })
+
+test('a last flag that wants a value and has none is said under the field and holds Launch; the server refuses it in the same words', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const { dialog, field } = await argsOf(page, CLAUDE, 'flags')
+    const launch = dialog.locator('[data-launch-submit]')
+    const line = dialog.locator('[data-args-needs-value]')
+    await field.click()
+    await field.pressSequentially('--effort')
+    await expect(line).toHaveText('--effort needs a value.')
+    await expect(launch).toBeDisabled()
+    // A value given ends it.
+    await field.fill('--effort high')
+    await expect(line).toHaveCount(0)
+    await expect(launch).toBeEnabled()
+  } finally {
+    await page.context().close()
+  }
+  const { status, body } = await own.api.call<{ error?: { code: string; message: string } }>('POST', '/api/sessions', { agentId: 'flags', args: ['--verbose', '--effort'] })
+  expect(status).toBe(400)
+  expect(body.error).toMatchObject({ code: 'arg_needs_value', message: '--effort needs a value.' })
+})

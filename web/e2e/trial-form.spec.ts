@@ -259,8 +259,17 @@ test('a press whose first problem is under More options opens it and puts the cu
   await folder.press('Tab')
   const more = await openMore(form)
   await more.locator('[data-compare-agent-args="0"]').fill('--model "opus')
+  // Closing the fold moves neither Save trial nor Cancel: a press made as it closes lands on the button it was aimed at. Measured
+  // at rest (AGENTS.md), before and after the fold's own animation.
+  const save = dialog.locator('[data-compare-create]')
+  await atRest(dialog)
+  const before = (await save.boundingBox())!
   await form.locator('[data-more-options]').click()
   await expect(form.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'false')
+  await expect(more).toBeHidden()
+  await atRest(dialog)
+  const after = (await save.boundingBox())!
+  expect(Math.abs(after.y - before.y), 'Save trial stays where it was').toBeLessThanOrEqual(0.5)
   await dialog.locator('[data-compare-create]').click()
   await expect(form.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'true')
   await expect(more.locator('[data-compare-agent-args="0"]')).toBeFocused()
@@ -291,7 +300,17 @@ test("a folder agents may not use, and a repository with no commit, are marked a
       expect((await checked).status()).toBe(status)
       await expect(field).toHaveAttribute('data-folder-checked', dir)
     }
+    // The folder's line arrives on its own, after its check: Save trial and Cancel stay where they were (a pointer already on its way
+    // to Cancel lands on it), the body taking the line. Measured at rest, before and after.
+    const cancel = dialog.locator('[data-compare-cancel]')
+    await atRest(dialog)
+    const [saveAt, cancelAt] = [(await save.boundingBox())!, (await cancel.boundingBox())!]
     await pick(outside, 400)
+    await expect(form.locator('[data-launch-folder-line]')).toBeVisible()
+    await atRest(dialog)
+    const [saveNow, cancelNow] = [(await save.boundingBox())!, (await cancel.boundingBox())!]
+    expect(Math.abs(saveNow.y - saveAt.y), 'Save trial stays where it was as the line arrives').toBeLessThanOrEqual(0.5)
+    expect(Math.abs(cancelNow.y - cancelAt.y), 'Cancel stays where it was as the line arrives').toBeLessThanOrEqual(0.5)
     await expect(folder).toHaveAttribute('aria-invalid', 'true')
     await expect(save).toBeDisabled()
     // One line under Folder, the folder's own: never the server's words beside it.

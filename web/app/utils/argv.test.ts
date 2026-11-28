@@ -65,3 +65,17 @@ describe('joinArgv', () => {
     expect(joinArgv(['echo', "it's"])).toBe("echo 'it'\\''s'")
   })
 })
+
+describe('what follows a closing quote', () => {
+  it('is part of the same argument up to the next white space, as a shell reads it', () => {
+    expect(splitArgs('"a b"c')).toEqual(['a bc'])
+    expect(splitArgs("'a b'c d")).toEqual(['a bc', 'd'])
+    expect(splitArgs('"a b" c')).toEqual(['a b', 'c'])
+    expect(splitArgs('--add-dir "/r/a b"/sub --x')).toEqual(['--add-dir', '/r/a b/sub', '--x'])
+    // A quote after the closing one opens nothing; a backslash is never special.
+    expect(splitArgs('"a"\'b c\'')).toEqual(["a'b", "c'"])
+    expect(splitArgs('"a\\" b')).toEqual(['a\\', 'b'])
+    expect(hasOpenQuote('"a b"c')).toBe(false)
+    expect(hasOpenQuote('"a b"c "d')).toBe(true)
+  })
+})

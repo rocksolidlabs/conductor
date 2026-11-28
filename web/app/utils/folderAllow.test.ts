@@ -86,8 +86,8 @@ describe('the press', () => {
   })
   it('says what became of the folder', () => {
     const c = outside()
-    expect(answerLine({ ok: true, root: '/r', saved: true }, c)).toMatchObject({ state: 'allowed_now', words: 'Agents can use this folder now.', blocks: false, tone: 'success' })
-    expect(answerLine({ ok: true, root: '/r', saved: true }, c).settings).toBeFalsy()
+    expect(answerLine({ ok: true, root: '/r', saved: true }, c)).toMatchObject({ state: 'allowed_now', settings: true, blocks: false, tone: 'success' })
+    expect(said(answerLine({ ok: true, root: '/r', saved: true }, c))).toBe('Agents can use this folder now. Saved in Settings.')
     // Never the app's own text: the fact, and the way on.
     const unsaved = answerLine({ ok: true, root: '/r', saved: false, error: 'the settings file could not be written' }, c)
     expect(said(unsaved)).toBe('Agents can use this folder until Conductor restarts. Add it in Settings to keep it.')

@@ -425,3 +425,58 @@ func TestFlagsRouteMarksWhatKeepsATerminal(t *testing.T) {
 		}
 	}
 }
+
+// A launch whose arguments end with a flag the agent's help says takes a
+// value, none given, is refused before anything starts, in its words; a
+// value given, an optional one and an agent whose help was not read pass.
+// A crew's member is judged the same way at its run's launch.
+func TestALaunchRefusesALastFlagWithNoValue(t *testing.T) {
+	prog := flagsProgram(t)
+	helper := claudeLike("helper", prog)
+	unread := claudeLike("unread", flagsProgram(t))
+	f := newFlagsEnv(t, []catalog.Agent{helper, unread})
+	f.answer = func(int32) (string, agents.ProbeResult) {
+		return flagsHelp + "  --worktree [name]                 A worktree, named or not\n", agents.ProbeResult{Ran: true}
+	}
+	f.askUntil(t, "helper", flagsRead)
+	launch := func(id string, args ...string) (int, map[string]any) {
+		resp, out := f.e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": id, "args": args})
+		if resp.StatusCode == http.StatusCreated {
+			sid, _ := out["id"].(string)
+			t.Cleanup(func() {
+				if d, ok := f.e.srv.registry.Get(sid); ok {
+					_ = d.Stop(t.Context())
+				}
+			})
+		}
+		return resp.StatusCode, out
+	}
+	for _, args := range [][]string{{"--effort"}, {"--verbose", "--effort"}} {
+		code, out := launch("helper", args...)
+		if code != http.StatusBadRequest || errorCode(out) != "arg_needs_value" || !strings.Contains(fmt.Sprint(out), NeedsValueWords("--effort")) {
+			t.Errorf("%q: %d %v", args, code, out)
+		}
+	}
+	for _, args := range [][]string{{"--effort", "high"}, {"--effort=high"}, {"--worktree"}, {"--verbose"}} {
+		if code, out := launch("helper", args...); code != http.StatusCreated {
+			t.Errorf("%q: %d %v", args, code, out)
+		}
+	}
+	// The other agent's help was never read here: nothing is judged.
+	if code, out := launch("unread", "--effort"); code != http.StatusCreated {
+		t.Errorf("an agent whose help was not read: %d %v", code, out)
+	}
+	// A crew's member, at its run's launch.
+	body := map[string]any{"name": "flags", "goal": "", "cwd": f.e.root, "where": "server", "isolation": "none", "openAfterLaunch": false,
+		"members": []any{map[string]any{"name": "lead", "agentId": "helper", "prompt": "", "args": []any{"--effort"}, "start": map[string]any{"when": "manual"}}}}
+	resp, out := f.e.do("POST", "/api/crews", adminToken, body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("the crew: %d %v", resp.StatusCode, out)
+	}
+	crew, _ := out["crew"].(map[string]any)
+	id, _ := crew["id"].(string)
+	resp, out = f.e.do("POST", "/api/crews/"+id+"/launch", adminToken, map[string]any{})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(fmt.Sprint(out), NeedsValueWords("--effort")) {
+		t.Errorf("the crew's launch: %d %v", resp.StatusCode, out)
+	}
+}

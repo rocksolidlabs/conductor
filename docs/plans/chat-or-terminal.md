@@ -3204,6 +3204,14 @@ resumed thread; the approvals' order against `item/started`, a command's
 delete; whether Conductor's own MCP tools ask through
 `mcpServer/elicitation/request` in a chat; and whether a turn can leave
 work running after `turn/completed`. Then the fixtures are recorded there.
+The same look checks the keys a terminal's `-c` overrides may not carry
+into a chat (the driver's `codexDriverKeys`, today the approval policy,
+the sandbox's, a profile, Conductor's own tool server and any server's
+table or asking) against the installed Codex, and adds the ones it finds:
+the key behind its approve-for-me flag, a project's trust level (trust
+sets the default asking when a resume leaves the policy empty), any
+newer permission-profile keys, and a feature that `--enable` or
+`--disable` turns on or off and that changes asking.
 
 ### Row 11: the Agent Client Protocol client
 

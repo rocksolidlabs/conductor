@@ -56,6 +56,7 @@
 // $HOME/.stub-sessions is there:
 //   "/compact"          the program compacts the conversation itself: its own "Compacted" line, the message's replay as
 //                       command tags, a result with no model turn
+//   "/clear"            the program takes up a new conversation, which its init names (the clear's notice)
 //   "/<a listed name>"  one of STUB_COMMANDS (fix-issue): the replay as command tags, then "stub ran: /<name> <args>"
 //   "/<another name>"   no replay: "/<name> isn't available in this environment." and a result naming the message
 //   "@<path>"           at a word's start, a file inside its folder: the words are "stub attached: <path>, ..."
@@ -93,6 +94,8 @@ if (!args.includes('-p')) {
 }
 const resume = args.indexOf('--resume')
 const session = resume >= 0 ? args[resume + 1] : '00000000-0000-4000-8000-000000000001'
+// The conversation its init names: the session's, until an unmarked /clear takes up a new one, as the program does.
+let conversation = session
 const permissionMode = args.includes('--dangerously-skip-permissions') ? 'bypassPermissions' : 'default'
 
 if (process.env.STUB_PROTOCOL_CHILD === '1') spawn('sleep', ['600'], { stdio: 'ignore' }).unref()
@@ -272,11 +275,19 @@ function unmarkedCommand(m, text) {
   const cmd = /^\/([A-Za-z0-9_][A-Za-z0-9_.:-]*)(?:\s+([\s\S]*))?$/.exec(text)
   if (!cmd) return false
   const [, name, rest = ''] = cmd
-  const init = () => send({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: session, tools: ['Bash', 'Read'], mcp_servers: [],
+  const init = () => send({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: conversation, tools: ['Bash', 'Read'], mcp_servers: [],
     model: 'stub', permissionMode, claude_code_version: version, output_style: 'default', capabilities: ['interrupt_receipt_v1', 'msg_lifecycle_v1'], uuid: uuid() })
   const tags = `<command-name>/${name}</command-name>\n<command-message>${name}</command-message>\n<command-args>${rest}</command-args>`
   const result = (words, turnsUsed) => send({ type: 'result', subtype: 'success', is_error: false, num_turns: turnsUsed, result: words,
     session_id: session, total_cost_usd: cost, usage: { input_tokens: 0, output_tokens: 0 }, user_message_uuid: m.uuid, user_message_uuids: [m.uuid], uuid: uuid() })
+  if (name === 'clear') {
+    // The program forgets the conversation and takes up a new one: its init names it.
+    conversation = `00000000-0000-4000-8000-${String(Date.now() % 1e12).padStart(12, '0')}`
+    init()
+    send({ type: 'user', message: { role: 'user', content: tags }, session_id: session, parent_tool_use_id: null, uuid: m.uuid, isReplay: true })
+    result('', 0)
+    return true
+  }
   if (name === 'compact') {
     send({ type: 'system', subtype: 'status', status: 'compacting', session_id: session, uuid: uuid() })
     init()
@@ -318,7 +329,7 @@ async function turn(m) {
   if (existsSync(kept)) appendFileSync(keptFile('marks'), `${marked ? 'marked' : 'unmarked'}\n`)
   if (!marked && unmarkedCommand(m, text.trim())) return
   const files = marked ? [] : attached(text)
-  send({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: session, tools: ['Bash', 'Read'], mcp_servers: [],
+  send({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: conversation, tools: ['Bash', 'Read'], mcp_servers: [],
     model: 'stub', permissionMode, claude_code_version: version, output_style: 'default',
     capabilities: process.env.STUB_PROTOCOL_NO_RECEIPT === '1' ? ['msg_lifecycle_v1'] : ['interrupt_receipt_v1', 'msg_lifecycle_v1'],
     uuid: uuid() })

@@ -33,6 +33,10 @@ const (
 	MovingWords          = "The session is moving; try again in a moment."
 	MovedToTerminalWords = "Moved to the terminal."
 	MovedToChatWords     = "Moved to Chat. Earlier terminal messages are not shown here, and commands left running in the terminal were stopped."
+	// ClearedWords is the notice of a chat whose agent took up a new
+	// conversation (its /clear): what the transcript holds above it is no
+	// longer the agent's.
+	ClearedWords = "Cleared. The agent no longer remembers what is above."
 	// AfterFirstReplyWords is a move to Chat noted at the launch (NoteWay)
 	// while the agent's first reply has not ended: the plan has no sentence
 	// for a move noted before a turn (issue 1174).
@@ -43,6 +47,7 @@ const (
 	ChatNotStartedWords = "The chat did not start."
 	TermNotStartedWords = "The terminal did not start."
 	noticeMoved         = "moved"
+	noticeCleared       = "cleared"
 	noticeMoveFailed    = "move_failed"
 	moveStopWait        = 5 * time.Second
 	moveGroupWait       = ext.StopKillWait
@@ -709,6 +714,9 @@ func (s *Local) renewTerminalLocked() {
 func (s *Local) moved(to, why string) {
 	var out applied
 	out.event = "moved"
+	// Sent to every viewer as it is made, after a move to the terminal too:
+	// a page that stays attached has it live, as a read of the transcript.
+	out.anyWay = true
 	s.mu.Lock()
 	words := MovedToTerminalWords
 	if to == WayProtocol {

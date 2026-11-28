@@ -749,3 +749,130 @@ test('Alt+Q goes to Crews while the run is missing; the rail marks the open memb
     await page.context().close().catch(() => undefined)
   }
 })
+
+// Below xl the inspector is not drawn: Files, Changes and Commits open as a sheet, on a member as on a session of its own (UX3 R72's
+// look: More's Files on a phone opened nothing, for either). A file opened from it closes the sheet on the editor's tab.
+test("on a phone More's Files opens a member's files, its changes and commits, as it does a session of its own's", async ({ browser }) => {
+  const api = own.api
+  writeFileSync(join(cwd, 'phone-notes.md'), 'notes for the phone\n')
+  const alone = await api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'e2e phone files alone', cwd })
+  const page = await dayPage(browser, { server: own.started, width: 390, height: 844, touch: true })
+  try {
+    budget(4 * STEP_MS + 2 * LONG_MS)
+    const filesOpen = async () => {
+      await page.locator('[data-more-button]').tap()
+      await page.getByRole('menuitem', { name: 'Files', exact: true }).tap()
+      await expect(page.getByRole('menu')).toHaveCount(0)
+      const sheet = page.locator('[data-files-sheet]')
+      await expect(sheet).toBeInViewport({ timeout: STEP_MS })
+      await expect(sheet.locator('[data-files-tree]')).toContainText('phone-notes.md', { timeout: STEP_MS })
+      // Its changes and commits are the sheet's rail's other two.
+      await sheet.locator('[data-rail-item="changes"]').tap()
+      await expect(sheet.locator('[data-files-changes-head]')).toBeVisible({ timeout: STEP_MS })
+      await sheet.locator('[data-rail-item="commits"]').tap()
+      await expect(sheet.locator('[data-files-commits-head]')).toBeVisible({ timeout: STEP_MS })
+      await sheet.locator('[data-rail-item="explorer"]').tap()
+      await sheet.locator('[data-files-tree]').getByText('phone-notes.md', { exact: true }).tap()
+      await expect(sheet).toHaveCount(0)
+      await expect(page.getByText('notes for the phone').first()).toBeVisible({ timeout: LONG_MS })
+    }
+    await memberPage(page, 'lead')
+    await filesOpen()
+    await page.goto(`/sessions/${encodeURIComponent(alone.id)}`)
+    await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: LONG_MS })
+    await filesOpen()
+  } finally {
+    await page.context().close()
+    await api.stopSession(alone.id)
+  }
+})
+
+/** The tabs of a strip not wholly inside it, to each side, as a person would count them. */
+async function pastEdges(tabs: ReturnType<Page['locator']>): Promise<{ left: number; right: number }> {
+  return tabs.evaluate((el) => {
+    const box = el.getBoundingClientRect()
+    let [left, right] = [0, 0]
+    for (const t of Array.from(el.querySelectorAll('[data-member-tab]'))) {
+      const b = t.getBoundingClientRect()
+      if (b.left < box.left - 1) left++
+      else if (b.right > box.right + 1) right++
+    }
+    return { left, right }
+  })
+}
+
+// The strip's cut edge says the crew goes on (UX3 R72's look: twelve members at 1500 were cut at the window's edge with nothing drawn to
+// say so): each edge that cuts members draws `+N`, N the members past it, a button whose fill shows on either theme; a press scrolls
+// that way; an edge that cuts none draws nothing; the open member stays whole in view.
+for (const theme of ['dark', 'light'] as const) {
+  test(`at 1500 an edge that cuts members says how many are past it, and one that cuts none says nothing (${theme})`, async ({ browser }) => {
+    const api = own.api
+    const members = Array.from({ length: 12 }, (_, i) => ({ name: `member-${String(i + 1).padStart(2, '0')}`, agentId: 'shell', prompt: '', start: { when: 'immediately' } }))
+    const crew = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name: `${CREW} edge ${theme}`, goal: '', cwd, where: 'server', isolation: 'none', openAfterLaunch: false, members })).crew.id
+    let big = await api.launchCrew(crew)
+    const page = await dayPage(browser, { server: own.started, width: 1500, height: 810, theme, path: '/crews' })
+    try {
+      budget(4 * LONG_MS + 6 * STEP_MS)
+      await expect.poll(async () => member(await api.run(big.id), 'member-12').sessionId ?? '', { timeout: 2 * LONG_MS }).not.toBe('')
+      big = await api.run(big.id)
+      const strip = page.locator(`[data-member-strip][data-run="${big.id}"]`)
+      const tabs = strip.locator('[data-member-tabs]')
+      const [left, right] = [strip.locator('[data-tabs-edge="left"]'), strip.locator('[data-tabs-edge="right"]')]
+
+      // The first member open: the right edge cuts the rest and says how many; the left cuts none and draws nothing.
+      await page.goto(`/sessions/${encodeURIComponent(member(big, 'member-01').sessionId!)}`)
+      await expect(tabs.locator('[data-member-tab]')).toHaveCount(12, { timeout: LONG_MS })
+      await atRest(strip)
+      await expect.poll(async () => (await pastEdges(tabs)).right, { message: 'members past the right edge' }).toBeGreaterThan(0)
+      const past = await pastEdges(tabs)
+      expect(past.left, 'none past the left edge').toBe(0)
+      await expect(right).toBeInViewport()
+      await expect(right).toHaveText(`+${past.right}`)
+      await expect(right).toHaveAccessibleName(`${past.right} more members`)
+      await expect(left).toHaveCount(0)
+      // Its fill shows on the strip's own colour, on this theme.
+      const [fill, ground] = [await right.evaluate((e) => getComputedStyle(e).backgroundColor), await strip.evaluate((e) => {
+        // The first fill under the strip: its own or an ancestor's.
+        for (let at: Element | null = e; at; at = at.parentElement) {
+          const c = getComputedStyle(at).backgroundColor
+          if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') return c
+        }
+        return ''
+      })]
+      expect(fill, 'the mark has a fill of its own').not.toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
+      expect(fill, 'its fill differs from the ground').not.toBe(ground)
+      await uncut(tabs.locator('[data-member-tab="member-01"]'))
+
+      // A press scrolls on: the left edge now says how many it cuts, the right fewer or none.
+      // The scroll is smooth: the tabs are counted once it has ended (its scrollend), not as it passes.
+      // (Held in an object: a handle to the promise itself would wait for it before the press.)
+      const ended = await tabs.evaluateHandle((el) => ({ at: new Promise<void>((done) => el.addEventListener('scrollend', () => done(), { once: true })) }))
+      await right.click()
+      await ended.evaluate((o) => o.at)
+      await expect(left).toBeInViewport({ timeout: STEP_MS })
+      const after = await pastEdges(tabs)
+      expect(after.left, 'members past the left edge').toBeGreaterThan(0)
+      await expect(left).toHaveText(`+${after.left}`)
+      if (after.right) await expect(right).toHaveText(`+${after.right}`)
+      else await expect(right).toHaveCount(0)
+
+      // The last member open: whole in view, right of the left edge's mark; the right edge cuts none and draws nothing.
+      await tabs.locator('[data-member-tab="member-12"]').click()
+      await expect.poll(() => where(page)).toBe(`/runs/${encodeURIComponent(big.id)}?session=${member(big, 'member-12').sessionId}`)
+      await expect(right).toHaveCount(0, { timeout: STEP_MS })
+      await expect(left).toBeInViewport()
+      await uncut(tabs.locator('[data-member-tab="member-12"]'))
+      const [mark, open] = [await left.boundingBox(), await tabs.locator('[data-member-tab="member-12"]').boundingBox()]
+      expect(open!.x, 'the open member clear of the mark').toBeGreaterThanOrEqual(mark!.x + mark!.width - 0.5)
+
+      // A crew whose members all fit: no edge says anything.
+      await memberPage(page, 'lead')
+      await expect(page.locator(`[data-member-strip][data-run="${run.id}"] [data-member-tab]`)).toHaveCount(3)
+      await expect(page.locator('[data-tabs-edge]')).toHaveCount(0)
+    } finally {
+      await page.context().close()
+      await api.stopRun(big.id)
+      await api.call('DELETE', `/api/crews/${encodeURIComponent(crew)}`)
+    }
+  })
+}

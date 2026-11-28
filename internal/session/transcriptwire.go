@@ -387,11 +387,12 @@ func (s *Local) InterruptAsk(sub *Subscription, reqID string, wait func(context.
 // sendEntries sends every viewer, the quiet ones but, the entries seqs as
 // the ring keeps them now (an entry dropped meanwhile is sent no more), each
 // once, under the session's lock: a viewer that attaches meanwhile has them
-// in its replay or after it, never before it.
-func (s *Local) sendEntries(seqs []uint64) {
+// in its replay or after it, never before it. Nothing while the session
+// runs in its terminal, but with anyWay (a move's notice).
+func (s *Local) sendEntries(seqs []uint64, anyWay bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.way.Load() == nil {
+	if s.way.Load() == nil && !anyWay {
 		return
 	}
 	sent := make(map[uint64]bool, len(seqs))

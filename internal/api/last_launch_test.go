@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // lastLaunchOf reads GET /api/launch/last as the admin.
@@ -281,5 +283,119 @@ func TestLastLaunchChatNoted(t *testing.T) {
 	launchFor(t, e, map[string]any{"agentId": "cat"})
 	if d := lastLaunchOf(t, e.restart()); !d.ChatNoted || d.Agent != "cat" {
 		t.Fatalf("after a launch and a restart: %+v", d)
+	}
+}
+
+// lastLaunchFile reads the record as the server wrote it, and the record the route then answers.
+func lastLaunchFile(t *testing.T, e *testEnv) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(e.srv.store.Dir(), "launch", lastLaunchDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// The write's bound is the bound of the bytes written, which the read is held to: a record whose compact form is under it but whose
+// file would be over it is not written (the one kept stays, and reads back), and a record whose compact form is over it (its <, >
+// and & escaped six bytes each) but whose file fits is written and reads back.
+func TestLastLaunchMeasuresWhatItWrites(t *testing.T) {
+	e := newTestEnv(t, nil)
+	launchFor(t, e, map[string]any{"agentId": "cat"})
+	kept := lastLaunchOf(t, e)
+	if kept.Agent != "cat" {
+		t.Fatalf("the first launch: %+v", kept)
+	}
+	// Short strings in an array the file indents: about 4 bytes each compact, about 10 in the file.
+	long := make([]string, maxLastLaunch/6)
+	for i := range long {
+		long[i] = "a"
+	}
+	e.srv.changeLastLaunch(func(d lastLaunch) lastLaunch {
+		d.Trial = &lastTrial{Agents: []string{}, Checks: []lastTrialCheck{{Folder: "/f", Check: long}}}
+		return d
+	})
+	if b, _ := store.Encode(lastLaunch{V: 1, Trial: &lastTrial{Checks: []lastTrialCheck{{Check: long}}}}); len(b) <= maxLastLaunch {
+		t.Fatalf("the case does not pass the bound in the file: %d bytes", len(b))
+	}
+	if b := lastLaunchFile(t, e); len(b) > maxLastLaunch {
+		t.Fatalf("a record past the bound was written: %d bytes", len(b))
+	}
+	if d := lastLaunchOf(t, e); !reflect.DeepEqual(d, kept) {
+		t.Fatalf("the record kept is gone: %+v", d)
+	}
+	// Each model name at its bound, made of <: six times its length compact, its length in the file.
+	angled := strings.Repeat("<", lastLaunchModelLen)
+	e.srv.changeLastLaunch(func(d lastLaunch) lastLaunch {
+		for i := range lastLaunchAgents {
+			for j := range lastLaunchNames {
+				d = d.after(fmt.Sprintf("agent-%02d", i), "", angled[:lastLaunchModelLen-j], "")
+			}
+		}
+		return d
+	})
+	d := lastLaunchOf(t, e)
+	if len(d.Models) != lastLaunchAgents || d.Models["agent-31"].Model != angled[:lastLaunchModelLen-lastLaunchNames+1] {
+		t.Fatalf("a record that fits in the file was not kept: %d agents", len(d.Models))
+	}
+}
+
+// A record read back is held to what a write holds: a folder, a model or a name past its bound or not UTF-8, an agent twice in the
+// order, a trial's folder or Check line past its bound or not UTF-8, or more folders than a trial keeps, read as none.
+func TestLastLaunchReadsAsNoneARecordPastWhatAWriteHolds(t *testing.T) {
+	good := func() lastLaunch {
+		d := emptyLastLaunch().after("claude", "/w", "opus", "protocol").after("codex", "/w", "", "")
+		return d.afterTrial([]string{"claude", "codex"}, "/repo", []string{"go", "test"})
+	}
+	if !good().sound() {
+		t.Fatal("a record a write makes is not sound")
+	}
+	bad := "\xff"
+	for name, change := range map[string]func(*lastLaunch){
+		"a folder past its bound": func(d *lastLaunch) { d.Folder = "/" + strings.Repeat("f", lastLaunchText) },
+		"a folder not UTF-8":      func(d *lastLaunch) { d.Folder = "/" + bad },
+		"a model past its bound": func(d *lastLaunch) {
+			m := d.Models["claude"]
+			m.Model = strings.Repeat("m", lastLaunchModelLen+1)
+			d.Models["claude"] = m
+		},
+		"a model not UTF-8": func(d *lastLaunch) { m := d.Models["claude"]; m.Model = bad; d.Models["claude"] = m },
+		"a name past its bound": func(d *lastLaunch) {
+			m := d.Models["claude"]
+			m.Names = []string{strings.Repeat("n", lastLaunchModelLen+1)}
+			d.Models["claude"] = m
+		},
+		"a name not UTF-8":            func(d *lastLaunch) { m := d.Models["claude"]; m.Names = []string{bad}; d.Models["claude"] = m },
+		"an agent twice in the order": func(d *lastLaunch) { d.Order = []string{"claude", "claude"} },
+		"a trial's folder past its bound": func(d *lastLaunch) {
+			d.Trial.Folder = "/" + strings.Repeat("f", lastTrialFolderLen)
+		},
+		"a trial's folder not UTF-8": func(d *lastLaunch) { d.Trial.Folder = bad },
+		"a check's folder past its bound": func(d *lastLaunch) {
+			d.Trial.Checks[0].Folder = "/" + strings.Repeat("f", lastTrialFolderLen)
+		},
+		"a check's folder not UTF-8":    func(d *lastLaunch) { d.Trial.Checks[0].Folder = bad },
+		"a Check line past its bound":   func(d *lastLaunch) { d.Trial.Checks[0].Check = []string{strings.Repeat("x", lastTrialCheckLen)} },
+		"a Check line not UTF-8":        func(d *lastLaunch) { d.Trial.Checks[0].Check = []string{bad} },
+		"more folders than a trial has": func(d *lastLaunch) { d.Trial.Checks = make([]lastTrialCheck, lastTrialFolders+1) },
+	} {
+		d := good()
+		change(&d)
+		if d.sound() {
+			t.Errorf("%s: sound", name)
+		}
+	}
+	// And over the route: a file with an agent twice in its order reads as none.
+	e := newTestEnv(t, nil)
+	dir := filepath.Join(e.srv.store.Dir(), "launch")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	twice := `{"v":1,"models":{"a":{"model":"","names":[]},"b":{"model":"","names":[]}},"order":["a","a"]}`
+	if err := os.WriteFile(filepath.Join(dir, lastLaunchDoc), []byte(twice), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := lastLaunchOf(t, e); !reflect.DeepEqual(d, emptyLastLaunch()) {
+		t.Fatalf("an agent twice in the order read as %+v", d)
 	}
 }
