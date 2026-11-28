@@ -5,7 +5,7 @@ import { liveSession } from './attention'
 import { needsYou } from './needsYou'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
-import { bestGrid, evenShares, gutterRange, isRunLayout, movedShares, RUN_LAYOUT_LOOK, RUN_LAYOUTS, sharesFor, TILE_GAP, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, tileAsk, wallTracks, yardFilterOf, lastItemSpan, needsChipWords, yardChips, yardCounts, yardFilter, YARD_FILTERS, type YardCounts } from './wall'
+import { bestGrid, evenShares, gutterRange, isRunLayout, movedShares, RUN_LAYOUT_LOOK, RUN_LAYOUTS, sharesFor, TILE_GAP, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, tileAsk, wallTracks, yardFilterOf, lastItemSpan, needsChipWords, yardChips, yardCounts, yardFilter, YARD_FILTERS, type YardCounts, gutterAxes } from './wall'
 
 describe('bestGrid', () => {
   it('handles empty and degenerate boxes', () => {
@@ -283,5 +283,16 @@ describe("an asking tile's words", () => {
     // The words the row's prompt shows, never a copy made apart: a question with no words says what the row says.
     const blank = liveSession(tile('blank', 'running', ask('blank', { message: '' })))
     expect(tileAsk(blank)).toBe(rowPrompt(sessionRow(blank))!.message)
+  })
+})
+
+describe('gutterAxes', () => {
+  it("draws a layout's own gaps, and none on an axis of more tracks than a size is kept for", () => {
+    expect(gutterAxes('grid', 3, 2)).toEqual(['cols', 'rows'])
+    expect(gutterAxes('columns', 12, 1)).toEqual(['cols'])
+    expect(gutterAxes('columns', 13, 1)).toEqual([])
+    expect(gutterAxes('rows', 1, 13)).toEqual([])
+    expect(gutterAxes('grid', 1, 13)).toEqual([])
+    expect(gutterAxes('large', 2, 6)).toEqual(['cols'])
   })
 })

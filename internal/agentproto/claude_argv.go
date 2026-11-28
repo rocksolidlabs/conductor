@@ -55,6 +55,29 @@ var claudeOwnFlags = []string{
 // chat's child is started in the session's own folder alone.
 var ErrAddedFolder = errors.New("agentproto: the launch's arguments name an added folder, which stays with the terminal")
 
+// ErrOptionsEnd is a chat's refusal of a launch whose arguments hold a lone
+// "--": the agent's parser reads every word after it as a plain word, and a
+// chat's child is started with what the chat adds after the terminal's
+// arguments. Such a session keeps to its terminal.
+var ErrOptionsEnd = errors.New("agentproto: the launch's arguments hold a lone --, which stays with the terminal")
+
+// OptionsEndWords is what a person reads when a session launched with a lone
+// "--" in its arguments is asked to move to Chat, or launched as one.
+const OptionsEndWords = "Sessions launched with -- in their arguments stay in their terminal."
+
+// optionsEnd is the lone "--" that ends an agent's options.
+const optionsEnd = "--"
+
+// endsOptions reports whether args hold a lone "--".
+func endsOptions(args []string) bool {
+	for _, a := range args {
+		if a == optionsEnd {
+			return true
+		}
+	}
+	return false
+}
+
 // AddedFolderWords is what a person reads when a session launched with an
 // added folder is asked to move to Chat (the plan's words, design 13).
 const AddedFolderWords = "Sessions launched with an added folder stay in their terminal."
@@ -137,6 +160,9 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 		if addedFolder(set) {
 			return nil, ErrAddedFolder
 		}
+		if endsOptions(set) {
+			return nil, ErrOptionsEnd
+		}
 	}
 	for _, set := range [][]string{l.Protocol, l.Model, l.LaunchArgs} {
 		if f := ownFlag(set); f != "" {
@@ -179,12 +205,16 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 // that the session stays in its terminal: for Claude Code, an added folder
 // or a flag the chat sets itself, judged by the same lists ClaudeArgs
 // refuses by; for Codex, an added folder or any flag its app server takes
-// no counterpart of (codexTakes, the list CodexArgs reads by). A name
-// Conductor does not speak: false.
+// no counterpart of (codexTakes, the list CodexArgs reads by); for an agent
+// of the Agent Client Protocol, any flag (ACPArgs takes none of the
+// terminal's). A lone "--" keeps every chat's session in its terminal. A
+// name Conductor does not speak: false.
 func StaysInTerminal(name, arg string) bool {
 	switch name {
 	case ClaudeStreamJSON:
-		return addedFolder([]string{arg}) || ownFlag([]string{arg}) != ""
+		return arg == optionsEnd || addedFolder([]string{arg}) || ownFlag([]string{arg}) != ""
+	case ACPv1:
+		return strings.HasPrefix(arg, "-")
 	case CodexAppServer:
 		if addedFolder([]string{arg}) {
 			return true

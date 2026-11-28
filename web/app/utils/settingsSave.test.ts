@@ -48,9 +48,9 @@ describe('saveParts', () => {
 
   it("keeps Brakeman's part saved when the app's fails after it", async () => {
     const calls: string[] = []
-    const out = await saveParts({ brakeman: part(calls, 'brakeman', undefined), app: app(calls, 'saved', 'the data directory must be absolute') })
+    const out = await saveParts({ brakeman: part(calls, 'brakeman', undefined), app: app(calls, 'saved', 'where Conductor keeps its data must be an absolute path') })
     expect(calls).toEqual(['brakeman', 'app', 'kept'])
-    expect(out).toEqual({ brakeman: 'saved', app: 'failed', error: 'the data directory must be absolute' })
+    expect(out).toEqual({ brakeman: 'saved', app: 'failed', error: 'where Conductor keeps its data must be an absolute path' })
   })
 
   it("tells a restart that failed after the app kept the settings from a refusal, and one it cannot read from both (Codex's review)", async () => {
@@ -204,10 +204,10 @@ describe('saveWords', () => {
   })
 
   it('says which part was saved and which was not, and that the edits are kept', () => {
-    expect(saveWords({ brakeman: 'saved', app: 'failed', error: 'the data directory must be absolute' })).toEqual({
+    expect(saveWords({ brakeman: 'saved', app: 'failed', error: 'where Conductor keeps its data must be an absolute path' })).toEqual({
       ok: false,
       title: 'Saved in part',
-      description: "Brakeman's settings were saved. The app's settings were not: the data directory must be absolute. Your edits are kept.",
+      description: "Brakeman's settings were saved. The app's settings were not: where Conductor keeps its data must be an absolute path. Your edits are kept.",
     })
     expect(saveWords({ brakeman: 'failed', app: 'held', error: 'Saved elsewhere meanwhile.' })).toEqual({
       ok: false,

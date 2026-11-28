@@ -158,6 +158,9 @@ test('the session page: the views show and never hide, Share, Copy a view link, 
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('working')
   await runRow(page, 'page:mark-needs')
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('needs_input')
+  // A person's own mark is no question of the agent's: its card says the agent needs you, marked by a person.
+  await expect(page.locator('[data-quick-reply-message]')).toHaveText('Marked by a person.', { timeout: 15_000 })
+  await expect(page.locator('[data-quick-reply-message]')).toHaveAttribute('data-heading', / needs you\. $/)
   await runRow(page, 'page:mark-clear')
   await expect.poll(async () => (await api.session(s.id)).attention?.state ?? '', { timeout: 15_000 }).not.toBe('needs_input')
   // Two files open: a tab row brings its tab to the front; Fold folds the editor and brings it back.

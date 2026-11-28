@@ -322,7 +322,9 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
         <ModelField v-model="form.model" :agent="brakemanAgent" placeholder="the agent's default" data-brakeman-model />
       </UFormField>
       <UFormField label="Folder it reads" description="It changes nothing there." :error="fieldError('cwd')" :ui="fieldUi">
-        <DirInput v-model="form.cwd" picker-title="The folder Brakeman reads" data-brakeman-cwd />
+        <DirInput v-model="form.cwd" picker-title="The folder Brakeman reads" lined data-brakeman-cwd />
+        <!-- The folder as the save sends it, trimmed: the line checks that text. -->
+        <FolderAllowLine :path="form?.cwd.trim() ?? ''" @use="(p: string) => form && (form.cwd = p)" />
       </UFormField>
       <p v-if="folders" class="text-xs break-all text-muted" data-brakeman-folders>{{ foldersLine(folders, saved?.cwd ?? '') }}</p>
       <UFormField v-if="caps?.allowTools" label="Conductor's tools" :error="fieldError('allowConductorTools')" :ui="fieldUi">
@@ -377,7 +379,7 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
 
       <fieldset class="flex flex-col gap-2">
         <legend class="mb-1 text-sm font-medium">What it covers</legend>
-        <p class="text-xs text-muted">All of it, unless you pick some: at most {{ BOUNDS.selector }} of a kind.</p>
+        <p class="text-xs text-muted">Everything, unless you pick some: at most {{ BOUNDS.selector }} of a kind.</p>
         <div class="grid gap-3 sm:grid-cols-2">
           <UFormField v-for="f in pickers" :key="f.key" :label="f.label" :error="fieldError(`scope.${f.key}`)">
             <BrakemanScopePicker v-model="scopePicked[f.key]" :listed="f.listed" :label="f.label" :placeholder="f.placeholder" :scope-key="f.key" />

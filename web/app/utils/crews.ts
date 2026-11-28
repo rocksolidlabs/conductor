@@ -1353,7 +1353,7 @@ export const MESSAGE_ALL_TIP = 'Everyone who can get a line now'
 
 const CHIP_WHY: Record<Exclude<RecipientState, 'ready'>, { word: string; tip: (name: string) => string }> = {
   waiting: { word: 'answer it first', tip: (n) => `${n} waits on your answer. Press to see its question.` },
-  ended: { word: 'ended', tip: (n) => `${n} has ended. Resume it on its tile.` },
+  ended: { word: 'ended', tip: (n) => `${n} has ended.` },
   starting: { word: 'starting', tip: (n) => `${n} is starting.` },
   not_started: { word: 'not started', tip: (n) => `${n} has not started yet.` },
 }

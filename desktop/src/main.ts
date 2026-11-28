@@ -165,7 +165,7 @@ async function run() {
   const ice: IceStatus = { forwarding: false, port: ICE_UDP_PORT, publicIp: '', wslAddress: '', firewall: 'unknown' }
   let forwarder: UdpForwarder | null = null
   if (launcher instanceof WslLauncher) {
-    if (wslNetworkingMode() === 'mirrored') ice.reason = 'WSL is in mirrored networking mode: nothing to forward'
+    if (wslNetworkingMode() === 'mirrored') ice.mirrored = true
     else {
       ice.publicIp = windowsLanAddress()
       if (!ice.publicIp) ice.reason = 'no LAN address found on this machine'
@@ -207,7 +207,7 @@ async function run() {
         ice.forwarding = true
       } catch (e) {
         forwarder = null
-        ice.reason = (e as Error).message
+        ice.reason = `the app could not open UDP port ${ice.port}`
         log('main', `udp forwarder: ${(e as Error).message}; WebRTC from WSL is off`)
         return
       }

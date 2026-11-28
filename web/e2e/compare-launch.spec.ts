@@ -303,7 +303,7 @@ test("a comparison made on Crews launches from its ticket with the count its sta
 })
 
 /** Where an agent trial is started, as the crews page and the crew's launch sheet say it. */
-const WHERE = "An agent trial starts from a ticket's approved plan: propose this crew as the ticket's plan, approve it, and launch it there"
+const WHERE = "An agent trial launches from a ticket in Dispatch: press Propose a plan or New revision, pick this crew, then Propose, Approve and Launch"
 
 const PHONE = { width: 390, height: 844 }
 const DESK = { width: 1440, height: 900 }

@@ -8,6 +8,7 @@ import {
   draftOnOpen,
   FOLDER_CHECK_MS,
   notSavedWords,
+  trialCheckLine,
   trialFolderLine,
   inMore,
   optionsLine,
@@ -42,6 +43,9 @@ const error = ref('')
 const pressed = ref(false)
 const moreOpen = ref(false)
 const formRef = useTemplateRef<HTMLFormElement>('form')
+// The folder agents will work in (UX3 R76): the same line, and press, as Launch agent's (FolderAllowLine).
+const allowLine = useTemplateRef<{ blocks: boolean }>('allowLine')
+const allowBlocked = computed(() => !!allowLine.value?.blocks)
 
 /**
  * The dialog's top edge, fixed once it has opened where the modal centred it: More options then opens downward, its button staying
@@ -155,8 +159,10 @@ function cancel() {
   open.value = false
 }
 
-// The folder, asked of the server FOLDER_CHECK_MS after it last changed; only the latest answer counts.
+// The folder, asked of the server FOLDER_CHECK_MS after it last changed; only the latest answer counts. folderChecked is the folder
+// whose answer the line now shows (data-folder-checked), '' before one: what a walk waits for before it reads the line.
 const folderLine = ref('')
+const folderChecked = ref('')
 let folderTimer: number | undefined
 let folderSeq = 0
 async function checkFolder(folder: string) {
@@ -167,16 +173,20 @@ async function checkFolder(folder: string) {
   }
   let line = ''
   try {
-    await api.gitCheck(folder)
+    line = trialCheckLine(await api.gitCheck(folder))
   } catch (e) {
     line = trialFolderLine(e instanceof ApiError ? { code: e.code, message: e.message } : null)
   }
-  if (n === folderSeq) folderLine.value = line
+  if (n === folderSeq) {
+    folderLine.value = line
+    folderChecked.value = folder
+  }
 }
 watch(
   () => draft.value.folder.trim(),
   (folder) => {
     window.clearTimeout(folderTimer)
+    folderChecked.value = ''
     if (!folder) {
       folderSeq++
       folderLine.value = ''
@@ -288,8 +298,10 @@ function onKey(e: KeyboardEvent) {
             <UFormField label="Check" name="check" :error="marked('check')" :help="note || undefined">
               <UInput :model-value="draft.check" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" data-compare-check @update:model-value="typeCheck(String($event ?? ''))" />
             </UFormField>
-            <UFormField label="Folder" name="folder" :error="folderLine || marked('folder')">
-              <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" data-compare-cwd @update:model-value="patch({ folder: $event })" />
+            <UFormField label="Folder" name="folder" :error="allowBlocked || folderLine || marked('folder')">
+              <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" lined data-compare-cwd :data-folder-checked="folderChecked" @update:model-value="patch({ folder: $event })" />
+              <!-- The folder as the trial sends it, trimmed: the line checks that text. -->
+              <FolderAllowLine ref="allowLine" :path="draft.folder.trim()" @use="(p: string) => patch({ folder: p })" @allowed="checkFolder(draft.folder.trim())" @leave="open = false" />
             </UFormField>
           </div>
 
@@ -297,7 +309,7 @@ function onKey(e: KeyboardEvent) {
             <CrewTrialOptions :model-value="draft" :agents="agents" :marked="marked" @update:model-value="draft = $event" />
           </MoreOptions>
 
-          <p class="text-xs text-muted" data-compare-next>This saves the trial as a crew. To run it: on a ticket in Dispatch, propose this crew as the plan, approve it, then launch.</p>
+          <p class="text-xs text-muted" data-compare-next>This saves the trial as a crew. To launch it: on a ticket in Dispatch, press Propose a plan or New revision, pick this crew, then Propose, Approve and Launch.</p>
           <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-x" title="Not saved" :description="error" data-compare-template-error />
         </fieldset>
       </form>

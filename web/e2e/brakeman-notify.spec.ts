@@ -214,7 +214,7 @@ test("the briefs' switch is on by default and kept off after a reload; switched 
   await expect(briefs).toContainText("Brakeman's background briefs with a decision")
   await expect(briefs).toContainText('once, on the pages open then')
   // Under the two switches, which stay as they were.
-  await expect(panel.getByText('When a session needs input, and for the events routed to This device:')).toBeVisible()
+  await expect(panel.getByText('When a session needs you, and for the events routed to This device:')).toBeVisible()
   const chime = (await panel.getByRole('switch', { name: 'Chime' }).boundingBox())!
   expect((await briefs.boundingBox())!.y).toBeGreaterThan(chime.y)
   const toggle = briefs.getByRole('switch')

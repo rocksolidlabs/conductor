@@ -36,17 +36,38 @@ const policyTouched = ref(false)
 const error = ref('')
 const submitting = ref(false)
 
+/** The draft left for Settings through the folder line's link: the next opening takes it back, once. */
+interface LeftDraft {
+  key: string
+  name: string
+  cwd: string
+  tracker: Tracker
+  trackerUrl: string
+  closeRequires: CloseRequirement[]
+  policyTouched: boolean
+}
+const left = useState<LeftDraft | null>('dispatch-new-project-left', () => null)
+function leave() {
+  left.value = { key: key.value, name: name.value, cwd: cwd.value, tracker: tracker.value, trackerUrl: trackerUrl.value, closeRequires: [...closeRequires.value], policyTouched: policyTouched.value }
+  open.value = false
+}
+
 watch(open, (o) => {
   if (!o) return
-  key.value = ''
-  name.value = ''
-  cwd.value = ''
-  tracker.value = 'native'
-  trackerUrl.value = ''
-  closeRequires.value = ['acceptance']
-  policyTouched.value = false
+  const d = left.value
+  left.value = null
+  key.value = d?.key ?? ''
+  name.value = d?.name ?? ''
+  cwd.value = d?.cwd ?? ''
+  tracker.value = d?.tracker ?? 'native'
+  trackerUrl.value = d?.trackerUrl ?? ''
+  closeRequires.value = d ? [...d.closeRequires] : ['acceptance']
+  policyTouched.value = d?.policyTouched ?? false
   error.value = ''
 })
+
+/** The folder as the project is made with it, trimmed: the line checks that text. */
+const cwdSent = computed(() => cwd.value.trim())
 
 /** The store's default for the tracker, until the person ticks a requirement. */
 watch(tracker, (t) => {
@@ -78,7 +99,7 @@ async function submit() {
     const body = {
       key: key.value,
       name: name.value.trim(),
-      ...(cwd.value.trim() ? { cwd: cwd.value.trim() } : {}),
+      ...(cwdSent.value ? { cwd: cwdSent.value } : {}),
       tracker: tracker.value,
       ...(tracker.value === 'external' ? { trackerUrl: trackerUrl.value.trim() } : {}),
       closeRequires: closeRequiresOf(closeRequires.value),
@@ -110,7 +131,8 @@ async function submit() {
           </UFormField>
         </div>
         <UFormField label="Repository folder" name="cwd" hint="optional">
-          <DirInput v-model="cwd" placeholder="none" name="cwd" picker-title="The project's repository" />
+          <DirInput v-model="cwd" placeholder="none" name="cwd" picker-title="The project's repository" lined />
+          <FolderAllowLine :path="cwdSent" @use="(p: string) => (cwd = p)" @leave="leave" />
         </UFormField>
         <UFormField label="Tracker" name="tracker">
           <URadioGroup v-model="tracker" :items="trackerItems" variant="card" size="sm" :ui="{ fieldset: 'grid grid-cols-1 gap-2 sm:grid-cols-2' }" data-new-project-tracker />

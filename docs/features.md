@@ -191,6 +191,17 @@ that order.
 
 ## Open verification
 
+- **A new folder's first commit, by hand** (UX3 R90). Proved on Linux, and
+  on a file system without an exclusive rename only through a seam. Owed: a
+  new-folder trial launched from the desktop app in a Windows folder (WSL,
+  `/mnt/c/...`), and one on a Mac (the folder is used by its path there,
+  checked before and after each git): the trial starts, the folder holds one
+  commit and its files, and a second launch makes none.
+- **Allow this folder in the desktop app, by hand** (UX3 R30, R65). Launch
+  agent on a folder outside those agents may use: Allow this folder, the home
+  folder's question, a link's Use that folder, and the folder kept in
+  Settings after the app restarts. On Windows the press is not offered yet.
+
 - **Claude Code's dialogs.** Their choices are read off the dialog (#288),
   checked in a PTY against Claude Code 2.1.304 on 2026-10-19: a digit picks
   at once in a tool's permission dialog and in AskUserQuestion, and the
@@ -259,7 +270,7 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   a turn runs and you may stop it), then Send. Send's tooltip says Enter sends
   and Shift+Enter makes a new line; the standing help lines under the box are
   gone. Only while the line begins with / does one line say what happens to
-  it: "Sent as plain text. To run a command, use the Terminal." The
+  it: "Sent as plain text. To run a command, switch to Terminal." The
   placeholder reads "Message <agent>". The box takes the cursor as the chat
   opens and after a send, when nothing else has it and no question waits for
   its number keys; Escape leaves it. A line you typed for one agent is there
@@ -275,9 +286,9 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   answer. Under a folded pane, a share link's page and the Yard, the card keeps
   its own field. A line typed as an answer is never sent as something else: a
   line you begin after your answer has gone is a message; an answer refused
-  because the question was already answered stays in the box for that
-  question, and goes as a message only once you empty the box and write it
-  again.
+  because the question was already answered stays in the box, which says
+  "That question is already answered. Send now sends this line as a
+  message."
 - **A permission request out of view leaves one line above the box** (UX3 R71,
   #1169). When the chat's open permission request is scrolled out of view, one
   amber line above the box says "<agent> asks: Run a command?" with "Show it",
@@ -297,10 +308,28 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   as you type, the folder's files whose name holds what you typed. The arrows
   move, Enter or Tab picks, Escape closes it and keeps your text; while it is
   open Enter never sends. A pick writes `@<path> ` into the line. A path with
-  a space or a mark in its name is listed and says to type it yourself. No
-  list where the connection may not read files. A chat's permission request:
-  its reason field reads "Why you deny, for the agent (optional)": it goes
-  with a deny alone.
+  a space, a quote or a hidden character in its name is listed and says to
+  type it yourself. No list where the connection may not read files. A
+  chat's permission request: its reason field reads "Why you deny, for the
+  agent (optional)": it goes with a deny alone.
+- **Your own lines in the Chat box go for the agent to expand** (UX3 R10,
+  #1169). Where the server says your connection may (your own chat, an agent
+  that marks what it is sent), a line you typed, pasted or picked from the
+  box's list yourself goes for the agent to expand: it runs its `/command`
+  and attaches the files you name with `@`. The placeholder then reads
+  "Message <agent> · @ for a file, / for a command". A file you name outside
+  the folder is said under the box. A line the page put in the box, and every
+  line from a shared link's page, goes as plain text; a `/` line that is not
+  your own says "Sent as plain text. Type it yourself to run it as a
+  command." In the conversation such a message draws its command and its
+  files as chips. A message the server did not send comes back into the box
+  once you send or clear the one there ("A message was not sent: it comes
+  back here once you send or clear this one.").
+- **/ in the Chat box offers the agent's own commands** (UX3 R11, #1169).
+  Where your box may expand a line, a `/` at its start lists the agent's own
+  commands as it reported them, narrowed as you type; Tab or Enter completes
+  one, and Enter on a whole name sends it. A name the agent does not list is
+  said, and Enter sends it as you typed it. No list on a shared link's page.
 - **Before the agent's first reply the Chat side is dimmed** (UX3 R15). Its
   tooltip says "Chat opens after the agent's first reply.", and a press shows
   the same words for a moment. No line stands above the terminal.
@@ -329,6 +358,14 @@ The design system's rules (`docs/design/system.md`) say what holds, and
 - **A run link's member says Back to the crew in words** (UX3 R17): on a
   crew's run link (a guest's page) the member's way back reads "Back to the
   crew" beside its arrow, at every width.
+- **A crew's member opens inside its crew** (UX3 R72, #1168). Its place is
+  the run's page with the member's whole view (terminal or chat, files,
+  People) and the crew's strip above it, at `/runs/<run>?session=<id>`.
+  Every way to a member leads there: a tile, the graph, a task's attempt, the
+  palette, the sidebar, History and Needs you, and its old address
+  `/sessions/<id>`, which lands there. Back to the crew shows the run's page
+  again; the editor's open tabs come back with their unsaved marks. A session
+  of its own and a Brakeman turn keep their own page.
 
 ### A crew's Setup
 
@@ -337,9 +374,9 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   members start, labelled Yolo, with The server's default (now on or off),
   Off: members ask before acting, and On: members act without asking. The
   line beside More options names only what is still folded there, and an
-  edit of it is said as "Yolo edited." The launch sheet reads "Yolo: on. The
-  members act without asking" or "Yolo: off. The members ask before they
-  act", with the crew's setting or the server's default now
+  edit of it is said as "Yolo edited." The launch sheet reads "Yolo is on:
+  the members act without asking" or "Yolo is off: the members ask before
+  they act", with the crew's setting or the server's default now
   (`crews.test.ts`, `CrewLaunchSheet.test.ts`, `designRules.test.ts`;
   `crew-yolo.spec.ts`, `crew-make.spec.ts`).
 
@@ -380,7 +417,8 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   crew opens as you left it after the server restarts and on your other
   machines; only a wide window writes them, so a phone's choice stays on the
   phone. The sizes of a crew's other layouts stay on the machine where they
-  were made.
+  were made. A second window of the app keeps the choices another window
+  just made.
 - **A run's tile that asks shows its question whole** (UX3 R20a, R20b, #1168).
   Under its terminal a tile whose member asks shows "<member> asks:" and the
   question whole, wrapping, never cut, then what answers it: its choices,
@@ -485,6 +523,23 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   come back after a restart (UX3 R27, R28, R29, R89; `capacity.test.ts`,
   `lastLaunch.test.ts`, `last_launch_test.go`; `launch-dialog.spec.ts`,
   `capacity.spec.ts`).
+  Under Folder, one line says what the server's check (`GET
+  /api/roots/check`) says of the folder named, checked as it is picked or
+  typed and again before every launch; a folder agents cannot use is never
+  sent. In the desktop app, for a folder under none agents may use, the line
+  offers Allow this folder: one press asks the app (never the page) to allow
+  exactly the folder the check named, the real one where a link leads
+  elsewhere, and the launch goes on there with nothing else in the dialog lost
+  ("Agents can use this folder now."). A home folder, one above it, or one
+  that holds Conductor's data or an account's login asks first, Cancel holding
+  the focus. A folder never allowed from the app's screens (the whole disk,
+  Conductor's data or an account's login, a name with a comma, a hidden
+  character or a space at an end, another user's folder, a path too long)
+  says why, with no button; a link says where it leads, with Use that folder.
+  A plain tab, an older app and a server whose folders its configuration sets
+  show no button and say where the folder can be allowed. A folder allowed by
+  a server that does not keep it says it lasts until Conductor restarts (UX3
+  R30, #1173; `folderAllow.test.ts`; `launch-folder.spec.ts`).
 - **Extra arguments and Model offer the agent's own flags and names** (UX3
   R48, R49, R50, R53, #1172). Extra arguments offers the agent's own flags as
   you type `--` (Claude Code and Codex, and Copilot CLI, Antigravity and
@@ -504,7 +559,10 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   path outside them is sent as typed. Model offers the model names the
   agent's help gives (today Claude Code's), and takes any other name as
   typed; Brakeman's Model in Settings does the same, and a crew member's
-  Extra arguments and Model offer its agent's flags and model names too.
+  Extra arguments and Model offer its agent's flags and model names too. A
+  lone `--` ends the flags: nothing is offered after it, and for an agent that
+  can run as a chat a session launched with it stays in its terminal, as a
+  flag marked `Terminal only` keeps it.
 - **Whether agents may use a folder, asked before the launch** (UX3 R63,
   #1173). `GET /api/roots/check?path=` says of one folder what a launch there
   would meet: `allowed`, `outside`, `missing`, `not_directory` or
@@ -670,9 +728,28 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   the model flag and the model names its help gives among them. Saving makes
   the trial's crew, whose page shows an "Agent trial" block (Agent A, Agent
   B, What a good result does); a ticket's approved plan starts it, as before.
+- **A trial, or a crew whose members work on copies, starts in a new folder**
+  (UX3 R90, #1179). When you launch such a crew, or propose an agent trial as
+  a ticket's plan, in a new folder (nothing named `.git` in it, no repository
+  at or above it, not the home folder or a file system's root), Conductor
+  makes the folder's first commit and goes on: the folder's files as its
+  ignore file says (an empty folder gets an empty commit), with nested
+  repositories and `.conductor` left out and no hook run; signed when your
+  git signs its commits (a commit that must be signed and cannot be is not
+  made); under the name your git gives, else `Conductor
+  <conductor@noreply.invalid>` for that one commit, nothing written to your
+  settings. A folder of more than 5,000 files or 200 MB is refused with its
+  bound. Every other folder with no commit, a repository with no commit yet
+  among them, is refused, nothing in it touched: "This folder has no commit
+  yet. Make its first commit yourself, then launch." The trial form says it
+  under Folder as the folder is picked and holds Save trial, as the crew
+  editor's line does; a new folder says nothing there. Only your own launch
+  or proposal from the app makes a first commit: an agent's crew, a
+  continuation, a resume and a provider's launch never do
+  (`firstcommit_test.go`, `compareTemplate.test.ts`; `trial-form.spec.ts`).
 - **Every screen says trial** (UX3 R43, R44, R79, #1165). The ticket's launch
   dialog ("This trial starts N candidates"), a plan revision ("Agent trial: N
-  candidates from one base"), the results ("Trial results"), decisions ("A
+  agents, each from the same commit, checked alike"), the results ("Trial results"), decisions ("A
   trial's selection", "a new trial tries them again"), Brakeman's part
   ("Brakeman's summary", "Ask Brakeman for a summary", the request kind "Sum
   up a trial") and the refusals after the pick ("run a new trial") say

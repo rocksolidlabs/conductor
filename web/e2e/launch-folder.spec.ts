@@ -323,6 +323,75 @@ for (const [size, touch] of [[DAILY, false], [{ width: 1440, height: 900 }, fals
   })
 }
 
+// UX3 R76: the same line, and the same one press, under every field where a person names a folder agents will work in.
+
+/** Types a folder into a field and moves the focus away, the field's list closed: its check runs. */
+async function typeInto(page: Page, input: Locator, path: string) {
+  await input.fill(path)
+  await input.press('Tab')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+}
+
+test("a crew's folder, an agent trial's, a Dispatch project's and Brakeman's say the same line, and the press allows the folder named", async ({ browser }) => {
+  const { page, asked } = await folderPage(browser, 'press')
+  const lineIn = (scope: Locator) => scope.locator('[data-launch-folder-line]')
+
+  // A new crew's folder: the line, and the press.
+  await page.goto('/crews/new')
+  await expect(page.getByRole('textbox', { name: 'Crew name' })).toBeFocused()
+  const crewFolder = outside('crew-folder')
+  // The editor has one folder field: the crew's.
+  const crewField = page.locator('[data-dir-input] input[role="combobox"]')
+  await expect(crewField).toHaveCount(1)
+  await typeInto(page, crewField, crewFolder)
+  const crewLine = lineIn(page.locator('body'))
+  await expect(crewLine).toHaveAttribute('data-folder-state', 'outside')
+  await expect(crewLine.locator('[data-folder-words]')).toHaveText("Agents can't use this folder yet.")
+  // The editor reads the folder's git state again once it is allowed: what it read before the press is not under the line.
+  const readAgain = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && r.status() === 200)
+  await crewLine.locator('[data-launch-allow]').click()
+  await expect(crewLine).toHaveAttribute('data-folder-state', 'allowed_now')
+  expect(asked).toEqual([{ path: crewFolder, confirmed: '' }])
+  await readAgain
+  await expect(page.locator('[data-git-state]')).toBeVisible()
+  await expect(page.locator('[data-git-state]')).not.toContainText('allowed roots')
+
+  // The agent trial's folder.
+  await page.goto('/crews')
+  await page.locator('[data-new-comparison]').click()
+  const form = page.locator('[data-compare-template]')
+  await expect(form).toBeVisible()
+  await atRest(page.getByRole('dialog').filter({ has: form }))
+  const trialFolder = outside('trial-folder')
+  // A space at an end, which the trial trims as it sends the folder: the line checks the folder sent.
+  await typeInto(page, form.locator('[data-compare-cwd]').getByRole('combobox'), `${trialFolder} `)
+  await expect(lineIn(form)).toHaveAttribute('data-folder-state', 'outside')
+  await expect(lineIn(form).locator('[data-launch-allow]')).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  // A Dispatch project's repository.
+  await page.goto('/dispatch')
+  await page.locator('[data-new-project-open]').click()
+  const project = page.locator('[data-new-project]')
+  await expect(project).toBeVisible()
+  await typeInto(page, project.locator('[data-dir-input] input[role="combobox"]'), `${outside('project-folder')} `)
+  await expect(lineIn(project)).toHaveAttribute('data-folder-state', 'outside')
+  await expect(lineIn(project).locator('[data-launch-allow]')).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  // The folder Brakeman reads, on Settings, where Brakeman is offered.
+  await page.goto('/settings?section=brakeman')
+  const card = page.locator('[data-brakeman-settings]')
+  await expect(card).toBeVisible()
+  const brakemanField = card.locator('[data-brakeman-cwd] input, input[data-brakeman-cwd]').first()
+  await expect(brakemanField).toBeVisible()
+  await typeInto(page, brakemanField, `${outside('brakeman-folder')} `)
+  await expect(lineIn(card)).toHaveAttribute('data-folder-state', 'outside')
+  await expect(lineIn(card).locator('[data-launch-allow]')).toBeVisible()
+  // Only the crew's press was made: each line asks the app only when pressed.
+  expect(asked).toHaveLength(1)
+})
+
 test('an older check answered after a newer one changes nothing: the line and its button are the newer text\'s', async ({ browser }) => {
   const { page } = await folderPage(browser, 'press')
   const dialog = await openLaunch(page)
@@ -468,6 +537,54 @@ test('a folder outside the folders agents may use opens no list under the field,
   await expect(page.getByRole('listbox')).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText('no directory in the prefix')
   await expect(page.locator('body')).not.toContainText('under the allowed roots')
+})
+
+test("a Dispatch project's dialog left for Settings through its line keeps its draft for the next opening", async ({ browser }) => {
+  const { page } = await folderPage(browser, 'old')
+  await page.goto('/dispatch')
+  const open = page.locator('[data-new-project-open]')
+  await open.click()
+  const project = page.locator('[data-new-project]')
+  await expect(project).toBeVisible()
+  await project.locator('[data-new-project-key]').fill('LEFT')
+  await project.locator('[data-new-project-name]').fill('Left for Settings')
+  const folder = outside('project-to-settings')
+  await typeInto(page, project.locator('[data-dir-input] input[role="combobox"]'), folder)
+  await project.locator('[data-close-requirement="acceptance"]').click()
+  const settings = project.locator('[data-launch-folder-line] [data-folder-settings]')
+  await expect(settings).toBeVisible()
+  await settings.click()
+  await expect(page).toHaveURL(/\/settings\?section=folders$/)
+  await expect(page.locator('[data-new-project]')).toHaveCount(0)
+  // Back on Dispatch: the next opening has the draft as it was left.
+  await page.goBack()
+  await expect(open).toBeVisible()
+  await open.click()
+  await expect(project).toBeVisible()
+  await expect(project.locator('[data-new-project-key]')).toHaveValue('LEFT')
+  await expect(project.locator('[data-new-project-name]')).toHaveValue('Left for Settings')
+  await expect(project.locator('[data-dir-input] input[role="combobox"]')).toHaveValue(folder)
+  await expect(project.locator('[data-close-requirement="acceptance"]')).toHaveAttribute('aria-checked', 'false')
+  // Taken back once: closed and opened again, the dialog starts anew.
+  await page.keyboard.press('Escape')
+  await expect(project).toHaveCount(0)
+  await open.click()
+  await expect(project.locator('[data-new-project-key]')).toHaveValue('')
+})
+
+test("in an agent trial's form, the line's Settings link closes the form's dialog on its way there", async ({ browser }) => {
+  const { page } = await folderPage(browser, 'old')
+  await page.goto('/crews')
+  await page.locator('[data-new-comparison]').click()
+  const form = page.locator('[data-compare-template]')
+  await expect(form).toBeVisible()
+  await atRest(page.getByRole('dialog').filter({ has: form }))
+  await typeInto(page, form.locator('[data-compare-cwd]').getByRole('combobox'), outside('trial-to-settings'))
+  const settings = form.locator('[data-launch-folder-line] [data-folder-settings]')
+  await expect(settings).toBeVisible()
+  await settings.click()
+  await expect(page).toHaveURL(/\/settings\?section=folders$/)
+  await expect(page.locator('[data-compare-template]')).toHaveCount(0)
 })
 
 test("an older answer for the same text, come after the newer one, changes nothing", async ({ browser }) => {

@@ -134,7 +134,8 @@ describe("a launch from a revision, and the count it sends", () => {
 
 describe("where an agent trial's crew is started, as the crews page and the launch sheet say it", () => {
   it('names an agent trial and the ticket it starts from, and never a comparison or a plan revision', () => {
-    expect(COMPARISON_LAUNCHES_FROM_A_TICKET).toBe("An agent trial starts from a ticket's approved plan: propose this crew as the ticket's plan, approve it, and launch it there")
-    expect(COMPARISON_LAUNCHES_FROM_A_TICKET).not.toMatch(/comparison|revision|candidate/i)
+    expect(COMPARISON_LAUNCHES_FROM_A_TICKET).toBe("An agent trial launches from a ticket in Dispatch: press Propose a plan or New revision, pick this crew, then Propose, Approve and Launch")
+    // The ticket's own buttons by their names (New revision among them, the words pass's WT2), never the engine's words.
+    expect(COMPARISON_LAUNCHES_FROM_A_TICKET).not.toMatch(/comparison|plan revision|candidate|propose this crew/i)
   })
 })

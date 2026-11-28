@@ -23,7 +23,7 @@ describe('tileAskOf', () => {
     for (const a of [asks({}), asks({ source: 'trust' }), asks({ kind: 'permission', source: 'hook' }), asks({ source: 'submit' })]) {
       expect(tileAskOf('review', a, yes)).toMatchObject({ who: 'review asks:', question, kind: 'terminal', words: ANSWER_IN_ITS_TERMINAL })
     }
-    expect(ANSWER_IN_ITS_TERMINAL).toBe('Answer it in its terminal')
+    expect(ANSWER_IN_ITS_TERMINAL).toBe('Answer it in its terminal.')
     // A durable decision's question: its card, by its id.
     expect(tileAskOf('review', asks({ options, decision: 'dr-7' }), yes)).toMatchObject({ kind: 'decision', decision: 'dr-7', words: 'Answer dr-7' })
     // A chat's permission request: the member's own view.

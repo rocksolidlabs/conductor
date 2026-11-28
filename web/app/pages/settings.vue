@@ -580,7 +580,7 @@ usePalette().registerPage(() => {
         <UCard :ui="cardUi" :class="sectionClass" data-settings-section="running">
           <template #header><SettingsCardTitle title="How agents run" description="Whether agents ask before they act." /></template>
           <div class="flex flex-col gap-4">
-            <UFormField label="Yolo" description="Skips permission prompts: agents run commands and change files without asking you. The default for new launches. Changing it restarts the server." :ui="switchUi">
+            <UFormField label="Yolo" description="Skips permission prompts: agents run commands and change files without asking you. The default for new launches." :ui="switchUi">
               <USwitch v-model="form.yolo" aria-label="Yolo" data-yolo-switch />
             </UFormField>
             <UFormField v-if="onWindows" label="WSL distribution" description="Where Conductor runs. Empty for the default." :ui="fieldUi">
@@ -625,7 +625,7 @@ usePalette().registerPage(() => {
             <!-- What the switchyard is told and does: a statement about links, every fact of it kept (UX3 R54). -->
             <UFormField
               label="Share links work from anywhere"
-              description="Through a switchyard. It is told each session's name, agent and folder name, this machine's name, and whether it waits on you; never its chat, activity or command line. It mints and checks the links and decides who joins. What a viewer sees goes straight to them, or through its relay, which can read it, when no direct path forms. Publish only to a switchyard whose operator you trust."
+              description="Through a switchyard. It is told each session's name, agent and folder name, this machine's name, and whether it waits on you; never its chat, activity or command line. It makes and checks the links and decides who joins. What a viewer sees goes straight to them, or through its relay, which can read it, when no direct path forms. Turn this on only for a switchyard whose operator you trust."
               :ui="switchUi"
             >
               <USwitch v-model="form.switchyardEnabled" aria-label="Share links work from anywhere" data-switchyard-enabled />
@@ -653,7 +653,7 @@ usePalette().registerPage(() => {
                   <UButton v-if="ice.firewall !== 'present'" label="Allow" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="allowing" data-ice-allow @click="allowFirewall" />
                   <span v-if="ice.firewall !== 'present'" class="text-xs text-muted">Windows asks once for permission.</span>
                 </div>
-                <p v-else class="text-sm text-muted">Nothing is forwarded{{ ice.reason ? `: ${ice.reason}` : '' }}.</p>
+                <p v-else-if="!ice.mirrored" class="text-sm text-muted" data-ice-off>Viewers cannot connect straight yet{{ ice.reason ? `: ${ice.reason}` : '' }}.</p>
                 <p v-if="iceError" class="mt-1.5 text-xs text-error" role="alert" data-ice-error>{{ iceError }}</p>
               </UFormField>
             </div>

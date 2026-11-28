@@ -24,7 +24,7 @@ export type TileAsk = {
 } & (TileAskChoices | TileAskElsewhere)
 
 /** Where a question the tile cannot answer is answered: one wording with the session's own card. */
-export const ANSWER_IN_ITS_TERMINAL = 'Answer it in its terminal'
+export const ANSWER_IN_ITS_TERMINAL = 'Answer it in its terminal.'
 export const OPEN_TO_ANSWER = 'Open it to answer'
 
 /**

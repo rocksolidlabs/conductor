@@ -16,10 +16,10 @@ describe('settings', () => {
     expect(validate(defaults)).toEqual([])
   })
   it('names what is wrong', () => {
-    expect(validate({ ...defaults, defaultCwd: '/elsewhere' })).toEqual(['the default working directory must lie under an allowed root'])
-    expect(validate({ ...defaults, allowedRoots: [] })).toContain('at least one allowed root is needed')
+    expect(validate({ ...defaults, defaultCwd: '/elsewhere' })).toEqual(['the default folder must be inside a folder agents can use'])
+    expect(validate({ ...defaults, allowedRoots: [] })).toContain('agents need at least one folder')
     expect(validate({ ...defaults, reach: 'always' as 'auto' })).toContain('reach must be auto, manual or off')
-    expect(validate({ ...defaults, allowedRoots: ['relative'] })).toContain('allowed root "relative" must be an absolute path')
+    expect(validate({ ...defaults, allowedRoots: ['relative'] })).toContain('the folder "relative" must be an absolute path')
   })
   it.skipIf(win)('round-trips through the file, mode 0600, and falls back to the defaults for a broken or bad file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cd-settings-'))
@@ -86,7 +86,7 @@ describe('server environment', () => {
     expect(splitRoots(s, undefined)).toEqual({ allowedRoots: ['/home/me'], pressedRoots: [{ path: '/srv/a', confirmed: '' }] })
     // The default folder lies under a typed folder, as the release before reads it; choosing one inside a pressed folder makes
     // that folder a typed one. A pressed folder is held to the paths' rule.
-    expect(validate({ ...s, defaultCwd: '/srv/a/x' })).toEqual(['the default working directory must lie under an allowed root'])
+    expect(validate({ ...s, defaultCwd: '/srv/a/x' })).toEqual(['the default folder must be inside a folder agents can use'])
     const typed = typedDefault({ ...s, defaultCwd: '/srv/a/x' })
     expect(typed.allowedRoots).toEqual(['/home/me', '/srv/a'])
     expect(typed.pressedRoots).toEqual([])

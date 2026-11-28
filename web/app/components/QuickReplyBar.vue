@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ANSWER_IN_CHAT, ANSWER_IN_TERMINAL, answerDigit, answersInChat, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
+import { ANSWER_IN_CHAT, ANSWER_IN_TERMINAL, answerDigit, answersInChat, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, markedByPerson, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
 import { questionOf, replyLine, type ReplyTaken } from '~/utils/reply'
 
@@ -33,6 +33,8 @@ const show = computed(() => props.attention?.state === 'needs_input')
 // A held turn (text typed and not entered): no reply is taken until someone types in the terminal, which it would only wait for.
 const held = computed(() => waitsForTerminal(props.attention))
 const heading = computed(() => waitingHeading(props.attention, props.agentName))
+// `<agent> asks:` leads the agent's own question; a person's mark reads as two sentences (`<agent> needs you. Marked by a person.`).
+const lead = computed(() => (markedByPerson(props.attention) ? `${heading.value}. ` : `${heading.value}: `))
 const message = computed(() => props.attention?.message || 'Answer here or in the terminal. First reply wins; everyone sees who answered.')
 // A permission dialog whose choices are not given (#288): its Enter would pick what it highlights, so it is answered in the terminal.
 const terminal = computed(() => answersInTerminal(props.attention))
@@ -83,7 +85,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
        one line after `<agent> asks:`, the choices beside it when they fit on its row and under it when they do not. The live line
        outside it says the question to a screen reader as it arrives (a region made with its words is not read out). -->
   <div class="contents">
-    <p class="sr-only" aria-live="polite" data-quick-reply-live>{{ show ? `${heading}: ${message}` : '' }}</p>
+    <p class="sr-only" aria-live="polite" data-quick-reply-live>{{ show ? `${lead}${message}` : '' }}</p>
     <div
       v-if="show"
       class="flex items-start gap-3 rounded-lg border border-warning bg-warning/10 px-3.5 py-2.5"
@@ -97,7 +99,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <!-- The question whole (#187), where it is answered: wrapped over its lines, never cut (the server bounds it at 500 bytes); a long
              token breaks rather than overflows. `<agent> asks:` leads its first line in semibold (drawn before it, so that the element
              holds the question's words alone); both in the default text tone on the amber tint, never the muted one. -->
-        <p class="min-w-0 flex-[1_1_16rem] break-words text-sm text-default before:font-semibold before:content-[attr(data-heading)]" :data-heading="`${heading}: `" data-quick-reply-message>{{ message }}</p>
+        <p class="min-w-0 flex-[1_1_16rem] break-words text-sm text-default before:font-semibold before:content-[attr(data-heading)]" :data-heading="lead" data-quick-reply-message>{{ message }}</p>
         <!-- The plan the approval is about (#289), read in the editor before answering: as its source, or rendered (#432). Icons only
              below sm, so that the two do not widen the bar on a phone (#327). -->
         <template v-if="attention?.plan">
