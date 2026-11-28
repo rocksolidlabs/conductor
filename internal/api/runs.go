@@ -276,7 +276,9 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label), body.Revision, nil, crew.LaunchOpts{})
+	// The route is the admin's (launching): the operator's own launch, which
+	// makes a new project's first commit (crew.LaunchOpts.FirstCommit).
+	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label), body.Revision, nil, crew.LaunchOpts{}, operatorOf(r))
 	// Released once the reply is written: the view link is minted first, so a
 	// launch at the cap meanwhile cannot forget the run.
 	defer release()
@@ -348,7 +350,11 @@ func launchRefusal(status int, code, message string) error {
 // opts are what the engine stamps on the run (crew.LaunchOpts): a
 // provider's launch's origin, which only a crew with tasks takes
 // (not_managed).
-func (s *Server) launchSaved(ctx context.Context, crewID, label, revision string, admit func() error, opts crew.LaunchOpts) (*crew.Run, crew.Crew, func(), error) {
+//
+// firstCommit is the operator's own launch: a crew with worktrees in a new
+// project gets its first commit, made in the folder opened through its
+// allowed root (firstCommitIn, crew.LaunchOpts.FirstCommit).
+func (s *Server) launchSaved(ctx context.Context, crewID, label, revision string, admit func() error, opts crew.LaunchOpts, firstCommit bool) (*crew.Run, crew.Crew, func(), error) {
 	noop := func() {}
 	if err := crew.ValidateLabel(label); err != nil {
 		return nil, crew.Crew{}, noop, launchRefusal(http.StatusBadRequest, "invalid_request", err.Error())
@@ -391,6 +397,15 @@ func (s *Server) launchSaved(ctx context.Context, crewID, label, revision string
 		return nil, c, noop, launchRefusal(http.StatusBadRequest, "invalid_cwd", err.Error())
 	}
 	c.Cwd = cwd
+	if firstCommit && c.Isolation == crew.IsolationWorktree {
+		in, done, err := s.firstCommitIn(cwd)
+		if err != nil {
+			return nil, c, noop, launchRefusal(http.StatusBadRequest, "invalid_cwd", err.Error())
+		}
+		// Prepared within the launch below, which returns once it is.
+		defer done()
+		opts.FirstCommit = in
+	}
 	// The run's yolo choice: the crew's, else the server's, fixed now.
 	yolo := s.cfg.Yolo
 	if c.Yolo != nil {
@@ -416,6 +431,27 @@ func (s *Server) launchSaved(ctx context.Context, crewID, label, revision string
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runTimeout)
 	run, release, err := s.runs.LaunchNamedWith(rctx, launch, label, opts)
 	return run, c, func() { release(); cancel(); unbind() }, err
+}
+
+// firstCommitIn is cwd, a folder resolveCwd resolved, opened through its
+// allowed root (openCwd) for a first commit (crew.EnsureFirstCommit): its
+// gits run in the folder checked, whatever its path names meanwhile. done
+// lets it go.
+func (s *Server) firstCommitIn(cwd string) (*crew.FirstCommitIn, func(), error) {
+	folder, err := s.openCwd(cwd)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer folder.Close()
+	root, err := folder.Root()
+	if err != nil {
+		return nil, nil, &cwdError{"working directory could not be opened", err}
+	}
+	in := &crew.FirstCommitIn{Folder: root, Path: folder.Path()}
+	if env := s.firstCommitEnv.Load(); env != nil {
+		in.GitEnv = *env
+	}
+	return in, func() { root.Close() }, nil
 }
 
 // launchViewLink creates the view link a crew asks for at launch, as POST

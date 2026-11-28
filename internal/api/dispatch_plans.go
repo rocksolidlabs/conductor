@@ -639,7 +639,7 @@ func (s *Server) handleDispatchProposePlan(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	s.ticketPropose(ctx, w, ds, body.op(r), key, body.PlanRequest, nil)
+	s.ticketPropose(ctx, w, ds, body.op(r), key, body.PlanRequest, nil, operatorOf(r))
 }
 
 // planGuard is what a follow-up a Brakeman act proposes is held to beyond
@@ -656,13 +656,17 @@ type planGuard struct {
 // since, then the proposal's body built (planBody) and the store's checks
 // and bounds (ProposePlan, or ProposeFollowup for a guarded one), answered
 // to w as the route answers.
-func (s *Server) ticketPropose(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key string, req dispatch.PlanRequest, guard *planGuard) {
+//
+// operator is the operator's own proposal (operatorOf): a trial's plan
+// revision proposed so in a folder with no commit yet makes its first
+// commit (planBody).
+func (s *Server) ticketPropose(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key string, req dispatch.PlanRequest, guard *planGuard, operator bool) {
 	rc, found, err := ds.Replay(ctx, op, dispatch.IntentPlanPropose, dispatch.PlanProposeArgs{Key: key, PlanRequest: req})
 	if err != nil || found {
 		s.writeOp(w, "plan revision", rc, err, true, "plan", s.planAfter(ctx, ds, ""))
 		return
 	}
-	pb, ok := s.planBody(ctx, w, ds, key, req, guard)
+	pb, ok := s.planBody(ctx, w, ds, key, req, guard, operator && guard == nil)
 	if !ok {
 		return
 	}
@@ -702,7 +706,14 @@ var proposeSeam atomic.Pointer[func(key string)]
 // the store checks against the ticket's snapshot and links. A guard's
 // admit is asked of the crew and its working directory once that is
 // resolved, before git runs there. When it reports false it has answered.
-func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, key string, req dispatch.PlanRequest, guard *planGuard) (dispatch.PlanBody, bool) {
+//
+// first is the operator's own proposal: the crew of an agent trial (its
+// compare block) in a new folder gets its first commit there
+// (crew.EnsureFirstCommit), in the folder opened through its allowed root,
+// once it is resolved and admitted and before it is checked, so the
+// revision's base is that commit. Every other proposal meets the refusal
+// it always met.
+func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, key string, req dispatch.PlanRequest, guard *planGuard, first bool) (dispatch.PlanBody, bool) {
 	fail := func(status int, code, format string, args ...any) (dispatch.PlanBody, bool) {
 		writeError(w, status, code, fmt.Sprintf(format, args...))
 		return dispatch.PlanBody{}, false
@@ -762,6 +773,22 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 		if aerr := guard.admit(ctx, c.ID, cwd); aerr != nil {
 			writeAPIError(w, aerr)
 			return dispatch.PlanBody{}, false
+		}
+	}
+	if first && c.Compare != nil {
+		in, done, err := s.firstCommitIn(cwd)
+		if err != nil {
+			return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew's working directory: %s", err.Error())
+		}
+		made, err := crew.EnsureFirstCommit(ctx, *in)
+		done()
+		switch {
+		case errors.Is(err, crew.ErrNotRepo) || errors.Is(err, crew.ErrNoGit):
+			return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew's working directory %s: %s", cwd, err.Error())
+		case err != nil:
+			return s.gitFailed(w, "the working directory's first commit", err)
+		case made.Made:
+			s.log.Info("first commit made", "crew", c.ID, "dir", made.Top, "commit", made.Commit)
 		}
 	}
 	if err := crew.CheckRepo(ctx, cwd); err != nil {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, gitCheckLine, gitMark, homeExpanded, matchingEntries, moreNote, movesHighlight } from './dirInput'
+import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, GIT_FIRST_COMMIT, gitCheckLine, gitMark, homeExpanded, listingProblem, matchingEntries, moreNote, movesHighlight } from './dirInput'
 
 describe('dirInput', () => {
   it('a chosen folder leaves the field focused, the caret at the end and the field scrolled to its end (#167)', () => {
@@ -38,6 +38,14 @@ describe('dirInput', () => {
     expect(gitCheckLine(plain, 'none')).toEqual({ text: 'Not a git repository; fine with a shared working directory.', tone: 'neutral', blocks: false })
     expect(gitCheckLine(ok, 'none')).toEqual({ text: 'Git repository at /srv/work.', tone: 'neutral', blocks: false })
     expect(gitCheckLine({ ...plain, error: true, message: 'working directory is outside the allowed roots' }, 'none')).toEqual({ text: 'working directory is outside the allowed roots', tone: 'warning', blocks: false })
+  })
+
+  it("says nothing of a new project, a folder with no commit or no repository yet, which the operator's launch commits (#1179)", () => {
+    for (const inRepo of [true, false]) {
+      const fresh = { inRepo, hasCommit: false, message: GIT_FIRST_COMMIT }
+      expect(gitCheckLine(fresh, 'worktree')).toEqual({ text: '', tone: 'neutral', blocks: false })
+      expect(gitCheckLine(fresh, 'none')).toEqual({ text: '', tone: 'neutral', blocks: false })
+    }
   })
 
   it('takes the message as the verdict: a repository with a commit can still be refused', () => {
@@ -133,3 +141,19 @@ describe('a leading ~/ typed', () => {
     expect(homeExpanded('/srv/~/x', '/home/ada')).toBe('/srv/~/x')
   })
 })
+
+describe("the picker's words for a listing refused", () => {
+  it('says the folders agents may use in plain words, never the route\'s own', () => {
+    expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots: /home/ada/code')).toBe('Agents can use only the folders inside /home/ada/code. Pick one there.')
+    expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots: /a, /b')).toBe('Agents can use only the folders inside /a, /b. Pick one there.')
+    expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots')).toBe("Agents can't use a folder here. Pick another.")
+    expect(listingProblem('network', 'Cannot reach the server')).toBe('Conductor did not answer. Type on to try again.')
+    expect(listingProblem('http_error', 'Internal Server Error: /x')).toBe("This place can't be listed. Pick another.")
+  })
+  it('names at most three folders agents may use, and counts the rest', () => {
+    const roots = ['/a', '/b', '/c', '/d', '/e'].join(', ')
+    expect(listingProblem('invalid_cwd', `no directory in the prefix is under the allowed roots: ${roots}`)).toBe('Agents can use only the folders inside /a, /b, /c and 2 more. Pick one there.')
+    expect(listingProblem('invalid_cwd', 'no directory in the prefix is under the allowed roots: /a, /b, /c')).toBe('Agents can use only the folders inside /a, /b, /c. Pick one there.')
+  })
+})
+
