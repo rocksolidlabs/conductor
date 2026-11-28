@@ -249,3 +249,29 @@ test("a line the page put in the box opens no list: its Enter sends it, as writt
     await page.context().close()
   }
 })
+
+test("a command that makes the agent forget the conversation leaves one notice where it happened", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const { conv } = await aChat(page, 'e2e commands clear')
+    budget(8 * STEP_MS + 2 * LONG_MS)
+    const chat = page.locator('[data-chat-view]')
+    await expect(chat.locator('[data-chat-notice][data-notice-code="cleared"]')).toHaveCount(0)
+    await box(page).click()
+    await page.keyboard.type('/clea')
+    await expect(row(page, 'clear')).toBeVisible({ timeout: LONG_MS })
+    await page.keyboard.press('Enter')
+    await expect(box(page)).toHaveValue('/clear ')
+    const n = marks(conv).length
+    await page.keyboard.press('Enter')
+    expect(await markOf(conv, n + 1)).toBe('unmarked')
+    // The agent took up a new conversation: the chat says so, once, in its own words, and again after a reload.
+    const cleared = chat.locator('[data-chat-notice][data-notice-code="cleared"]')
+    await expect(cleared).toHaveText('Cleared. The agent no longer remembers what is above.', { timeout: LONG_MS })
+    await page.reload()
+    await expect(page.locator('[data-session-way]').first()).toHaveAttribute('data-session-way', 'protocol', { timeout: LONG_MS })
+    await expect(page.locator('[data-chat-view] [data-chat-notice][data-notice-code="cleared"]')).toHaveCount(1, { timeout: LONG_MS })
+  } finally {
+    await page.context().close()
+  }
+})
