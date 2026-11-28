@@ -1008,8 +1008,13 @@ export interface LastLaunchRecord {
   v: number
   agent?: string
   folder?: string
-  models: Record<string, { model: string; names: string[] }>
+  /** `way`: the way of its last launch, Terminal or Chat (none in a record of an older server). */
+  models: Record<string, { model: string; names: string[]; way?: 'terminal' | 'protocol' }>
   order?: string[]
+  /** The last new agent trial the server took: its agents, its folder, and each folder's Check line as its words. */
+  trial?: { agents: string[]; folder: string; checks: Array<{ folder: string; check: string[] }> }
+  /** The note on Chat's terms was drawn once. */
+  chatNoted?: boolean
 }
 export interface PathsReply {
   dir: string
@@ -1211,6 +1216,8 @@ export function useSessions() {
     /** OS user running the server; the default display name for admins. */
     /** The last launch on this server: its agent, its folder and each agent's model; `{v: 1, models: {}}` before any. */
     lastLaunch: () => request<LastLaunchRecord>('/api/launch/last'),
+    /** The note on Chat's terms was drawn: no page draws it again (POST /api/launch/chat-noted). */
+    chatNoted: () => request<void>('/api/launch/chat-noted', { method: 'POST', body: {} }),
     whoami: () => request<{ user: string; host: string; switchyard: boolean; home?: string; version?: string; folders?: string }>('/api/whoami'),
     /** The server's reach: its public address, the mapped port and the certificate's readiness. */
     reach: () => request<ReachInfo>('/api/reach'),

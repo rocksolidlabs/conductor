@@ -82,6 +82,17 @@ function noPress(way: AllowWay): Pick<FolderLine, 'words' | 'settings' | 'after'
   }
 }
 
+/**
+ * The words for a folder under none agents may use where no line is under Folder to say it (a server too old to check a folder): in
+ * the app that presses, that agents can't use it yet; anywhere else, the way on where this app cannot press. As the line says them.
+ */
+export function outsideWords(way: AllowWay): Pick<FolderLine, 'words' | 'settings' | 'after'> {
+  return way === 'press' ? { words: "Agents can't use this folder yet." } : noPress(way)
+}
+
+/** The words for a folder refused for a cause this page does not know: never the server's own. */
+export const FOLDER_CANT = CANT_PICK
+
 /** The longest folder the app allows (desktop/src/allow.ts MAX_ROOT_PATH): one longer gets no press. */
 export const MAX_ALLOW_PATH = 1024
 const TOO_LONG = "Agents can't use this folder: its path is too long to allow. Pick another."

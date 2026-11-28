@@ -577,7 +577,7 @@ export function faceWords(view: Pick<CapacityView, 'state' | 'windows' | 'words'
   if (!view) return [{ text: 'Reading…', tone: 'default' }]
   if (view.state === 'unsupported' || view.state === 'remote') return []
   if (view.state !== 'ok') return [{ text: capacityStateWords(view).title, tone: 'default' }]
-  if (!view.windows.length) return [{ text: 'No windows reported', tone: 'default' }]
+  if (!view.windows.length) return [{ text: 'No usage reported', tone: 'default' }]
   return view.windows.map((w) => ({
     text: `${w.name} ${w.percent}%`,
     tone: w.severity === 'critical' ? 'error' : w.severity === 'warning' || w.percent >= WARN_PERCENT ? 'warning' : 'default',

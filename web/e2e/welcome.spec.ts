@@ -279,6 +279,9 @@ test("the server's record of the last launch outlasts its restart: with no memor
     await srv.restart()
     expect((await srv.api.call('GET', `/api/sessions/${s.id}`)).status).toBe(404)
     const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
+    // The card waits for the server's record as long as this test may run: only a hang bounds the read, not the product's 3 s.
+    await page.addInitScript((ms) => ((window as Window & { conductorLastLaunchMs?: number }).conductorLastLaunchMs = ms), test.info().timeout)
+    await page.reload()
     expect(await page.evaluate(() => localStorage.getItem('conductor.launch.last'))).toBeNull()
     const card = await settled(page)
     await expect(card.locator('[data-welcome-primary]')).toHaveAttribute('data-welcome-agent', lastOne.id)

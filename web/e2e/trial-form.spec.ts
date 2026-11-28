@@ -19,6 +19,11 @@ const EXPECT_MS = 15_000
 
 /** The crews a test saved, deleted after it. */
 const made: string[] = []
+// The server keeps the last trial it took (GET /api/launch/last), which a new form starts from: each test starts from none, never
+// from what an earlier test or spec saved (AGENTS.md, "Count only what the test made").
+test.beforeEach(({ state }) => {
+  rmSync(join(state.data, 'launch', 'last.json'), { force: true })
+})
 test.afterEach(async ({ api }) => {
   for (const id of made.splice(0)) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
 })

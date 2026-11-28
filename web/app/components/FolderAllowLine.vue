@@ -197,7 +197,7 @@ async function check(): Promise<boolean> {
   return !blocks.value
 }
 
-defineExpose({ check, blocks })
+defineExpose({ check, blocks, way })
 </script>
 
 <template>

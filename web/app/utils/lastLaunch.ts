@@ -109,6 +109,32 @@ export function withRecord(local: LastLaunch, rec: { agent?: string; folder?: st
   return { ...read, ...(local.moreOpen !== undefined ? { moreOpen: local.moreOpen } : {}) }
 }
 
+/**
+ * How long a page waits for the server's record (GET /api/launch/last) before it goes on with its own memory alone: LAST_LAUNCH_WAIT_MS,
+ * or what the page was given as `conductorLastLaunchMs` (a positive number on the window, an e2e spec's, so that only a hang bounds
+ * its read).
+ */
+export const LAST_LAUNCH_WAIT_MS = 3000
+export function lastLaunchWaitMs(scope: { conductorLastLaunchMs?: unknown } = globalThis as { conductorLastLaunchMs?: unknown }): number {
+  const ms = scope.conductorLastLaunchMs
+  return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : LAST_LAUNCH_WAIT_MS
+}
+
+/** The server's record as `ask` gives it, or null for a refusal or none within lastLaunchWaitMs. */
+export function recordWithin<T>(ask: () => Promise<T>): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<null>((r) => (timer = setTimeout(() => r(null), lastLaunchWaitMs())))
+  return Promise.race([ask().catch(() => null), late]).finally(() => clearTimeout(timer))
+}
+
+/** Each agent's way of its last launch on the server (its record's `way`): Terminal or Chat; an agent with none is left out. */
+export function recordWays(rec: { models?: Record<string, { way?: unknown }> } | null | undefined): Map<string, 'terminal' | 'protocol'> {
+  const out = new Map<string, 'terminal' | 'protocol'>()
+  if (!rec?.models || typeof rec.models !== 'object') return out
+  for (const [id, m] of Object.entries(rec.models)) if (m && (m.way === 'terminal' || m.way === 'protocol')) out.set(id, m.way)
+  return out
+}
+
 /** This app's storage, or null where reading it throws (blocked site data, a sandboxed page). */
 export function launchStorage(): Storage | null {
   try {
