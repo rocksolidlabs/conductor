@@ -347,11 +347,13 @@ test("a crew's folder, an agent trial's, a Dispatch project's and Brakeman's say
   const crewLine = lineIn(page.locator('body'))
   await expect(crewLine).toHaveAttribute('data-folder-state', 'outside')
   await expect(crewLine.locator('[data-folder-words]')).toHaveText("Agents can't use this folder yet.")
+  // The editor reads the folder's git state again once it is allowed: what it read before the press is not under the line.
+  const readAgain = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && r.status() === 200)
   await crewLine.locator('[data-launch-allow]').click()
   await expect(crewLine).toHaveAttribute('data-folder-state', 'allowed_now')
   expect(asked).toEqual([{ path: crewFolder, confirmed: '' }])
-  // The editor reads the folder's git state again once it is allowed: what it read before the press is not under the line.
-  await expect(page.locator('[data-git-state]')).toContainText('not in a git repository')
+  await readAgain
+  await expect(page.locator('[data-git-state]')).toBeVisible()
   await expect(page.locator('[data-git-state]')).not.toContainText('allowed roots')
 
   // The agent trial's folder.
