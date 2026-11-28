@@ -163,7 +163,7 @@ test("a member's tab opens that member in this page's place: one Back leaves the
   }
 })
 
-const MEMBER_TERMINAL = 'Crew members run in their terminals.'
+const MEMBER_TERMINAL = 'Crew members stay in their terminals.'
 
 test("a member's Terminal | Chat: both sides drawn, Chat dimmed with why; a press shows why and sends nothing", async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
@@ -313,6 +313,23 @@ test('on a very wide window the strip is in the header row and the terminal as t
 async function inApp(page: Page, to: string): Promise<void> {
   await page.evaluate((t) => (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { push: (to: string) => Promise<unknown> } } } } }).__vue_app__.config.globalProperties.$router.push(t), to)
 }
+/**
+ * Every move the app's router starts from now on, as it starts it (its first guard runs in the same task as the press that asked for
+ * it, before any guard waits or any page's code loads); a press on the address the page is at starts none. Read it after a later step
+ * has answered: an empty list then is the page staying, not a move still on its way.
+ */
+async function recordMoves(page: Page): Promise<() => Promise<string[]>> {
+  await page.evaluate(() => {
+    const w = window as unknown as { moves?: string[] }
+    if (w.moves) return
+    w.moves = []
+    const app = (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { beforeEach: (g: (to: { fullPath: string }) => void) => void } } } } }).__vue_app__
+    app.config.globalProperties.$router.beforeEach((to) => void w.moves!.push(to.fullPath))
+  })
+  const since = await page.evaluate(() => (window as unknown as { moves: string[] }).moves.length)
+  return () => page.evaluate((n) => (window as unknown as { moves: string[] }).moves.slice(n), since)
+}
+
 /** The app's live list holds the session: its sidebar row is drawn. */
 async function listed(page: Page, id: string): Promise<void> {
   await expect(page.locator(`[data-sidebar-row="s:${id}"]`)).toHaveCount(1, { timeout: LONG_MS })
@@ -389,9 +406,10 @@ test("a press on the member already open does nothing: its sidebar row and a pal
     const depth = () => page.evaluate(() => history.length)
     const before = await depth()
     const url = page.url()
-    // Its own sidebar row: the same place, so no move at all.
+    // Its own sidebar row: the same place, so no move at all (none started, read once the press has been handled).
+    const moves = await recordMoves(page)
     await page.locator(`[data-sidebar-row="s:${lead}"] a`).first().click()
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))))
+    expect(await moves(), 'no move started by a press on the place the page is at').toEqual([])
     expect(page.url()).toBe(url)
     expect(await depth()).toBe(before)
     await expect(tab).toBeVisible()
@@ -530,13 +548,16 @@ test("a list and a read that disagree move the page once, and it stands", async 
       await route.fulfill({ response: res, json: body })
     })
     await listed(page, alone.id)
+    const moves = await recordMoves(page)
     await inApp(page, `/sessions/${alone.id}`)
     await expect.poll(() => where(page)).toBe(`${runPath()}?session=${alone.id}`)
     await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: LONG_MS })
-    // Drawn in the run's place and left there: the list, which still says otherwise, sends it nowhere.
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))))
+    // Drawn in the run's place and left there: the list, which still says otherwise, sends it nowhere. Judged once the view in the
+    // run's place has had its own read answered (the second), by the moves the router started: the press and the read's one replace.
+    await expect.poll(() => reads, { message: 'the read in the run\'s place answered' }).toBe(2)
+    await expect(page.locator('[data-session-bar] [data-slot="right"]')).toBeVisible({ timeout: LONG_MS })
+    expect(await moves(), 'the press, the read\'s one move, and nothing after').toEqual([`/sessions/${alone.id}`, `${runPath()}?session=${alone.id}`])
     expect(where(page)).toBe(`${runPath()}?session=${alone.id}`)
-    expect(reads, 'one read on the old address, one in its place').toBe(2)
   } finally {
     await page.context().close()
     await own.api.stopSession(alone.id)

@@ -291,8 +291,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   }
   async function signal(s: SessionInfo, state: 'needs_input' | 'working' | 'clear') {
     try {
-      await api.setAttention(s.id, state, state === 'needs_input' ? 'flagged from the workbench' : undefined)
-      toast.add({ title: state === 'clear' ? `${s.name}: signal cleared` : `${s.name} marked as ${state === 'needs_input' ? 'needs input' : 'working'}`, icon: 'i-lucide-check', color: 'neutral' })
+      await api.setAttention(s.id, state, state === 'needs_input' ? 'Marked by a person.' : undefined)
+      toast.add({ title: state === 'clear' ? `${s.name}: mark cleared` : `${s.name} marked as ${state === 'needs_input' ? 'needs you' : 'working'}`, icon: 'i-lucide-check', color: 'neutral' })
     } catch (e) {
       fail('Signal')(e)
     }

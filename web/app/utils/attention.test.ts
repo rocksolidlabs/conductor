@@ -77,6 +77,8 @@ describe('a turn held for the terminal', () => {
     expect(waitingHeading({ state: 'needs_input', source: 'submit' }, 'claude')).toBe('Type in the terminal to go on')
     expect(waitingHeading({ state: 'needs_input', source: 'api' }, 'claude')).toBe('claude asks')
     expect(waitingHeading(undefined, 'codex')).toBe('codex asks')
+    // A person's own mark is no question of the agent's.
+    expect(waitingHeading({ state: 'needs_input', source: 'admin' }, 'claude')).toBe('claude needs you')
   })
 })
 

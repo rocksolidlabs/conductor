@@ -50,11 +50,15 @@ func TestExamplesAreValidCrews(t *testing.T) {
 // The todo app: a lead that plans, two builders after the lead, a tester
 // after cli (a start condition names one member), told to merge the lead's
 // and cli's branches, wait for core's and merge it too. Its goal says it is
-// meant for a fresh repository, not the project the server works in.
+// meant for a new folder, not the project the server works in: a new folder
+// starts, Conductor making its first commit.
 func TestTodoAppStartsLeadThenBuildersThenTester(t *testing.T) {
 	todo := Examples("/w", time.Now())[0]
-	if !strings.Contains(todo.Goal, "a fresh repository with one commit") {
-		t.Errorf("the goal does not say the crew wants a fresh repository: %s", todo.Goal)
+	if !strings.Contains(todo.Goal, "(meant for a new, empty folder, not a real project)") {
+		t.Errorf("the goal does not say the crew wants a new folder: %s", todo.Goal)
+	}
+	if strings.Contains(todo.Goal, "fresh repository") {
+		t.Errorf("the goal still asks for a repository with a commit: %s", todo.Goal)
 	}
 	want := map[string]Start{
 		"lead":   {When: StartImmediately},

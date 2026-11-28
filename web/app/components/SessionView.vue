@@ -611,7 +611,7 @@ async function refreshLinks() {
 
 async function signal(state: 'needs_input' | 'working' | 'clear') {
   try {
-    await api.setAttention(id.value, state, state === 'needs_input' ? 'flagged from the workbench' : undefined)
+    await api.setAttention(id.value, state, state === 'needs_input' ? 'Marked by a person.' : undefined)
   } catch (e) {
     toast.add({ title: 'Signal failed', description: (e as Error).message, color: 'error' })
   }
@@ -901,9 +901,9 @@ palette.registerPage(() => {
       { key: 'page:copy-link', label: 'Copy a view link now', icon: 'i-lucide-link', kbds: ['shift', 'S'], disabled: !live, run: copyViewLink },
       ...(s.kind === 'server' ? [{ key: 'page:rename', label: 'Rename…', icon: 'i-lucide-pencil', run: renameSession }] : []),
       { key: 'page:stop', label: 'Stop…', icon: 'i-lucide-square', kbds: ['X'], disabled: !live, ask: stopQuestion({ kind: 'session', name: s.name }), run: stop },
-      { key: 'page:mark-needs', label: 'Mark as needs input', icon: 'i-lucide-hand', run: () => signal('needs_input') },
+      { key: 'page:mark-needs', label: 'Mark as needs you', icon: 'i-lucide-hand', run: () => signal('needs_input') },
       { key: 'page:mark-working', label: 'Mark as working', icon: 'i-lucide-loader-circle', run: () => signal('working') },
-      { key: 'page:mark-clear', label: 'Clear signal', icon: 'i-lucide-x', run: () => signal('clear') },
+      { key: 'page:mark-clear', label: 'Clear the mark', icon: 'i-lucide-x', run: () => signal('clear') },
       // Not while the terminal is collapsed (#432, review round 2): its pane has no size to give the session.
       ...(fitOffered() ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
       ...(t.tabs.length ? [{ key: 'page:fold', label: t.folded ? 'Bring the editor back' : 'Fold the editor to its tab strip', icon: 'i-lucide-panel-bottom', kbds: ['T'], run: () => (tabs.value = toggleFold(tabs.value)) }] : []),
@@ -951,13 +951,15 @@ palette.registerPage(() => {
               <span :id="nameHint" hidden>Show the whole name</span>
               <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
-              <WaySwitch v-if="sm && ready" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" @held="showHeld" />
+              <WaySwitch v-if="sm" :class="!ready && 'invisible'" :inert="!ready || undefined" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" @held="showHeld" />
             </div>
             <span v-if="headline" class="truncate font-mono text-[11.5px] text-muted" :title="headline.title" data-session-meta>{{ headline.line }}</span>
           </div>
         </template>
         <template #right>
-          <template v-if="!gone && ready">
+          <!-- Drawn from the start, so the bar and the terminal under it keep their layout, but inert and unseen until the session's
+               first read has answered and allowed it (UX3 R72): a cold load's head offers no control that acts on a session not read. -->
+          <div v-if="!gone" class="contents" :class="!ready && 'invisible'" :inert="!ready || undefined" data-session-controls>
             <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" compact class="hidden md:inline-flex" />
             <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
             <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. Below sm Files, Share and
@@ -973,7 +975,7 @@ palette.registerPage(() => {
             <UDropdownMenu :items="menu">
               <IconButton icon="i-lucide-ellipsis" color="neutral" variant="outline" label="More" data-more-button />
             </UDropdownMenu>
-          </template>
+          </div>
           <div class="hidden sm:flex"><FullscreenButton /></div>
         </template>
       </UDashboardNavbar>

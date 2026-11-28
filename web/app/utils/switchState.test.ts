@@ -51,7 +51,7 @@ describe('switchState: which sentence the switch shows', () => {
       expect(pressFor(s, 'protocol')).toBeNull()
       expect(pressFor(s, 'terminal')).toBeNull()
     }
-    expect(MEMBER_TERMINAL).toBe('Crew members run in their terminals.')
+    expect(MEMBER_TERMINAL).toBe('Crew members stay in their terminals.')
     // An ended member is a label of its way, as any ended session; one of an agent with no protocol has no switch.
     expect(switchState(at({ member: true, canMove: false }))).toMatchObject({ shown: true, pressable: false, held: '' })
     expect(switchState(at({ member: true, hasProtocol: false })).shown).toBe(false)

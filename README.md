@@ -1214,7 +1214,8 @@ another begins by merging that member's branch (`crew/$CONDUCTOR_RUN/<member>`,
 the run's id being in its environment), and the todo app's tester merges the
 lead's and the second builder's, then waits for the first builder's and merges
 that too. The todo app writes files in its working directory, so point it at a
-fresh repository with one commit, not at a real project.
+new, empty folder, not at a real project: launched there, Conductor makes the
+folder's first commit.
 
 **Example: todo app, with tasks** is the way to see Yardmaster, Conductor's
 agent harness, at work. It builds the same app (in Python, with its standard
@@ -1225,7 +1226,7 @@ and checked by `python3 -m unittest discover -s tests -t .`, then `tests`,
 which needs both (its worktree starts at core's result and merges cli's) and
 runs the whole suite, then `review`, which approves or sends `tests` back with
 findings. Loading the examples again adds it for anyone who loaded them before
-it existed. Point it at a fresh repository with one commit, launch it, and
+it existed. Point it at a new, empty folder, launch it, and
 the run page's **Tasks** tab shows each task wait, run, get checked and pass
 or go back.
 

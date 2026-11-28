@@ -8,7 +8,7 @@ withDefaults(defineProps<{ icon?: boolean }>(), { icon: false })
 </script>
 
 <template>
-  <UTooltip text="The agent skips its permission prompts">
+  <UTooltip text="Launched with its agent's yolo recipe: it skips its permission prompts">
     <UIcon v-if="icon" name="i-lucide-shield-off" class="size-3.5 flex-none text-muted" aria-label="yolo" data-yolo-badge />
     <UBadge v-else label="yolo" icon="i-lucide-shield-off" color="neutral" variant="subtle" size="sm" class="flex-none" data-yolo-badge />
   </UTooltip>
