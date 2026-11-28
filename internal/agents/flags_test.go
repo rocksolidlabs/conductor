@@ -681,14 +681,15 @@ func TestFlagsRowsReadBound(t *testing.T) {
 			t.Error("a row past the bound was read")
 		}
 	}
-	// A help of nothing but tiny rows, each its own alias row, is read to
-	// the bound alone.
-	var tiny strings.Builder
-	tiny.WriteString("Usage of x:\n")
-	for tiny.Len() < MaxHelp-64 {
-		tiny.WriteString("  -a  Alias for --a\n")
+	// An alias row past the bound is not read either: the flag it names,
+	// among the first rows, keeps no alias of it.
+	var past strings.Builder
+	past.WriteString("Usage of x:\n  --f0  w\n")
+	for i := 1; i < maxRowsRead+20; i++ {
+		fmt.Fprintf(&past, "  --f%d  w\n", i)
 	}
-	if got := parse(t, a, tiny.String()); len(got) != maxFlags {
-		t.Errorf("%d rows of tiny ones", len(got))
+	past.WriteString("  -z  Short alias for --f0\n")
+	if f := flagNamed(t, parse(t, a, past.String()), "--f0"); len(f.Aliases) != 0 {
+		t.Errorf("an alias row past the bound joined --f0: %+v", f)
 	}
 }
