@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { alerting, answerDigit, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, choiceTitle, decisionAnsweredBy, decisionOf, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal, markedByPerson } from './attention'
+import { alerting, answerDigit, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, choiceTitle, decisionAnsweredBy, decisionOf, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal, markedByPerson, attentionWords } from './attention'
 import type { Attention, Role } from './protocol'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
@@ -84,6 +84,10 @@ describe('a turn held for the terminal', () => {
     expect(markedByPerson({ state: 'needs_input', source: 'admin' })).toBe(true)
     expect(markedByPerson({ state: 'needs_input', source: 'admin', message: 'Which database?' })).toBe(false)
     expect(markedByPerson({ state: 'needs_input', source: 'api' })).toBe(false)
+    // The words shown: a mark's own, or for a mark with none `Marked by a person.`; an agent's question its own.
+    expect(attentionWords({ state: 'needs_input', source: 'admin' })).toBe('Marked by a person.')
+    expect(attentionWords({ state: 'needs_input', source: 'admin', message: 'Which database?' })).toBe('Which database?')
+    expect(attentionWords({ state: 'needs_input', source: 'question', message: 'Which database?' })).toBe('Which database?')
   })
 })
 

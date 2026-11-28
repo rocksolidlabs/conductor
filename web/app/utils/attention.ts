@@ -24,6 +24,11 @@ export function markedByPerson(a: Pick<Attention, 'state' | 'source' | 'message'
  * The heading a question's card shows for a session that needs input: the terminal's for a held turn, `<agent> needs you` for a
  * person's own mark, else `<agent> asks`, before the agent's own question.
  */
+/** The words a waiting session shows: its question's, or, for a person's own mark (which carries none), `Marked by a person.` */
+export function attentionWords(a: Pick<Attention, 'state' | 'source' | 'message'> | undefined): string {
+  return markedByPerson(a) ? MARKED_BY_PERSON : (a?.message ?? '')
+}
+
 export function waitingHeading(a: Pick<Attention, 'state' | 'source' | 'message'> | undefined, agentName: string): string {
   if (waitsForTerminal(a)) return 'Type in the terminal to go on'
   return markedByPerson(a) ? `${agentName} needs you` : `${agentName} asks`

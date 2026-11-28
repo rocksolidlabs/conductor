@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ANSWER_IN_CHAT, ANSWER_IN_TERMINAL, answerDigit, answersInChat, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, MARKED_BY_PERSON, markedByPerson, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
+import { ANSWER_IN_CHAT, ANSWER_IN_TERMINAL, answerDigit, answersInChat, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, attentionWords, decisionOf, markedByPerson, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
 import { questionOf, replyLine, type ReplyTaken } from '~/utils/reply'
 
@@ -35,7 +35,7 @@ const held = computed(() => waitsForTerminal(props.attention))
 const heading = computed(() => waitingHeading(props.attention, props.agentName))
 // `<agent> asks:` leads the agent's own question; a person's mark reads as two sentences (`<agent> needs you. Marked by a person.`).
 const lead = computed(() => (markedByPerson(props.attention) ? `${heading.value}. ` : `${heading.value}: `))
-const message = computed(() => (markedByPerson(props.attention) ? MARKED_BY_PERSON : props.attention?.message || 'Answer here or in the terminal. First reply wins; everyone sees who answered.'))
+const message = computed(() => attentionWords(props.attention) || 'Answer here or in the terminal. First reply wins; everyone sees who answered.')
 // A permission dialog whose choices are not given (#288): its Enter would pick what it highlights, so it is answered in the terminal.
 const terminal = computed(() => answersInTerminal(props.attention))
 // A startup question with no choices (#902: a sign-in screen that asks for a code): answered in the terminal, whose paste control

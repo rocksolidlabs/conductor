@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
 import type { TerminalTransport } from '~/utils/transport/types'
-import { answerDigit, isEnded } from '~/utils/attention'
+import { answerDigit, isEnded, markedByPerson } from '~/utils/attention'
 import { agentInitials } from '~/utils/sessions'
 import { sessionStatus, type MarkView } from '~/utils/status'
 import { TILE_FONT_SIZE, TILE_SCROLLBACK } from '~/utils/tile'
@@ -48,7 +48,7 @@ const host = computed(() => (props.session.kind === 'hosted' ? hostName.value : 
 const hostTitle = computed(() => (props.session.kind === 'hosted' ? `hosted · ${hostName.value}` : 'server'))
 // A tile that asks says the start of its question where the host was; the whole question is its title and joins the tile's name.
 const ask = computed(() => (needsInput.value ? tileAsk(props.session) : null))
-const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.value} Enter opens it in full.` : `${props.session.name}: a live terminal. Enter opens it in full.`))
+const label = computed(() => (ask.value ? `${props.session.name} ${markedByPerson(props.session.attention) ? 'needs you.' : 'asks:'} ${ask.value} Enter opens it in full.` : `${props.session.name}: a live terminal. Enter opens it in full.`))
 </script>
 
 <template>

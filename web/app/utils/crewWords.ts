@@ -1,7 +1,7 @@
 import type { RelatedTicket } from '~/composables/useDispatch'
 import type { CrewInput, CrewMember, CrewStart, RunInfo, RunMember, RunTicket, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry, ChatMessage } from './protocol'
-import { liveAttention, offeredChoices } from './attention'
+import { attentionWords, liveAttention, offeredChoices } from './attention'
 import { runLength } from './charts'
 import type { NeedsItem } from './needsYou'
 import { memberSession, ownError, STOPPED_ERROR, toCrewInput, type MemberStatus } from './crews'
@@ -340,7 +340,7 @@ export function memberLook(run: RunInfo, m: RunMember, sessions: readonly Sessio
 export function memberAsk(name: string, s: Pick<SessionInfo, 'agentId' | 'attention'> | undefined): { question: string; line: ChatMessage | null } {
   const a = liveAttention(s?.attention)
   if (a?.state !== 'needs_input') return { question: '', line: null }
-  const question = a.message || 'waits on a prompt'
+  const question = attentionWords(a) || 'waits on a prompt'
   const options = offeredChoices(a)
   if (!a.id || !options.length) return { question, line: null }
   const line: ChatMessage = { t: 'chat', id: a.id, at: a.since ?? '', scope: 'run', kind: 'question', by: { id: 'agent', name: s!.agentId, role: 'agent' }, text: question, on: name, options }

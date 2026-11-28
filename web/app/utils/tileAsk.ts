@@ -2,7 +2,7 @@
 // answered there. Pure.
 import type { SessionInfo } from '~/composables/useSessions'
 import type { ChatMessage } from './protocol'
-import { answersInChat, decisionOf, liveAttention } from './attention'
+import { answersInChat, decisionOf, liveAttention, markedByPerson } from './attention'
 import { memberAsk } from './crewWords'
 
 /** A question whose choices the page may press on the tile. */
@@ -38,7 +38,8 @@ export function tileAskOf(name: string, s: Pick<SessionInfo, 'agentId' | 'attent
   const a = liveAttention(s?.attention)
   if (a?.state !== 'needs_input') return null
   const { question, line } = memberAsk(name, s)
-  const who = `${name} asks:`
+  // A person's own mark is no question: `<name> needs you.` before its words, as the session's card reads it.
+  const who = markedByPerson(a) ? `${name} needs you.` : `${name} asks:`
   if (line && answerable(line)) return { who, question, kind: 'choices', line }
   const decision = decisionOf(a)
   if (decision) return { who, question, kind: 'decision', decision, words: `Answer ${decision}` }
