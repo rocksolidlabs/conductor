@@ -11,3 +11,7 @@ turn_started
 text 00000000-0000-4000-8000-000000000931:0 1 call(s) final=true "/paint isn't available in this environment."
 accepted m303
 turn_ended done in=0 out=0 cost=0.00000000
+turn_started
+text 00000000-0000-4000-8000-000000000964:0 1 call(s) final=true "Context: 12% of the window is used."
+accepted m304
+turn_ended done in=0 out=0 cost=0.00000000
