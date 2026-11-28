@@ -344,3 +344,22 @@ export function folderRows(line: string, ctx: ArgContext, folders: readonly { pa
   }
   return rows
 }
+
+/**
+ * The last word of the arguments when it is a flag the agent's help says takes a value and none follows it: the agent would take
+ * the next word of its command line, one Conductor adds, as that value, so the launch is held and the server refuses it alike.
+ * An optional value is no such flag; a flag the list does not know is not judged.
+ */
+export function needsValue(line: string, flags: readonly AgentFlag[]): string {
+  const words = splitArgs(line)
+  const last = words.at(-1)
+  if (!last || !last.startsWith('-') || last === '-' || last === '--' || last.includes('=')) return ''
+  if (words.includes('--') && words.indexOf('--') < words.length - 1) return ''
+  const f = flagOf(flags, last)
+  return f && f.value === 'required' ? last : ''
+}
+
+/** The line under the field for such a flag. */
+export function needsValueLine(flag: string): string {
+  return flag ? `${flag} needs a value.` : ''
+}

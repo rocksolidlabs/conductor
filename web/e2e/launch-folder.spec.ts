@@ -179,7 +179,10 @@ test('one press allows a folder agents cannot use yet, exactly the folder named,
   const allow = dialog.locator('[data-launch-allow]')
   await allow.click()
   await expect(line(dialog)).toHaveAttribute('data-folder-state', 'allowed_now')
-  await expect(line(dialog)).toHaveText('Agents can use this folder now.')
+  // Kept: said with its check mark, and Settings a link, where it can be taken back.
+  await expect(line(dialog)).toHaveText('Agents can use this folder now. Saved in Settings.')
+  await expect(line(dialog).locator('[data-folder-words] .text-success')).toHaveCount(1)
+  await expect(line(dialog).locator('[data-folder-settings]')).toHaveAttribute('href', '/settings?section=folders')
   expect(asked).toEqual([{ path: folder, confirmed: '' }])
   // Nothing else of the dialog is lost, and the launch starts there.
   await expect(dialog.locator('[data-launch-message-input]')).toHaveValue('say hello')
@@ -549,7 +552,15 @@ test("a Dispatch project's dialog left for Settings through its line keeps its d
   await project.locator('[data-new-project-key]').fill('LEFT')
   await project.locator('[data-new-project-name]').fill('Left for Settings')
   const folder = outside('project-to-settings')
+  // The folder's line arrives on its own: the dialog's buttons stay where they were. Measured at rest, before and after.
+  const projectDialog = page.getByRole('dialog').filter({ has: project })
+  const cancel = projectDialog.getByRole('button', { name: 'Cancel' })
+  await atRest(projectDialog)
+  const cancelAt = (await cancel.boundingBox())!
   await typeInto(page, project.locator('[data-dir-input] input[role="combobox"]'), folder)
+  await expect(project.locator('[data-launch-folder-line]')).toBeVisible()
+  await atRest(projectDialog)
+  expect(Math.abs((await cancel.boundingBox())!.y - cancelAt.y), 'Cancel stays where it was as the line arrives').toBeLessThanOrEqual(0.5)
   await project.locator('[data-close-requirement="acceptance"]').click()
   const settings = project.locator('[data-launch-folder-line] [data-folder-settings]')
   await expect(settings).toBeVisible()

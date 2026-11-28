@@ -70,14 +70,35 @@ https://code.claude.com/docs/en/headless.md), not recorded:
   an id of its own before the message's replay, and a result with no model
   turn); and a command the session cannot run, answered by the program's
   own sentence in a synthetic assistant line, with no replay of the
-  message and a result naming it (`user_message_uuid`). Row 12's by-hand
-  check records the real lines through this driver; they replace these.
+  message and a result naming it (`user_message_uuid`); and a local
+  command the program runs (`/context`): a synthetic assistant line
+  carrying `local_command_run` and `local_command_source` with the
+  command's output, then the message's replay with its command tags, then
+  a result naming the command (`local_command`, `num_turns` 0). They
+  follow the shapes of a real run of Claude Code 2.1.332 through this
+  driver: every message's `command_lifecycle` lines (queued and started
+  before its `system/init`, completed after its result for some
+  messages, not all), `system/init` before every message with its
+  `terminal_slash_commands` and `user_message_uuids`, a model turn's
+  `system/status` `requesting` before the replay and its assistant line's
+  `user_message_uuids` and `request_id`, the person's own hooks running in
+  the middle of `/compact` (`hook_started`, `hook_response`) and the
+  boundary's `logical_parent_uuid`, the unavailable command's
+  `local_command_source`, a `timestamp` on every user and assistant line,
+  and the results' further keys. What the rule above removes from a
+  recorded line (`rate_limit_event`, the account's fields,
+  `credential_expires_at`) arrives in the real stream too and is kept out
+  here by that rule: the driver reads none of it.
 - `hand-built-commands.jsonl` (row 12): the agent's own commands as the
   recorded run's shapes give them, with a made-up list in this project's
   own words, never a person's list or the program's own descriptions: the
   initialize answer's `commands` (name, description, argument hint,
   aliases, builtin), `system/init`'s `slash_commands` names, and a
-  `system/commands_changed` carrying the whole new list.
+  `system/commands_changed` carrying the whole new list. As in the real
+  stream, every element carries `argumentHint` (an empty string where it
+  has none), `builtin` is true or absent, never false, `aliases` is on
+  those that have any, and the init carries `terminal_slash_commands` and
+  `user_message_uuids`.
 - `hand-built-not-signed-in.jsonl`: a start whose first answer says the
   agent is not signed in (`error: "authentication_failed"`, a result with
   `is_error` and `api_error_status` 401). A real run of it would need the
