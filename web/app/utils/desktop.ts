@@ -92,9 +92,9 @@ function thisMachine(raw: string, u: URL): boolean {
 
 /** What Settings says at a folder field, checked as it is picked (UX3 R55): the app's validate (desktop/src/settings.ts) refuses the first two. */
 export const FOLDER_WORDS = {
-  /** The last folder agents can use cannot be taken away: validate's "at least one allowed root is needed". */
+  /** The last folder agents can use cannot be taken away: validate's "agents need at least one folder". */
   lastRoot: 'Agents need at least one folder.',
-  /** The default folder outside every folder agents can use: validate's "the default working directory must lie under an allowed root". */
+  /** The default folder outside every folder agents can use: validate's "the default folder must be inside a folder agents can use". */
   defaultOutside: 'Pick a folder inside one that agents can use.',
   /** The data folder inside a folder agents can use: said, never held (the server keeps its own guard). */
   dataInside: 'Keep this outside the folders agents can use.',
@@ -151,6 +151,9 @@ export interface DesktopIceStatus {
   publicIp: string
   wslAddress: string
   firewall: 'present' | 'missing' | 'unknown'
+  /** WSL shares Windows' network (mirrored mode): viewers connect straight, nothing is forwarded or said. */
+  mirrored?: boolean
+  /** Why viewers cannot connect straight yet, in the app's own words: never a program's raw text. */
   reason?: string
 }
 
@@ -200,6 +203,12 @@ export interface DesktopBridge {
   openUrl?(url: string, browser?: AgentBrowser | null): Promise<{ outcome: string }>
   /** The browsers of the five an agent may name that are installed on this computer, for the Agents page to mark. Older apps lack it. */
   browsers?(): Promise<string[]>
+  /**
+   * Allow this folder (UX3 R30): agents may use path from now on, with nothing restarted, and the settings keep it (saved false, with
+   * why, when they could not be written); confirmed names a wide folder's kind once asked. Absent where the app does not offer it
+   * (an older app, Windows while its switch is off).
+   */
+  allowFolder?(path: string, confirmed?: string): Promise<{ ok: true; root: string; saved: boolean; error?: string } | { ok: false; code: string; message: string; real?: string; wide?: string; reason?: string }>
   /**
    * The settings changed outside the Settings page (a folder allowed from the Launch agent dialog, a trial's or a crew's): the page
    * reads them again (UX3 R62). Older apps lack it.

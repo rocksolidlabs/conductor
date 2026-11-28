@@ -1,7 +1,7 @@
 {
   "id": "example-todo-app-tasks",
   "name": "Example: todo app, with tasks",
-  "goal": "Build a small command-line todo app in this repository (meant for a fresh repository with one commit: point the crew's working directory at one before launching, not at a real project): add, list and done commands, items kept in a JSON file in the user's home directory (the path in TODO_FILE when it is set), with tests, in Python with its standard library only",
+  "goal": "Build a small command-line todo app in this repository (meant for a new, empty folder, not a real project): add, list and done commands, items kept in a JSON file in the user's home directory (the path in TODO_FILE when it is set), with tests, in Python with its standard library only",
   "cwd": "/srv/work",
   "where": "server",
   "isolation": "worktree",

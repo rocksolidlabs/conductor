@@ -168,10 +168,9 @@ opens inside its run, with the way back to the run in view and in words
 (the run's name), wherever it is opened from: the sidebar, the run's page,
 the Yard.
 
-Not yet: today a member opens on its session's own page (`/sessions/<id>`).
-
-Checks: none yet; a spec beside `web/e2e/run-tasks.spec.ts` comes with the
-change that makes the rule true.
+Checks: `web/e2e/member-strip.spec.ts` (a member's old address lands inside
+its crew before any socket opens; Back to the crew; a session that is not
+the run's is not drawn in its place; the sidebar marks the member's row).
 
 ### Colour and contrast
 

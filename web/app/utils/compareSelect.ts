@@ -53,7 +53,7 @@ export function selectionPanelWords(c: Pick<Comparison, 'settled' | 'state' | 's
   if (!c) return ''
   const sel = c.selection
   if (!sel) {
-    if (c.state === 'ended') return 'This trial ended with no candidate to select: no lane has a standing result, or the run had no room for a selection. Run a new trial to try again.'
+    if (c.state === 'ended') return 'This trial ended with no result to select. Run a new trial to try again.'
     return c.settled ? 'The selection opens next: every lane has ended.' : 'The selection opens when every lane has ended. Nothing is selected by default.'
   }
   if (sel.state === 'superseded' || record?.state === 'superseded') {

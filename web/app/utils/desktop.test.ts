@@ -187,8 +187,10 @@ describe('the folder checks Settings makes as a folder is picked (UX3 R55)', () 
   it("holds exactly what the app's own validate refuses", () => {
     const app = readFileSync(new URL('../../../desktop/src/settings.ts', import.meta.url), 'utf8')
     // validate refuses no root and a default folder outside them, and says nothing of the data folder's place.
-    expect(app).toContain("out.push('at least one allowed root is needed')")
-    expect(app).toContain("out.push('the default working directory must lie under an allowed root')")
+    expect(app).toContain("out.push('agents need at least one folder')")
+    expect(app).toContain("out.push('the default folder must be inside a folder agents can use')")
+    // A refused Save names the page's own fields (UX3 WG6), never the old words.
+    expect(app).not.toMatch(/allowed root|default working directory|the data directory must/)
     expect(app).not.toMatch(/data directory must (not )?lie/)
     expect(Object.keys(FOLDER_WORDS)).toEqual(['lastRoot', 'defaultOutside', 'dataInside'])
   })

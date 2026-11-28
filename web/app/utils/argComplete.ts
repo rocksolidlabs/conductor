@@ -1,4 +1,5 @@
 import type { AgentFlag } from '~/composables/useSessions'
+import { splitArgs } from './argv'
 
 /**
  * An arguments field's completion (GET /api/catalog/{id}/flags): the word at the cursor, whether it is a flag or a flag's value,
@@ -160,9 +161,23 @@ function ranked<T>(items: readonly T[], typed: string, spellings: (t: T) => stri
   return [...exact, ...starts, ...holds]
 }
 
-/** A value as the line writes it: in double quotes when it holds a space. */
-export function valueWord(v: string): string {
-  return /\s/.test(v) ? `"${v}"` : v
+/** A control or format character (a newline, a bidi mark, a zero-width one): a value holding one is never written by a pick. */
+const UNSEEN = /[\p{Cc}\p{Cf}\u2028\u2029]/u
+
+/**
+ * A value as the line writes it, by the rule splitArgs reads back (utils/argv.ts): a plain word as it is; one with white space or
+ * a quote at its start in double quotes, or in single ones when it holds a double quote. In a `--flag=value` word (`joined`) a
+ * quote opens nothing, so only a plain word can be written there. null for a value that cannot be written as that one argument
+ * (both kinds of quote and white space, an empty one) or that holds a control or format character: it is not a row a pick takes.
+ */
+export function valueWord(v: string, joined = false): string | null {
+  if (v === '' || UNSEEN.test(v)) return null
+  const plain = !/\s/.test(v) && !/^["']/.test(v)
+  if (joined) return plain ? v : null
+  const word = plain ? v : !v.includes('"') ? `"${v}"` : !v.includes("'") ? `'${v}'` : null
+  if (word === null) return null
+  const back = splitArgs(word)
+  return back.length === 1 && back[0] === v ? word : null
 }
 
 /** The line with line[from, to) replaced by word, a space after it (one already there is kept), and the cursor after that space. */
@@ -189,12 +204,12 @@ export function argRows(line: string, cursor: number, flags: readonly AgentFlag[
     ...(ctx.flag.choices ?? []).filter((c) => c.set !== 'yolo').map((c) => ({ value: c.value, about: c.about })),
     ...(ctx.flag.examples ?? []).map((v) => ({ value: v, about: undefined as string | undefined })),
   ].filter((v, i, all) => all.findIndex((w) => w.value === v.value) === i)
-  return ranked(values, ctx.typed, (v) => [v.value]).map((v) => ({
-    key: v.value,
-    label: v.value,
-    about: v.about,
-    ...replaceWord(line, ctx.from, ctx.to, valueWord(v.value)),
-  }))
+  const rows: ArgRow[] = []
+  for (const v of ranked(values, ctx.typed, (x) => [x.value])) {
+    const word = valueWord(v.value, ctx.joined)
+    if (word !== null) rows.push({ key: v.value, label: v.value, about: v.about, ...replaceWord(line, ctx.from, ctx.to, word) })
+  }
+  return rows
 }
 
 /** The word at the cursor as typed so far, for the rule that closes a list whose only row is that word. */
@@ -211,20 +226,45 @@ export function listShows(rows: readonly ArgRow[], typed: string): boolean {
 }
 
 /**
- * Whether the line holds a flag, or a flag's value, that turns the agent's questions off (set yolo): the line under the field then
- * points at the Yolo switch. What is typed is sent as typed all the same.
+ * Whether the arguments hold a flag, or a flag's value, that turns the agent's questions off (set yolo): the line under the field
+ * then points at the Yolo switch. Judged on the words the agent gets (splitArgs: quotes taken off), up to a lone `--`; a short
+ * flag carries its value attached (`-anever`), or stands among others (`-xy`), as the agents' parsers read them. What is typed is
+ * sent as typed all the same.
  */
 export function holdsYolo(line: string, flags: readonly AgentFlag[]): boolean {
-  const words = argWords(line)
+  const words = splitArgs(line)
+  const yoloValue = (f: AgentFlag | undefined, v: string | undefined) => v !== undefined && !!f?.choices?.some((c) => c.set === 'yolo' && c.value === v)
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (w.quote) continue
-    if (w.text === '--') return false
-    const f = flagOf(flags, w.text)
+    if (w === '--') return false
+    if (!w.startsWith('-') || w === '-') continue
+    if (!w.startsWith('--') && w.length > 2) {
+      const short = flagOf(flags, w.slice(0, 2))
+      if (short && takesValue(short)) {
+        if (short.set === 'yolo' || yoloValue(short, w.slice(2).replace(/^=/, ''))) return true
+        continue
+      }
+      // A cluster of short flags that take no value.
+      if ([...w.slice(1)].some((c) => flagOf(flags, `-${c}`)?.set === 'yolo')) return true
+      continue
+    }
+    const f = flagOf(flags, w)
     if (!f) continue
     if (f.set === 'yolo') return true
-    const value = w.text.includes('=') ? w.text.slice(w.text.indexOf('=') + 1) : words[i + 1]?.text
-    if (value !== undefined && (f.choices ?? []).some((c) => c.set === 'yolo' && c.value === value)) return true
+    if (yoloValue(f, w.includes('=') ? w.slice(w.indexOf('=') + 1) : words[i + 1])) return true
+  }
+  return false
+}
+
+/**
+ * Whether a session launched with these arguments stays in its terminal, by what the agent's flags say (`keepsTerminal`, the chat's
+ * own refusal) and, for an agent with a chat way (`chat`), a lone `--`, which every chat refuses.
+ */
+export function keepsTerminal(line: string, flags: readonly AgentFlag[], chat: boolean): boolean {
+  const words = splitArgs(line)
+  for (const w of words) {
+    if (w === '--') return chat
+    if (w.startsWith('-') && flagOf(flags, w)?.keepsTerminal) return true
   }
   return false
 }
@@ -251,8 +291,13 @@ export function folderPrefix(ctx: ArgContext, cwd: string): string | null {
  */
 export function folderRows(line: string, ctx: ArgContext, folders: readonly { path: string; name: string }[]): ArgRow[] {
   if (ctx.kind !== 'value') return []
-  return folders.map((f) => {
-    const word = valueWord(f.path)
-    return { key: f.path, label: f.name, text: line.slice(0, ctx.from) + word + line.slice(ctx.to), cursor: ctx.from + word.length }
-  })
+  const rows: ArgRow[] = []
+  for (const f of folders) {
+    // A folder whose path cannot be written as the one argument the row shows is not offered (valueWord); nor one whose name, as
+    // the row would show it, holds a mark a person cannot see.
+    const word = valueWord(f.path, ctx.joined)
+    if (word === null || UNSEEN.test(f.name)) continue
+    rows.push({ key: f.path, label: f.name, text: line.slice(0, ctx.from) + word + line.slice(ctx.to), cursor: ctx.from + word.length })
+  }
+  return rows
 }

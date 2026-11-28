@@ -71,6 +71,7 @@ func TestLaunchAsChatRefusals(t *testing.T) {
 		{"not a string", map[string]any{"way": 1}, http.StatusBadRequest, "invalid_request", ""},
 		{"an added folder", map[string]any{"way": "protocol", "args": []string{"--add-dir=" + t.TempDir()}}, http.StatusConflict, "move_refused", agentproto.AddedFolderWords},
 		{"a flag of the chat's own", map[string]any{"way": "protocol", "args": []string{"--verbose"}}, http.StatusConflict, "move_refused", agentproto.OwnFlagWords("--verbose")},
+		{"a lone --", map[string]any{"way": "protocol", "args": []string{"--", "fix the tests"}}, http.StatusConflict, "move_refused", agentproto.OptionsEndWords},
 	} {
 		code, out := c.launchAs(t, tc.body)
 		got, words := refusalOf(out)

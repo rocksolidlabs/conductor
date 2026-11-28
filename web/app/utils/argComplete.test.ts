@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentFlag } from '../composables/useSessions'
-import { argContext, argRows, argWords, flagLabel, folderPrefix, folderRows, holdsYolo, listShows, replaceWord, typedAt } from './argComplete'
+import { argContext, argRows, argWords, flagLabel, folderPrefix, folderRows, holdsYolo, keepsTerminal, listShows, replaceWord, typedAt, valueWord } from './argComplete'
+import { splitArgs } from './argv'
 
 // The flags of a made-up agent, as GET /api/catalog/{id}/flags answers them: the help's order.
 const flags: AgentFlag[] = [
@@ -173,5 +174,70 @@ describe('a folder flag\'s value', () => {
   it('reads a closed quote at the cursor without its closing quote', () => {
     const line = '--add-dir "/r/two words"'
     expect(argContext(line, line.length, flags)).toMatchObject({ kind: 'value', typed: '/r/two words' })
+  })
+})
+
+describe('a value picked is the one argument its row shows', () => {
+  const line = '--add-dir '
+  const ctx = argContext(line, line.length, flags)
+  const pick = (path: string) => folderRows(line, ctx, [{ path, name: path.split('/').pop()! }])
+  it('writes each awkward name so that the launch splits it back to the folder alone', () => {
+    for (const path of ['/r/plain', '/r/two words', '/r/a"b c', "/r/it's here", '/r/a"b', '"/r/q', "'/r/q", '/r/émoji 🎈']) {
+      const rows = pick(path)
+      expect(rows, path).toHaveLength(1)
+      expect(splitArgs(rows[0]!.text), path).toEqual(['--add-dir', path])
+    }
+  })
+  it('offers no row for a name it cannot write as one argument, or that holds a mark nobody sees', () => {
+    for (const path of ['/r/a"b \'c', '/r/new\nline', '/r/bidi\u202Eevil', '/r/zero\u200Bwidth', '/r/nul\u0000', '/r/tab\there', '']) {
+      expect(pick(path), JSON.stringify(path)).toEqual([])
+    }
+    expect(pick('/r/fine').map((r) => r.key)).toEqual(['/r/fine'])
+  })
+  it('writes only a plain value after --flag=, where a quote opens nothing', () => {
+    const joined = '--add-dir='
+    const jctx = argContext(joined, joined.length, flags)
+    expect(folderRows(joined, jctx, [{ path: '/r/two words', name: 'two words' }])).toEqual([])
+    const [row] = folderRows(joined, jctx, [{ path: '/r/plain', name: 'plain' }])
+    expect(splitArgs(row!.text)).toEqual(['--add-dir=/r/plain'])
+    expect(valueWord('a b', true)).toBeNull()
+  })
+  it('writes a listed value the same way', () => {
+    const odd: AgentFlag[] = [{ name: '--mode', value: 'required', choices: [{ value: 'a"b c' }, { value: 'bad\u202Ex' }, { value: 'ok' }] }]
+    const rows = argRows('--mode ', 7, odd)
+    expect(rows.map((r) => r.key)).toEqual(['a"b c', 'ok'])
+    expect(splitArgs(rows[0]!.text)).toEqual(['--mode', 'a"b c'])
+  })
+})
+
+describe('the Yolo hint judges the words the agent gets', () => {
+  const codexish: AgentFlag[] = [
+    { name: '--ask-for-approval', aliases: ['-a'], value: 'required', choices: [{ value: 'on-request' }, { value: 'never', set: 'yolo' }] },
+    { name: '--yes', aliases: ['-y'], value: 'none', set: 'yolo' },
+    { name: '--quiet', aliases: ['-q'], value: 'none' },
+  ]
+  it('sees a flag or value in quotes, a short flag with its value attached, and one in a cluster', () => {
+    expect(holdsYolo('"--dangerously-skip"', flags)).toBe(true)
+    expect(holdsYolo("'--mode=skip'", flags)).toBe(true)
+    expect(holdsYolo('--mode "skip"', flags)).toBe(true)
+    expect(holdsYolo('-anever', codexish)).toBe(true)
+    expect(holdsYolo('-a=never', codexish)).toBe(true)
+    expect(holdsYolo('-a never', codexish)).toBe(true)
+    expect(holdsYolo('-qy', codexish)).toBe(true)
+    expect(holdsYolo('-aon-request -q', codexish)).toBe(false)
+  })
+  it('stops at a lone --, quoted or not', () => {
+    expect(holdsYolo('-- -anever', codexish)).toBe(false)
+    expect(holdsYolo('"--" --dangerously-skip', flags)).toBe(false)
+  })
+})
+
+describe('keepsTerminal', () => {
+  it('says a flag a chat refuses keeps the session in its terminal, and a lone -- for an agent with a chat way', () => {
+    expect(keepsTerminal('--verbose', flags, true)).toBe(true)
+    expect(keepsTerminal('--effort high', flags, true)).toBe(false)
+    expect(keepsTerminal('-- fix the tests', flags, true)).toBe(true)
+    expect(keepsTerminal('-- fix the tests', flags, false)).toBe(false)
+    expect(keepsTerminal('--effort "a -- b"', flags, true)).toBe(false)
   })
 })

@@ -12,7 +12,7 @@ import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { RUN_LAYOUTS, RUN_LAYOUT_LOOK, type RunLayout, type RunWallTile } from '~/utils/wall'
-import { choiceFor, choose, crewOfRun, crewsForDoc, largeOf, readRunTiles, takeKept, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
+import { choiceFor, choose, crewOfRun, crewsForDoc, largeOf, readRunTiles, RUN_TILES_KEY, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
@@ -283,25 +283,26 @@ const tilesRecord = ref(readRunTiles(pageStorage()))
 const crew = computed(() => crewOfRun(runId.value, run.value?.crewId))
 const tilesChoice = computed(() => choiceFor(tilesRecord.value, crew.value))
 function chooseTiles(change: Partial<RunTilesChoice>) {
-  tilesRecord.value = choose(tilesRecord.value, crew.value, change)
+  // On the record as the storage holds it now: another tab's choice since this page read it stays.
+  tilesRecord.value = choose(readRunTiles(pageStorage()), crew.value, change)
   writeRunTiles(pageStorage(), tilesRecord.value)
   // The record is the layout document's too (R88, R73): the desktop app's server starts on a fresh address, whose page storage is
   // empty, and the server's copy brings the choices back; another machine's arrive the same way.
   const { last, crews } = tilesRecord.value
   ui.setLayout({ runTiles: { layout: last.layout, activity: last.activity, crews: crewsForDoc(crews) } })
 }
-// The server's copy, taken up when it arrives.
+// The record is read again from the storage when the server's copy was taken up (useUiState writes it there as it reads it) and when
+// another tab of this origin stored a choice; this page never writes back what it read at its start.
 watch(
   () => ui.layout.value.runTiles,
-  (kept) => {
-    const next = takeKept(tilesRecord.value, kept)
-    if (next !== tilesRecord.value) {
-      tilesRecord.value = next
-      writeRunTiles(pageStorage(), next)
-    }
-  },
-  { immediate: true },
+  () => (tilesRecord.value = readRunTiles(pageStorage())),
 )
+watch(runId, () => (tilesRecord.value = readRunTiles(pageStorage())))
+function tilesStored(e: StorageEvent) {
+  if (e.key === RUN_TILES_KEY) tilesRecord.value = readRunTiles(pageStorage())
+}
+onMounted(() => window.addEventListener('storage', tilesStored))
+onBeforeUnmount(() => window.removeEventListener('storage', tilesStored))
 function setActivity(on: boolean) {
   chooseTiles({ activity: on })
 }

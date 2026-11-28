@@ -1,5 +1,6 @@
 import type { Locator, Page, Route } from '@playwright/test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DAILY, atRest, dayPage, expect, openMore, test } from './fixtures'
 import { noSideways, probeColour, tapTarget } from './layout'
@@ -272,11 +273,11 @@ test("Folder is named so, shows the folder a launch runs in, and reads a leading
   await expect(folder).toHaveValue(`${own.home}/`)
 })
 
-test('a folder the server refuses is said under Folder in plain words, and Launch sends nothing until it changes', async ({ browser }) => {
+test('a folder agents cannot use is said under Folder before the press, and Launch sends nothing until it changes', async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started })
   const dialog = await openOnPrompted(page)
   const folder = dialog.getByLabel('Folder', { exact: true })
-  const refused = dialog.locator('[data-launch-folder-refused]')
+  const line = dialog.locator('[data-launch-folder-line]')
   const launch = dialog.locator('[data-launch-submit]')
   let posts = 0
   page.on('request', (r) => {
@@ -284,32 +285,49 @@ test('a folder the server refuses is said under Folder in plain words, and Launc
   })
   const file = join(own.root, 'a-file.txt')
   writeFileSync(file, 'not a folder\n')
+  // A folder of the spec's own, outside the folder agents may use.
+  const outsideFolder = realpathSync(mkdtempSync(join(tmpdir(), 'conductor-e2e-outside-')))
+  // This spec's server is no desktop app's: its folders are its configuration's, and no press is offered (launch-folder.spec.ts has it).
   const cases = [
-    { path: '/', words: "Agents can't use this folder yet." },
+    { path: '/', words: "Agents can't use the whole disk. Pick a folder inside it." },
+    { path: outsideFolder, words: "Agents can't use this folder. Add it to this server's folders agents can use, or pick another." },
     { path: join(own.root, 'no-such-folder'), words: 'There is no folder at this path.' },
     { path: file, words: 'This is a file, not a folder.' },
   ]
-  for (const [i, c] of cases.entries()) {
+  for (const c of cases) {
     await folder.fill(c.path)
     // The folder's list closed: the task takes the focus, then Launch is pressed.
     await dialog.locator('[data-launch-message-input]').click()
-    const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
-    await launch.click()
-    expect((await answered).status(), c.path).toBe(400)
-    await expect(refused, c.path).toHaveText(c.words)
+    await expect(line, c.path).toHaveText(c.words)
     await expect(folder).toHaveAttribute('aria-invalid', 'true')
-    await expect(folder).toBeFocused()
-    await expect(dialog.locator('[data-launch-error]'), 'said under Folder alone').toHaveCount(0)
-    // Pressed again with the folder as it was: the cursor goes back to Folder, and nothing is sent.
-    await dialog.locator('[data-launch-message-input]').click()
+    await expect(dialog.locator('[data-launch-allow]')).toHaveCount(0)
     await launch.click()
     await expect(folder).toBeFocused()
-    expect(posts, c.path).toBe(i + 1)
+    expect(posts, c.path).toBe(0)
   }
-  // Changed, the refusal goes.
+  rmSync(outsideFolder, { recursive: true, force: true })
+  // Changed, the line goes.
   await folder.fill(own.repo)
-  await expect(refused).toHaveCount(0)
+  await dialog.locator('[data-launch-message-input]').click()
+  await expect(line).toHaveCount(0)
   await expect(folder).not.toHaveAttribute('aria-invalid', 'true')
+})
+
+test("a server that cannot check a folder (an older one) still says its refusal of the launch under Folder, in plain words", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openOnPrompted(page)
+  await page.route((u) => u.pathname === '/api/roots/check', (r) => r.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'not_found', message: 'not found' } }) }))
+  const folder = dialog.getByLabel('Folder', { exact: true })
+  await folder.fill(join(own.root, 'no-such-folder'))
+  await dialog.locator('[data-launch-message-input]').click()
+  const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
+  await dialog.locator('[data-launch-submit]').click()
+  expect((await answered).status()).toBe(400)
+  await expect(dialog.locator('[data-launch-folder-refused]')).toHaveText('There is no folder at this path.')
+  await expect(dialog.locator('[data-launch-folder-line]')).toHaveCount(0)
+  await expect(folder).toHaveAttribute('aria-invalid', 'true')
+  await expect(folder).toBeFocused()
+  await page.unroute((u) => u.pathname === '/api/roots/check')
 })
 
 test("another refusal is said on top as Not started, in the server's words with no code, and the fields are kept", async ({ browser }) => {
@@ -541,7 +559,7 @@ test('after a launch the dialog remembers the agent, the folder, its model and t
   const folder = dialog.getByLabel('Folder', { exact: true })
   await expect(folder).toHaveValue(work)
   await dialog.locator('[data-launch-submit]').click()
-  await expect(dialog.locator('[data-launch-folder-refused]')).toHaveText('There is no folder at this path.')
+  await expect(dialog.locator('[data-launch-folder-line]')).toHaveText('There is no folder at this path.')
   await expect(folder).toHaveValue(work)
 })
 

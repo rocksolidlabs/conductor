@@ -10,6 +10,8 @@ export function useServerHost() {
   const home = useState<string>('serverHome', () => '')
   /** The server's version (`conductor version`); '' until known. */
   const version = useState<string>('serverVersion', () => '')
+  /** Where the server's folders come from: `app` when the desktop app that started it may allow one while it runs, `config`; '' until known. */
+  const folders = useState<string>('serverFolders', () => '')
   const asked = useState<boolean>('serverHostAsked', () => false)
   const api = useSessions()
   async function load() {
@@ -21,9 +23,10 @@ export function useServerHost() {
       switchyard.value = me.switchyard === true
       home.value = me.home ?? ''
       version.value = me.version ?? ''
+      folders.value = me.folders ?? ''
     } catch {
       asked.value = false
     }
   }
-  return { host, switchyard, home, version, load }
+  return { host, switchyard, home, version, folders, load }
 }

@@ -2,6 +2,7 @@ import type { CrewCheck, CrewManifest } from '~/composables/useSessions'
 import type { CrewCriterion } from './protocol'
 import { hasOpenQuote, splitArgs } from './argv'
 import { checkProblems, toCrewCheck, TASK_LIMITS, type DraftCheck } from './crews'
+import { GIT_CAN_WORKTREE, GIT_FIRST_COMMIT } from './dirInput'
 import { moreLine } from './moreOptions'
 
 /**
@@ -262,7 +263,7 @@ export function compareProblems(d: DraftComparison, agents: readonly TrialAgent[
   d.agents.forEach((a, i) => {
     const agent = agents.find((x) => x.id === a.agentId)
     if (!a.agentId) add(`agent-${i}`, 'Pick an agent.')
-    else if (!agent) add(`agent-${i}`, `Agent ${agentLetter(i)}: ${a.agentId} is not on this server.`)
+    else if (!agent) add(`agent-${i}`, `Agent ${agentLetter(i)}: ${a.agentId} is not on this server. Pick another.`)
   })
 
   if (d.check.trim()) {
@@ -309,17 +310,30 @@ export function checkNote(line: string): string {
 export const FOLDER_CHECK_MS = 300
 
 /**
- * What the form says under Folder once the server has looked at it (GET /api/git/check): its refusal of a folder agents may not use
- * (`invalid_cwd`), in its words, which holds the button; '' for any other answer. A folder with no repository or no commit yet says
- * nothing: a new project is a folder like any other.
+ * What the form says under Folder when the server refused to look at it (GET /api/git/check's error): its refusal of a folder agents
+ * may not use (`invalid_cwd`), in its words, which holds the button; '' for any other error.
  */
 export function trialFolderLine(answer: { code?: string; message?: string } | null): string {
   return answer?.code === 'invalid_cwd' ? sentence(answer.message ?? '') : ''
 }
 
-/** The words of a press the server refused, with what the form kept. */
+/**
+ * What the form says under Folder of the server's answer for a folder it looked at (GET /api/git/check): a trial's agents work on copies,
+ * so a folder the press would refuse (a repository with no commit, among others) is said in the server's words, which holds the button
+ * as a folder agents may not use does; '' for a folder with a commit, a new folder (whose first commit the press makes), and an answer
+ * with no words (an older server).
+ */
+export function trialCheckLine(check: { message?: string } | null): string {
+  const m = check?.message?.trim() ?? ''
+  return !m || m === GIT_CAN_WORKTREE || m === GIT_FIRST_COMMIT ? '' : sentence(m)
+}
+
+/**
+ * The words of a press the server refused, as a sentence, with what the form kept: the name of the server's package it came from
+ * (`compare: `, `crew: `) is not a person's word and is left off.
+ */
 export function notSavedWords(server: string): string {
-  const t = server.trim().replace(/[.\s]+$/, '')
+  const t = server.trim().replace(/^(?:(?:compare|crew): )+/i, '').replace(/[.\s]+$/, '')
   return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}. What you typed is kept.` : 'What you typed is kept.'
 }
 

@@ -113,6 +113,17 @@ func (r *ProbeProcess) End() {
 	}
 }
 
+// cut ends the program under way and its group, as End does, but leaves the
+// run its own: the run then ends as a program that was killed does (a help
+// read that passed its bound in bytes).
+func (r *ProbeProcess) cut() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cmd != nil {
+		endProbe(r.cmd)
+	}
+}
+
 // endProbe kills cmd's process group and cmd itself (should it have left
 // the group); called under the run's lock, before the reaping.
 func endProbe(cmd *exec.Cmd) {

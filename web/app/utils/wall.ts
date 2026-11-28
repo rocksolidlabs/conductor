@@ -123,6 +123,18 @@ export interface WallShares {
 /** The most tracks an axis keeps shares for. */
 export const SHARES_MAX = 12
 
+/**
+ * The axes of a layout whose gaps a person drags: a layout's own (Grid both, Columns and One large across, Rows down), each only with 2
+ * to SHARES_MAX tracks. An axis of more tracks than a size is kept for (the layout document's bound) has no gap: its tracks stay even.
+ */
+export function gutterAxes(layout: RunLayout, cols: number, rows: number): Array<'cols' | 'rows'> {
+  const own: Record<RunLayout, Array<'cols' | 'rows'>> = { grid: ['cols', 'rows'], columns: ['cols'], rows: ['rows'], large: ['cols'] }
+  return own[layout].filter((axis) => {
+    const n = axis === 'cols' ? cols : rows
+    return n >= 2 && n <= SHARES_MAX
+  })
+}
+
 /** `shares` when they are `n` positive shares (normalised to a sum of 1), else undefined: a record with the wrong count is ignored. */
 export function sharesFor(shares: readonly number[] | undefined, n: number): number[] | undefined {
   if (!shares || n < 2 || shares.length !== n || n > SHARES_MAX || !shares.every((s) => Number.isFinite(s) && s > 0)) return undefined

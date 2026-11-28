@@ -801,6 +801,9 @@ func (s *Server) proposeAsOperator(ctx context.Context, pm planMake, op, by stri
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("key", pm.Key)
 	req = withPrincipal(req, principal{admin: true})
+	// A revision Brakeman drafted is the person's make, not a proposal the
+	// person wrote: it makes no folder's first commit (operatorOf).
+	req = req.WithContext(context.WithValue(req.Context(), draftMakeKey{}, true))
 	rec := newReplyRecorder()
 	s.handleDispatchProposePlan(rec, req)
 	var reply struct {
