@@ -138,6 +138,31 @@ func codexOwnArg(args []string) string {
 // (StaysInTerminal).
 var codexTakes = []string{"-c", "--config", "--enable", "--disable", "--strict-config", "-m", "--model", "-s", "--sandbox", "-a", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--yolo", "--no-alt-screen", "--no-daemon"}
 
+// codexDriverKeys are the configuration keys a chat's asking, its sandbox
+// and Conductor's own tool server depend on: what thread/resume sets
+// (CodexResume's approval policy and sandbox), the profile that can set
+// them, the asking of a tool server's tools (AllowTools'
+// default_tools_approval_mode) and Conductor's server itself
+// (agents.MCPFor's mcp_servers.conductor), each with the keys under it.
+var codexDriverKeys = []string{"approval_policy", "sandbox_mode", "sandbox_workspace_write", "profile", "profiles", "mcp_servers.conductor"}
+
+// codexDriverKey says the override kv (key=value) sets one of the
+// driver's keys, or a table above one (mcp_servers whole), or the asking of
+// any tool server's tools.
+func codexDriverKey(kv string) bool {
+	k, _, _ := strings.Cut(kv, "=")
+	k = strings.ReplaceAll(strings.Trim(strings.TrimSpace(k), `"'`), `"`, "")
+	if k == "mcp_servers" || strings.HasPrefix(k, "mcp_servers.") && strings.HasSuffix(k, ".default_tools_approval_mode") {
+		return true
+	}
+	for _, d := range codexDriverKeys {
+		if k == d || strings.HasPrefix(k, d+".") || strings.HasPrefix(d, k+".") {
+			return true
+		}
+	}
+	return false
+}
+
 // codexTake reads a terminal's arguments: the configuration overrides it
 // returns, to go on the app server's argv; the model, the approval policy
 // and the sandbox into res. Refused: any other flag, and a word that is no
@@ -171,6 +196,13 @@ func codexTake(args []string, res *CodexResume) ([]string, error) {
 			v, ok := next()
 			if !ok || v == "" || strings.HasPrefix(v, "-") {
 				return nil, &CodexArgError{Flag: name}
+			}
+			// A setting the chat's asking, its sandbox or Conductor's own
+			// tool server depends on is the driver's: a terminal that set
+			// one keeps to its terminal.
+			if (name == "-c" || name == "--config") && codexDriverKey(v) {
+				k, _, _ := strings.Cut(v, "=")
+				return nil, &CodexArgError{Flag: name + " " + cutWords(strings.TrimSpace(k))}
 			}
 			out = append(out, name, v)
 		case "--strict-config":

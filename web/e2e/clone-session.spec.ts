@@ -382,7 +382,7 @@ test("Clone with options… keeps arguments its agent takes no more in sight, an
   await notOffered()
 })
 
-test("both dialogs warn of a run's worktree, and say the server's refusals: a name it holds taken, a directory gone", async ({ page, api, state }) => {
+test("both dialogs warn of a run's worktree, and say the server's refusals: a name it holds taken, a directory gone (Clone with options… at its Folder, before the press)", async ({ page, api, state }) => {
   const dir = join(state.repo, '.conductor', 'worktrees', `e2e-clone-${randomUUID().slice(0, 6)}`, 'build.1')
   mkdirSync(dir, { recursive: true })
   const source = await launch(api, { name: unique('e2e clone tree'), cwd: dir })
@@ -422,9 +422,9 @@ test("both dialogs warn of a run's worktree, and say the server's refusals: a na
   await page.keyboard.press('Escape')
   await expect(dialog).toHaveCount(0)
 
-  // The directory removed: each dialog says the server's invalid_cwd, with no other directory taken instead. The row's menu goes
-  // only while the clone is on its way, as it did on a loaded machine (#281): its More button takes the focus, the dialog gives it
-  // back to its name field, and the one Escape there closes the dialog.
+  // The directory removed: Clone… says the server's invalid_cwd, with no other directory taken instead. The row's menu goes only
+  // while the clone is on its way, as it did on a loaded machine (#281): its More button takes the focus, the dialog gives it back
+  // to its name field, and the one Escape there closes the dialog.
   rmSync(dir, { recursive: true, force: true })
   let letMenuGo = await holdMenuExit(page)
   let sent = await holdClone(page, source)
@@ -440,21 +440,25 @@ test("both dialogs warn of a run's worktree, and say the server's refusals: a na
   await expect(quick).toContainText('The directory cannot be used')
   await page.keyboard.press('Escape')
   await expect(quick).toHaveCount(0)
-  letMenuGo = await holdMenuExit(page)
-  sent = await holdClone(page, source)
+  // Clone with options…: its Folder holds the directory gone, and the folder's line (UX3 R30) says so before any press: Clone sends
+  // nothing and puts the cursor back in Folder.
+  let clones = 0
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === `/api/sessions/${source.id}/clone`) clones++
+  })
   dialog = await withOptions(page, source)
-  await expect(page.locator('[role="menu"][data-state="closed"]')).toHaveCount(1)
   await expect(dialog.getByRole('radio', { name: /Claude Code/ })).toHaveAttribute('aria-checked', 'true')
+  const folder = dialog.locator('[data-dir-input] input[role="combobox"]')
+  await expect(folder).toHaveValue(dir)
   await dialog.locator('[data-clone-name]').fill(unique('e2e clone nodir'))
   await dialog.locator('[data-launch-clone-submit]').click()
-  await sent.arrived
-  await expect(dialog.locator('[data-launch-clone-submit]')).toBeDisabled()
-  await letMenuGo()
-  await expect(dialog.locator('[data-clone-name]')).toBeFocused()
-  sent.release()
-  await expect(dialog.locator('[data-launch-error]')).toContainText('The directory cannot be used')
-  await page.keyboard.press('Escape')
+  await expect(dialog.locator('[data-launch-folder-line]')).toHaveText('There is no folder at this path.')
+  await expect(folder).toBeFocused()
+  await expect(folder).toHaveAttribute('aria-invalid', 'true')
+  expect(clones, 'Clone sent nothing').toBe(0)
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
   await expect(dialog).toHaveCount(0)
+  expect(clones, 'Clone sent nothing').toBe(0)
 })
 
 test("a Yardmaster attempt's Clone… is disabled with the reason, and Clone with options… warns of the attempt", async ({ page, api }) => {

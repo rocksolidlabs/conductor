@@ -396,3 +396,34 @@ for (const size of [{ width: 1440, height: 900 }, DAILY]) {
     }
   })
 }
+
+test("a lone -- says the session stays in its terminal, as --add-dir does, and a launch as Chat with either is refused in its words", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, ...DAILY })
+  try {
+    const { dialog, field } = await argsOf(page, CLAUDE, 'flags')
+    const line = dialog.locator('[data-args-terminal-line]')
+    await field.click()
+    await field.pressSequentially('-- fix the tests')
+    await expect(line).toHaveText('With --, this session stays in its terminal.')
+    await field.fill('--add-dir /tmp')
+    await expect(line).toHaveText('With --add-dir, this session stays in its terminal.')
+    await field.fill('--effort high')
+    await expect(line).toHaveCount(0)
+    // Run as Chat with either: the launch is refused before anything starts, in its own words, for each alike.
+    await dialog.locator('[data-launch-run-as] [data-run-as-side="protocol"]').click()
+    await expect(dialog.locator('[data-launch-run-as] [data-run-as-side="protocol"]')).toHaveAttribute('aria-checked', 'true')
+    for (const [args, words] of [
+      ['-- fix the tests', 'Sessions launched with -- in their arguments stay in their terminal.'],
+      ['--add-dir /tmp', 'Sessions launched with an added folder stay in their terminal.'],
+    ] as const) {
+      await field.fill(args)
+      const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
+      await field.focus()
+      await page.keyboard.press('ControlOrMeta+Enter')
+      expect((await answered).status(), args).toBe(409)
+      await expect(dialog.locator('[data-launch-error]')).toContainText(words)
+    }
+  } finally {
+    await page.context().close()
+  }
+})

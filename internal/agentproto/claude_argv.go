@@ -135,11 +135,12 @@ type ClaudeLaunch struct {
 // as design 4 of the plan lists it, never a shell string: the catalog's
 // command, print mode with stream-json, the protocol's arguments, the
 // resumed conversation, the model, the permission mode (or the yolo
-// arguments), the terminal's arguments, Conductor's MCP server alone
-// (--strict-mcp-config, always: the child loads no tool server but the one
-// named here, and none when the server's MCP is off; the person's own tool
-// servers and a folder's stay with the session's terminal) and, with a
-// permission host, its permission tool and exactly one --settings. Never
+// arguments), Conductor's MCP server alone (--strict-mcp-config, always:
+// the child loads no tool server but the one named here, and none when the
+// server's MCP is off; the person's own tool servers and a folder's stay
+// with the session's terminal) and, with a permission host, its permission
+// tool and exactly one --settings, each in one word (--flag=value), then
+// the terminal's arguments. Never
 // --bare (which reads no sign-in) or --setting-sources: the child reads
 // the setting sources its terminal read. The terminal way's hook settings,
 // trust arguments and screen recipe are not passed. A launch whose
@@ -180,9 +181,14 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	} else {
 		argv = append(argv, "--permission-mode", "default")
 	}
-	argv = append(argv, l.LaunchArgs...)
+	// What the chat adds comes before the terminal's arguments, each flag
+	// in ONE word: a flag that takes a value gets it after its "=", which
+	// the agent's parser reads as that one value (a list flag too), so no
+	// word of the person's can become one of them, and none of them can
+	// become the value of a last flag of the person's that wants one (that
+	// flag then lacks its value, and the agent refuses to start).
 	if !l.NoMCP {
-		argv = append(argv, "--mcp-config", filepath.Join(l.HooksDir, ClaudeProtocolMCP))
+		argv = append(argv, "--mcp-config="+filepath.Join(l.HooksDir, ClaudeProtocolMCP))
 	}
 	argv = append(argv, "--strict-mcp-config")
 	if l.PermissionHost {
@@ -193,10 +199,11 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 		if !l.NoMCP {
 			// The prompt tool is Conductor's MCP server's: with the server's
 			// MCP off, Claude Code itself denies what needs approval.
-			argv = append(argv, "--permission-prompt-tool", ClaudePermissionTool)
+			argv = append(argv, "--permission-prompt-tool="+ClaudePermissionTool)
 		}
-		argv = append(argv, "--settings", filepath.Join(l.HooksDir, settings))
+		argv = append(argv, "--settings="+filepath.Join(l.HooksDir, settings))
 	}
+	argv = append(argv, l.LaunchArgs...)
 	return argv, nil
 }
 
@@ -206,7 +213,7 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 // or a flag the chat sets itself, judged by the same lists ClaudeArgs
 // refuses by; for Codex, an added folder or any flag its app server takes
 // no counterpart of (codexTakes, the list CodexArgs reads by); for an agent
-// of the Agent Client Protocol, any flag (ACPArgs takes none of the
+// of the Agent Client Protocol, any word (ACPArgs takes none of the
 // terminal's). A lone "--" keeps every chat's session in its terminal. A
 // name Conductor does not speak: false.
 func StaysInTerminal(name, arg string) bool {
@@ -214,7 +221,7 @@ func StaysInTerminal(name, arg string) bool {
 	case ClaudeStreamJSON:
 		return arg == optionsEnd || addedFolder([]string{arg}) || ownFlag([]string{arg}) != ""
 	case ACPv1:
-		return strings.HasPrefix(arg, "-")
+		return arg != ""
 	case CodexAppServer:
 		if addedFolder([]string{arg}) {
 			return true

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentFlag } from '../composables/useSessions'
-import { argContext, argRows, argWords, flagLabel, folderPrefix, folderRows, holdsYolo, keepsTerminal, listShows, replaceWord, typedAt, valueWord } from './argComplete'
+import { argContext, argRows, argWords, flagLabel, folderPrefix, folderRows, holdsYolo, keepsTerminal, listShows, replaceWord, terminalLine, terminalWords, typedAt, valueWord } from './argComplete'
 import { splitArgs } from './argv'
 
 // The flags of a made-up agent, as GET /api/catalog/{id}/flags answers them: the help's order.
@@ -167,7 +167,7 @@ describe('a folder flag\'s value', () => {
     const ctx = argContext(line, 14, flags)
     expect(folderRows(line, ctx, [{ path: '/r/shared', name: 'shared' }])).toEqual([{ key: '/r/shared', label: 'shared', text: '--add-dir /r/shared --verbose', cursor: 19 }])
     const open = '--add-dir "/r/two'
-    expect(folderRows(open, argContext(open, open.length, flags), [{ path: '/r/two words', name: 'two words' }])[0]).toMatchObject({ text: '--add-dir "/r/two words"', cursor: 24 })
+    expect(folderRows(open, argContext(open, open.length, flags), [{ path: '/r/two words', name: 'two words' }])[0]).toMatchObject({ text: '--add-dir "/r/two words"', cursor: 23 })
     expect(folderRows(line, argContext(line, 3, flags), [{ path: '/x', name: 'x' }])).toEqual([])
   })
 
@@ -189,7 +189,7 @@ describe('a value picked is the one argument its row shows', () => {
     }
   })
   it('offers no row for a name it cannot write as one argument, or that holds a mark nobody sees', () => {
-    for (const path of ['/r/a"b \'c', '/r/new\nline', '/r/bidi\u202Eevil', '/r/zero\u200Bwidth', '/r/nul\u0000', '/r/tab\there', '']) {
+    for (const path of ['/r/blank\u3164', '/r/blank\u115F', '/r/blank\u1160', '/r/blank\uFFA0', '/r/blank\u2800', '/r/a"b \'c', '/r/new\nline', '/r/bidi\u202Eevil', '/r/zero\u200Bwidth', '/r/nul\u0000', '/r/tab\there', '']) {
       expect(pick(path), JSON.stringify(path)).toEqual([])
     }
     expect(pick('/r/fine').map((r) => r.key)).toEqual(['/r/fine'])
@@ -239,5 +239,30 @@ describe('keepsTerminal', () => {
     expect(keepsTerminal('-- fix the tests', flags, true)).toBe(true)
     expect(keepsTerminal('-- fix the tests', flags, false)).toBe(false)
     expect(keepsTerminal('--effort "a -- b"', flags, true)).toBe(false)
+  })
+})
+
+describe('a folder picked in quotes', () => {
+  it('keeps the cursor inside its closing quote, so that a child typed next is the same argument', () => {
+    for (const path of ['/r/two words', '/r/a"b c', "/r/it's here"]) {
+      const line = '--add-dir '
+      const [row] = folderRows(line, argContext(line, line.length, flags), [{ path, name: 'x' }])
+      const typed = row!.text.slice(0, row!.cursor) + '/sub' + row!.text.slice(row!.cursor)
+      expect(splitArgs(typed), path).toEqual(['--add-dir', path + '/sub'])
+      // Its children are then listed for what is typed inside the quote.
+      expect(folderPrefix(argContext(typed, row!.cursor + 4, flags), '/r/repo'), path).toBe(path + '/sub')
+    }
+    const plain = folderRows('--add-dir ', argContext('--add-dir ', 10, flags), [{ path: '/r/plain', name: 'plain' }])[0]!
+    expect(plain.cursor).toBe(plain.text.length)
+  })
+})
+
+describe('the line under the field', () => {
+  it('names what keeps the session in its terminal: a flag a chat refuses, and a lone -- for an agent with a chat way', () => {
+    expect(terminalLine(terminalWords('--add-dir /x', flags, true))).toBe('With --add-dir, this session stays in its terminal.')
+    expect(terminalLine(terminalWords('-- fix the tests', flags, true))).toBe('With --, this session stays in its terminal.')
+    expect(terminalLine(terminalWords('--verbose --add-dir=/x -- go', flags, true))).toBe('With --verbose, --add-dir and --, this session stays in its terminal.')
+    expect(terminalLine(terminalWords('-- fix', flags, false))).toBe('')
+    expect(terminalLine(terminalWords('--effort high', flags, true))).toBe('')
   })
 })
