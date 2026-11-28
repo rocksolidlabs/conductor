@@ -45,7 +45,7 @@ func Examples(cwd string, now time.Time) []Crew {
 	// The suite as every task after the plan runs it: the tests under tests/, imported from the top of the repository.
 	unittest := []string{"python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."}
 	tasks := crew("example-todo-app-tasks", "Example: todo app, with tasks",
-		"Build a small command-line todo app in this repository (meant for a fresh repository with one commit: point the crew's working directory at one before launching, not at a real project): add, list and done commands, items kept in a JSON file in the user's home directory (the path in TODO_FILE when it is set), with tests, in Python with its standard library only",
+		"Build a small command-line todo app in this repository (meant for a new, empty folder, not a real project): add, list and done commands, items kept in a JSON file in the user's home directory (the path in TODO_FILE when it is set), with tests, in Python with its standard library only",
 		member("lead", "claude", "You lead the crew: you plan the todo app and write no code of it.", byTask),
 		member("core", "claude", "You build the todo app's core, storage and the data model, then put it together with the cli and make the whole suite pass, production code and tests alike.", byTask),
 		member("cli", "codex", "You build the todo app's command-line interface against the interface the plan gives core.", byTask),
@@ -65,7 +65,7 @@ func Examples(cwd string, now time.Time) []Crew {
 	tasks.Manifest = &Manifest{Prerequisites: []Check{{ID: "python", Argv: []string{"python3", "--version"}}}}
 	list := []Crew{
 		crew("example-todo-app", "Example: todo app",
-			"Build a small command-line todo app in this repository (meant for a fresh repository with one commit: point the crew's working directory at one before launching, not at a real project): add, list and done commands, items kept in a JSON file in the user's home directory, with tests",
+			"Build a small command-line todo app in this repository (meant for a new, empty folder, not a real project): add, list and done commands, items kept in a JSON file in the user's home directory, with tests",
 			member("lead", "claude", "You lead a crew of four on this goal: $GOAL. Plan, do not build. Write PLAN.md at the top of the repository with the data model, the command-line interface and the file layout, then split the work into two parts, core (storage and the data model) and cli (the commands), naming the files each part owns and the interface between them. Commit PLAN.md on your branch and stop: the builders merge your branch and start when you report done.", first),
 			member("core", "claude", "Start by merging the lead's branch, which holds PLAN.md: git merge --no-edit crew/$CONDUCTOR_RUN/lead (your run is in $CONDUCTOR_RUN). Then build the core part of PLAN.md for this goal: $GOAL. Work only in the files PLAN.md gives to core, with unit tests, and commit as you go. Report done when the storage and the data model are complete and their tests pass.", after("lead")),
 			member("cli", "codex", "Start by merging the lead's branch, which holds PLAN.md: git merge --no-edit crew/$CONDUCTOR_RUN/lead (your run is in $CONDUCTOR_RUN). Then build the cli part of PLAN.md for this goal: $GOAL. Work only in the files PLAN.md gives to cli, against the interface PLAN.md says core exposes, and commit as you go. Report done when every command works end to end.", after("lead")),
