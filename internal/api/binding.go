@@ -417,6 +417,9 @@ func (s *Server) bindMembers(ms []crew.Member, yolo bool, caller *session.Local)
 		if _, aerr := launchModel(agent, m.Model, m.Args); aerr != nil {
 			return refuse(*m, aerr)
 		}
+		if aerr := s.needsValue(agent, m.Args); aerr != nil {
+			return refuse(*m, aerr)
+		}
 		applied := yolo && !agent.Yolo.Empty()
 		account, mine := m.Account, caller != nil && agent.Adapter == byAdapter
 		if mine {

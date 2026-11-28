@@ -1095,10 +1095,13 @@ func TestClaudeLocalCommandIsTheAgentsWords(t *testing.T) {
 	}
 }
 
-// The hand-built fixture of row 12, from a recorded run's shapes: an
+// The hand-built fixture of row 12, in the real stream's shapes: an
 // unmarked @file answered by the model, /compact answered by the program
-// itself, and a command the session cannot run, answered with no replay:
-// each message accepted, none left to go unconfirmed.
+// itself, a command the session cannot run, answered with no replay, and a
+// local command the program runs (its output in a synthetic line before
+// the message's replay): each message accepted, none left to go
+// unconfirmed, the lines the driver does not read (each message's
+// lifecycle, the request's status, a hook's run) changing nothing.
 func TestClaudeExpandFixtureReplays(t *testing.T) {
 	rec, c, err := replay(t, bytes.NewReader(readFixture(t, "hand-built-expand.jsonl")))
 	if !errors.Is(err, io.EOF) {
@@ -1108,11 +1111,11 @@ func TestClaudeExpandFixtureReplays(t *testing.T) {
 	for _, e := range rec.kinds("accepted") {
 		acc = append(acc, e.ref)
 	}
-	if !slices.Equal(acc, []string{"m301", "m302", "m303"}) {
+	if !slices.Equal(acc, []string{"m301", "m302", "m303", "m304"}) {
 		t.Fatalf("accepted %q", acc)
 	}
 	r := rec.render()
-	for _, want := range []string{`"Compacted"`, `"/paint isn't available in this environment."`, `"one"`} {
+	for _, want := range []string{`"Compacted"`, `"/paint isn't available in this environment."`, `"one"`, `"Context: 12% of the window is used."`} {
 		if !strings.Contains(r, want) {
 			t.Errorf("no %s in\n%s", want, r)
 		}

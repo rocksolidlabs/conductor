@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/agentproto"
@@ -145,7 +146,7 @@ func (s *Server) flagsOf(ctx context.Context, a catalog.Agent) flagsReply {
 	}
 	out.Version = id.Version
 	command := resolvedCommand(a, path)
-	key := probeKey(append(slices.Clone(command), args...), a.Adapter, a.Env) + "\x00\x02" + id.Version
+	key := helpKey(a, command, args, id.Version)
 	e, ok := s.probes.helpText(ctx, key, command, args, a.Env)
 	if !ok {
 		out.State = flagsReading
@@ -271,3 +272,65 @@ func (c *probeCache) readHelp(key string, command, args []string, env map[string
 	c.mu.Unlock()
 	close(call.done)
 }
+
+// helpKey is the cache key of agent a's help: its resolved command with the
+// help arguments, its adapter and variables, and the identity's version.
+func helpKey(a catalog.Agent, command, args []string, version string) string {
+	return probeKey(append(slices.Clone(command), args...), a.Adapter, a.Env) + "\x00\x02" + version
+}
+
+// flagsRead are agent a's flags from a help this server has read already,
+// for the version the identity probe holds: nothing is looked up, probed or
+// run here (false when any of it is not known).
+func (s *Server) flagsRead(a catalog.Agent) ([]agents.Flag, bool) {
+	args, ok := agents.HelpArgs(a)
+	if !ok || !a.AllowArgs || len(a.Command) == 0 {
+		return nil, false
+	}
+	id, ok := s.cachedIdentity(a)
+	path := s.lookups.held(a.Command[0]).path
+	if !ok || !id.Identified || path == "" {
+		return nil, false
+	}
+	key := helpKey(a, resolvedCommand(a, path), args, id.Version)
+	s.probes.mu.Lock()
+	e := s.probes.helps[key]
+	var text string
+	if e != nil && e.why == "" {
+		text = e.text
+	}
+	s.probes.mu.Unlock()
+	if text == "" {
+		return nil, false
+	}
+	flags, err := agents.ParseFlags(a, text)
+	return flags, err == nil
+}
+
+// needsValue is the refusal of arguments whose last word is a flag that
+// the agent's own help says takes a value, none given: the agent would take
+// the next word of its command line, one Conductor adds, as that value. An
+// optional value is no refusal, and an agent whose help this server has
+// not read is not judged.
+func (s *Server) needsValue(a catalog.Agent, args []string) *apiError {
+	if len(args) == 0 {
+		return nil
+	}
+	last := args[len(args)-1]
+	if !strings.HasPrefix(last, "-") || last == "-" || last == "--" || strings.Contains(last, "=") {
+		return nil
+	}
+	flags, ok := s.flagsRead(a)
+	if !ok {
+		return nil
+	}
+	for _, f := range flags {
+		if f.Value == agents.ValueRequired && (f.Name == last || slices.Contains(f.Aliases, last)) {
+			return newAPIError(http.StatusBadRequest, "arg_needs_value", NeedsValueWords(last))
+		}
+	}
+	return nil
+}
+
+// NeedsValueWords is the refusal's sentence for a last flag with no value.
+func NeedsValueWords(flag string) string { return flag + " needs a value." }

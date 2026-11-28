@@ -343,6 +343,9 @@ const extraArgs = computed(() => (selected.value?.allowArgs && state.args.trim()
 const runsView = computed(() => yoloSummary(selected.value, yolo.value, extraArgs.value))
 /** The agent's own recipe arguments, which the arguments field says to leave to the Yolo switch when typed by hand. */
 const recipeArgs = computed(() => selected.value?.yolo?.args)
+// A last flag in Extra arguments that wants a value and has none (AgentArgsField's `problem`): Launch waits for it.
+const argsProblem = ref('')
+
 const modelTwice = computed(() => (takesAccount.value && !!model.value.trim() && argsNameModel(extraArgs.value) ? 'The model is set here and in Model. Keep one of them.' : ''))
 
 // Folder: its placeholder is the folder a launch that names none runs in (the agent's own, else the server's default, which GET
@@ -425,7 +428,7 @@ const moreLine = computed(() =>
 )
 // A problem with a field inside opens the fold, so that it is never said out of sight.
 watch(
-  () => !!modelError.value || !!modelTwice.value,
+  () => !!modelError.value || !!modelTwice.value || !!argsProblem.value,
   (bad) => {
     if (bad) moreOpen.value = true
   },
@@ -434,6 +437,7 @@ watch(
 /** Whether a press of Launch (or Clone), or its keys, sends now. */
 const launchable = computed(() => {
   if (submitting.value || !state.agentId) return false
+  if (argsShown.value && argsProblem.value) return false
   if (cloning.value) return !cloneNamed.value.problem
   return state.runsOn === 'server' && !messageError.value
 })
@@ -708,7 +712,7 @@ async function submit() {
                 :error="modelTwice || undefined"
                 data-launch-args-field
               >
-                <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" :yolo-args="recipeArgs" :cwd="state.cwd" above autocapitalize="off" autocorrect="off" spellcheck="false" data-launch-args />
+                <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" :yolo-args="recipeArgs" :cwd="state.cwd" above @problem="argsProblem = $event" autocapitalize="off" autocorrect="off" spellcheck="false" data-launch-args />
               </UFormField>
               <p v-if="selected?.allowArgs && runsView.argv.length" class="text-xs text-muted [overflow-wrap:anywhere]" data-launch-runs>
                 Runs: <code class="font-mono" data-mono="command">{{ joinArgv(runsView.argv) }}</code><template v-if="takesAccount && model.trim()"> · model {{ model.trim() }}</template>
@@ -732,7 +736,7 @@ async function submit() {
         <div class="ms-auto flex items-center gap-2">
           <UButton label="Cancel" color="neutral" variant="ghost" class="max-sm:min-h-11" @click="open = false" />
           <UButton v-if="cloning" label="Clone" icon="i-lucide-copy" :loading="submitting" :disabled="!state.agentId || !!cloneNamed.problem" class="max-sm:min-h-11" data-launch-clone-submit @click="submit" />
-          <UButton v-else-if="state.runsOn === 'server'" label="Launch" icon="i-lucide-play" :loading="submitting" :disabled="!state.agentId || !!messageError" class="max-sm:min-h-11" data-launch-submit @click="submit" />
+          <UButton v-else-if="state.runsOn === 'server'" label="Launch" icon="i-lucide-play" :loading="submitting" :disabled="!state.agentId || !!messageError || (argsShown && !!argsProblem)" class="max-sm:min-h-11" data-launch-submit @click="submit" />
         </div>
       </div>
     </template>
