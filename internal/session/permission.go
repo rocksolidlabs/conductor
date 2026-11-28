@@ -499,13 +499,26 @@ func (s *Local) skillRefusedLocked(p *protocolWay, tool string) bool {
 }
 
 // maxOthersOnTheirWay bounds the lines not the operator's own that a way
-// keeps as written and not yet taken; past it, every turn of the way
-// counts one more (othersLost).
+// keeps; past it, the next turn's end counts one more (othersLost).
 const maxOthersOnTheirWay = 256
 
+// otherLine is how a line not the operator's own counts at a turn's end:
+// on its way (written, its taking not yet said by the agent: carried into
+// the next turn's count, however long ago it was written), carried once
+// more and then let go (said taken while a turn ran, or by no name, or one
+// that can no longer be said taken), or let go (said taken while no turn
+// ran: the turn it opens counts it).
+type otherLine uint8
+
+const (
+	otherOnItsWay otherLine = iota
+	otherOnceMore
+	otherTaken
+)
+
 // noteWrittenLocked counts a line written for the turn it is written
-// into: one not the operator's own is kept as on its way until the agent
-// says it took it (othersTaken). The caller holds s.mu.
+// into: one not the operator's own is kept on its way. The caller holds
+// s.mu.
 func (p *protocolWay) noteWrittenLocked(q *queuedMessage) {
 	p.turnLines++
 	if operatorLine(q.sub) {
@@ -513,24 +526,64 @@ func (p *protocolWay) noteWrittenLocked(q *queuedMessage) {
 	}
 	p.turnOthers++
 	if len(p.othersOnTheirWay) >= maxOthersOnTheirWay {
-		p.othersLost = true
+		p.othersLost++
 		return
 	}
-	p.othersOnTheirWay[q.msg.Ref] = true
+	p.othersOnTheirWay[q.msg.Ref] = otherOnItsWay
 }
 
-// othersTakenLocked is the agent's word that it took the message ref: a
-// line no longer on its way. The caller holds s.mu.
-func (p *protocolWay) othersTakenLocked(ref string) { delete(p.othersOnTheirWay, ref) }
+// othersTakenLocked is the agent's word that it took the message ref, by
+// its name or (named false) as the oldest written: one said taken while a
+// turn runs may be kept for the next turn, and one taken by no name may be
+// another, so either is carried once more; one said taken while no turn
+// runs opens the turn that counts it. The caller holds s.mu.
+func (p *protocolWay) othersTakenLocked(ref string, named bool) {
+	if _, ok := p.othersOnTheirWay[ref]; !ok {
+		return
+	}
+	if p.inTurn || !named {
+		p.othersOnTheirWay[ref] = otherOnceMore
+		return
+	}
+	p.othersOnTheirWay[ref] = otherTaken
+}
+
+// othersOnceMoreLocked marks the line ref, whose taking can no longer be
+// said (its write failed, or the session no longer follows it), to be
+// carried once more and then let go. The caller holds s.mu.
+func (p *protocolWay) othersOnceMoreLocked(ref string) {
+	if st, ok := p.othersOnTheirWay[ref]; ok && st == otherOnItsWay {
+		p.othersOnTheirWay[ref] = otherOnceMore
+	}
+}
+
+// othersToNewChildLocked is a restart's: the lines written to the child
+// that ended can be said taken no more; each, carried into the new child's
+// first turn (the conversation it resumes may hold it), is let go at that
+// turn's end. The caller holds s.mu.
+func (p *protocolWay) othersToNewChildLocked() {
+	for ref := range p.othersOnTheirWay {
+		p.othersOnTheirWay[ref] = otherTaken
+	}
+}
 
 // turnCountsLocked begins a turn's count at a turn's end: every line not
-// the operator's own still on its way (written, its taking not yet said by
-// the agent, however long ago) is carried into it, since the agent may yet
-// take it into the next turn. The caller holds s.mu.
+// the operator's own on its way, or to be carried once more, is carried
+// into it; one carried once more and one said taken are let go. The caller
+// holds s.mu.
 func (p *protocolWay) turnCountsLocked() {
-	n := len(p.othersOnTheirWay)
-	if p.othersLost {
-		n++
+	n := p.othersLost
+	p.othersLost = 0
+	for ref, st := range p.othersOnTheirWay {
+		switch st {
+		case otherOnItsWay:
+			n++
+		case otherOnceMore:
+			n++
+			delete(p.othersOnTheirWay, ref)
+		default:
+			delete(p.othersOnTheirWay, ref)
+		}
 	}
 	p.turnLines, p.turnOthers = n, n
 }

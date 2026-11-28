@@ -249,11 +249,11 @@ type protocolWay struct {
 	turnLines  int
 	turnOthers int
 	// othersOnTheirWay are the lines not the operator's own written and
-	// not yet taken by the agent, by ref, carried from turn to turn until
-	// it says it took them; othersLost says one past their bound was
-	// written (noteWrittenLocked).
-	othersOnTheirWay map[string]bool
-	othersLost       bool
+	// not yet let go, by ref, each as it counts at a turn's end
+	// (otherLine); othersLost counts those past their bound, counted at the
+	// next turn's end (noteWrittenLocked).
+	othersOnTheirWay map[string]otherLine
+	othersLost       int
 	showing          string
 	under            Attention
 	aside            []asideChange
@@ -394,7 +394,7 @@ func (s *Local) enterProtocolGroup(ctx context.Context, start ProtocolStart) (in
 		gen: 1, child: child, driver: driver, readDone: make(chan struct{}),
 		ctx: wctx, cancel: cancel, ready: make(chan struct{}), kick: make(chan struct{}, 1),
 		tools: map[string]*openTool{}, texts: map[string]*openText{},
-		announced: make(chan struct{}), asked: map[string]bool{}, resulted: map[string]bool{}, othersOnTheirWay: map[string]bool{},
+		announced: make(chan struct{}), asked: map[string]bool{}, resulted: map[string]bool{}, othersOnTheirWay: map[string]otherLine{},
 	}
 	s.mu.Lock()
 	if s.info.Status.Ended() || s.way.Load() != nil {
@@ -600,7 +600,8 @@ func (s *Local) sendNext(p *protocolWay) bool {
 	p.sending = false
 	if err != nil {
 		// A write that failed may have written some of it: never written
-		// again.
+		// again, and never said taken.
+		p.othersOnceMoreLocked(q.msg.Ref)
 		if p.inflight == q {
 			p.inflight = nil
 		}
@@ -705,6 +706,8 @@ func (s *Local) unconfirmLocked(p *protocolWay, q *queuedMessage, out *applied) 
 	s.reviseLocked(q.seq, func(e *TranscriptEntry) { e.State = PromptUnconfirmed }, out)
 	p.unconfirmed = append(p.unconfirmed, q)
 	if len(p.unconfirmed) > maxUnconfirmedKept {
+		// No longer followed: never said taken here.
+		p.othersOnceMoreLocked(p.unconfirmed[0].msg.Ref)
 		p.unconfirmed = p.unconfirmed[1:]
 	}
 	out.finish(q, SubmitResult{Unconfirmed: true}, ErrUnconfirmed)
@@ -929,6 +932,7 @@ func (s *Local) restartProtocol(p *protocolWay) {
 	if p.inTurn || p.accepted {
 		s.endTurnLocked(p, "interrupted", Usage{}, &out)
 	}
+	p.othersToNewChildLocked()
 	conv := ""
 	if s.info.AgentSession != nil {
 		conv = s.info.AgentSession.ID
@@ -1456,13 +1460,19 @@ func (e protocolEvents) Conversation(id string) {
 	e.s.sendApplied(applied{event: "conversation", conv: id, resumed: resumed})
 }
 
-func (e protocolEvents) Accepted(ref string) {
+func (e protocolEvents) Accepted(ref string) { e.accepted(ref, true) }
+
+// AcceptedUnnamed is Accepted for an acknowledgement that named no
+// message, which the driver took for the oldest it wrote, ref.
+func (e protocolEvents) AcceptedUnnamed(ref string) { e.accepted(ref, false) }
+
+func (e protocolEvents) accepted(ref string, named bool) {
 	if !e.begin() {
 		return
 	}
 	s, p := e.s, e.p
 	out := applied{event: "accepted"}
-	p.othersTakenLocked(ref)
+	p.othersTakenLocked(ref, named)
 	q := p.inflight
 	switch {
 	case q != nil && q.msg.Ref == ref:

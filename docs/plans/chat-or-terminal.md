@@ -1074,10 +1074,15 @@ is `PermissionWithdrawn`.
    relayed one, every line Conductor writes itself (a first message, a
    crew's, Brakeman's, a run's), and a people's chat message someone else
    wrote that the operator sends on (it goes for its author, as written)
-   are not. A line that is not the operator's own and that the agent has
-   not yet said it took (its acknowledgement, by the message's own id) is
-   carried from a turn's end into the next turn's count, however long ago
-   it was written, until the agent says it took it. So that every skill
+   are not. A line that is not the operator's own is counted in the turn
+   it is written into, and carried from a turn's end into the next turn's
+   count, however long ago it was written, until the agent says it took
+   it by the message's own id while no turn runs (it opens the turn that
+   counts it). Said taken while a turn runs (the agent may keep it for the
+   next turn), or by no name (it may be another), it is carried once more
+   and then let go; so is one that can no longer be said taken (its write
+   failed, or the session no longer follows it), and one written to a
+   child that ended is carried into the new child's first turn alone. So that every skill
    call reaches this check, the floor of a chat that asks holds an ask
    rule for each skill tool (`"ask": ["Skill"]`), which Claude Code judges
    before an allow from any source (the folder's, the person's, a

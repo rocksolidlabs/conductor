@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session/internal/way"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
@@ -326,4 +327,162 @@ func TestTheOperatorsOwnCommandIsTheirs(t *testing.T) {
 	if e := openRequest(t, s, "c-skill"); e.Plain != "skill" || !h.held() {
 		t.Fatalf("in the operator's own command's turn: %+v", e)
 	}
+}
+
+// inFlightUnconfirmed leaves the line in flight unconfirmed, as the accept
+// wait's end does.
+func inFlightUnconfirmed(t *testing.T, s *Local) {
+	t.Helper()
+	s.mu.Lock()
+	p := s.way.Load()
+	q := p.inflight
+	s.mu.Unlock()
+	if q == nil {
+		t.Fatal("no line in flight")
+	}
+	s.unconfirm(p, q)
+}
+
+// skillRefused and skillAsked put a skill call to the session in the
+// current turn and say how it went.
+func skillRefused(t *testing.T, s *Local, f *sessiontest.FakeProtocol, call string) {
+	t.Helper()
+	skill := `{"skill":"hello"}`
+	announce(f, call, "Skill", skill)
+	if v := ask(s, call, "Skill", skill).returned(t); v.Allow || v.Message != SkillOwnLineWords {
+		t.Fatalf("%s: %+v", call, v)
+	}
+}
+
+func skillAsked(t *testing.T, s *Local, f *sessiontest.FakeProtocol, call string) {
+	t.Helper()
+	skill := `{"skill":"hello"}`
+	announce(f, call, "Skill", skill)
+	h := ask(s, call, "Skill", skill)
+	if e := openRequest(t, s, call); e.Plain != "skill" || !h.held() {
+		t.Fatalf("%s: %+v", call, e)
+	}
+}
+
+// A link's line said taken while another turn runs may be kept for the
+// next turn: it is carried into it once more. The operator's line goes
+// unconfirmed, the link's line is written, the operator's turn starts and
+// the link's line is said taken in it, the turn ends, the operator's next
+// line is written: a skill call in that turn is refused, and one in the
+// turn after is asked.
+func TestALineTakenDuringAnotherTurnIsCarriedOnceMore(t *testing.T) {
+	s, f := skillChat(t)
+	op, _ := attachAs(t, s, operatorChat)
+	link, _ := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
+	lineWritten(t, s, f, Submission{Text: "first", By: op})
+	inFlightUnconfirmed(t, s)
+	guest := lineWritten(t, s, f, Submission{Text: "/hello", By: link})
+	f.TurnStarted("")
+	f.Accepted(guest)
+	f.TurnEnded("done", Usage{})
+	turnOfLines(t, s, f, Submission{Text: "and now this", By: op})
+	skillRefused(t, s, f, "c-1")
+	f.TurnEnded("done", Usage{})
+	turnOfLines(t, s, f, Submission{Text: "use the hello skill", By: op})
+	skillAsked(t, s, f, "c-2")
+}
+
+// An acknowledgement that names no message, taken for the oldest line
+// written, may be another's: a link's line so taken is carried once more,
+// though no turn ran as it was said taken.
+func TestALineTakenByNoNameIsCarriedOnceMore(t *testing.T) {
+	s, f := skillChat(t)
+	op, _ := attachAs(t, s, operatorChat)
+	link, _ := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
+	guest := lineWritten(t, s, f, Submission{Text: "/hello", By: link})
+	f.Hand(func(e way.ProtocolEvents) {
+		u, ok := e.(interface{ AcceptedUnnamed(string) })
+		if !ok {
+			t.Error("the session takes no acknowledgement by no name")
+			return
+		}
+		u.AcceptedUnnamed(guest)
+	})
+	f.TurnStarted("")
+	skillRefused(t, s, f, "c-1")
+	f.TurnEnded("done", Usage{})
+	turnOfLines(t, s, f, Submission{Text: "and now this", By: op})
+	skillRefused(t, s, f, "c-2")
+	f.TurnEnded("done", Usage{})
+	turnOfLines(t, s, f, Submission{Text: "use the hello skill", By: op})
+	skillAsked(t, s, f, "c-3")
+}
+
+// A link's line written to a child that ended can be said taken no more:
+// carried into the new child's first turn (the conversation it resumes may
+// hold it), a skill call there is refused; in the operator's own turn
+// after, one is asked.
+func TestALineToAChildThatEndedIsCarriedIntoTheNewChildsFirstTurn(t *testing.T) {
+	clock := &fakeTimers{}
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, AfterFunc: clock.AfterFunc})
+	s.SetAgentSession(AgentSession{ID: "conv-1", Source: AgentSessionSet})
+	f, again := sessiontest.NewFakeProtocol(), sessiontest.NewFakeProtocol()
+	f.InterruptErr = ErrNoInterrupt
+	if err := s.enterProtocol(context.Background(), f.Start(again)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop(context.Background()) })
+	op, _ := attachAs(t, s, operatorChat)
+	link, _ := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
+	lineWritten(t, s, f, Submission{Text: "/hello", By: link})
+	f.TurnStarted("")
+	if err := s.Interrupt(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	waitCalls(t, again, "the child started again", func(c []string) bool { return sessiontest.Count(c, "begin") == 1 })
+	turnOfLines(t, s, again, Submission{Text: "and now this", By: op})
+	skillRefused(t, s, again, "c-1")
+	again.TurnEnded("done", Usage{})
+	turnOfLines(t, s, again, Submission{Text: "use the hello skill", By: op})
+	skillAsked(t, s, again, "c-2")
+}
+
+// A link's line whose write failed is never said taken, and one the session
+// no longer follows (past the unconfirmed lines it keeps) is not either:
+// each is carried once more and then let go, never refusing for good.
+func TestALineThatCanNeverBeSaidTakenIsCarriedOnceMore(t *testing.T) {
+	t.Run("a failed write", func(t *testing.T) {
+		clock := &fakeTimers{}
+		s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, AfterFunc: clock.AfterFunc})
+		f := sessiontest.NewFakeProtocol()
+		f.SendErr = errors.New("the pipe is gone")
+		if err := s.enterProtocol(context.Background(), f.Start()); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Stop(context.Background()) })
+		op, _ := attachAs(t, s, operatorChat)
+		link, _ := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
+		lineWritten(t, s, f, Submission{Text: "/hello", By: link})
+		f.TurnStarted("")
+		skillRefused(t, s, f, "c-1")
+		f.TurnEnded("done", Usage{})
+		lineWritten(t, s, f, Submission{Text: "and now this", By: op})
+		f.TurnStarted("")
+		skillRefused(t, s, f, "c-2")
+		f.TurnEnded("done", Usage{})
+		lineWritten(t, s, f, Submission{Text: "use the hello skill", By: op})
+		f.TurnStarted("")
+		skillAsked(t, s, f, "c-3")
+	})
+	t.Run("no longer followed", func(t *testing.T) {
+		s, f := skillChat(t)
+		link, _ := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
+		var refs []string
+		for range maxUnconfirmedKept + 1 {
+			refs = append(refs, lineWritten(t, s, f, Submission{Text: "/hello", By: link}))
+			inFlightUnconfirmed(t, s)
+		}
+		s.mu.Lock()
+		p := s.way.Load()
+		first, last := p.othersOnTheirWay[refs[0]], p.othersOnTheirWay[refs[len(refs)-1]]
+		s.mu.Unlock()
+		if first != otherOnceMore || last != otherOnItsWay {
+			t.Fatalf("the first line %d, the last %d", first, last)
+		}
+	})
 }

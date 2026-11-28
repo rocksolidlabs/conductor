@@ -1240,3 +1240,50 @@ func TestClaudeReadsCommands(t *testing.T) {
 		}
 	})
 }
+
+// unnamedRecorder is a recorder that also takes an acknowledgement by no
+// name, as the session does.
+type unnamedRecorder struct{ *recorder }
+
+func (u unnamedRecorder) AcceptedUnnamed(ref string) {
+	u.add(event{kind: "accepted_unnamed", ref: ref})
+}
+
+// A replay that names no message is told to a session that takes it as
+// taken by no name, the oldest written; one that names its message is told
+// as named.
+func TestClaudeReplayByNoNameSaysSo(t *testing.T) {
+	in := &discard{}
+	pr, pw := io.Pipe()
+	c := NewClaude(in, pr, ClaudeOptions{})
+	rec := unnamedRecorder{&recorder{}}
+	done := make(chan error, 1)
+	go func() { done <- c.Read(context.Background(), rec) }()
+	for _, ref := range []string{"a", "b"} {
+		if err := c.Send(context.Background(), session.Message{Ref: ref, Text: ref}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs := written(t, in)
+	line := func(uuid string) string {
+		m := map[string]any{"type": "user", "isReplay": true, "session_id": "s", "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": "x"}}
+		if uuid != "" {
+			m["uuid"] = uuid
+		}
+		b, _ := json.Marshal(m)
+		return string(b) + "\n"
+	}
+	for _, l := range []string{line(msgs[1]["uuid"].(string)), line("")} {
+		if _, err := io.WriteString(pw, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pw.Close()
+	if err := <-done; !errors.Is(err, io.EOF) {
+		t.Fatalf("Read: %v", err)
+	}
+	named, unnamed := rec.kinds("accepted"), rec.kinds("accepted_unnamed")
+	if len(named) != 1 || named[0].ref != "b" || len(unnamed) != 1 || unnamed[0].ref != "a" {
+		t.Fatalf("named %+v, by no name %+v", named, unnamed)
+	}
+}

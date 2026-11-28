@@ -998,7 +998,11 @@ func (c *Claude) replay(uuid string, content json.RawMessage, e session.Protocol
 		}
 	}
 	c.mu.Unlock()
-	if found {
+	switch u, unnamed := e.(interface{ AcceptedUnnamed(string) }); {
+	case found && uuid == "" && unnamed:
+		// Taken for the oldest written: the session is told it named none.
+		u.AcceptedUnnamed(ref)
+	case found:
 		e.Accepted(ref)
 	}
 	c.startTurn(e)
