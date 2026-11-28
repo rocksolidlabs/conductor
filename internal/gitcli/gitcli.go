@@ -1,9 +1,9 @@
 // Package gitcli runs the git binary for the server and conductor host: the
 // working directory's status with each file's added and removed lines, a
 // file at a revision, and the helper the crew engine's worktrees use. Every
-// git Conductor runs goes through Run (run.go): argv arrays in the C
-// locale, nothing a shell string, and no program the repository's own
-// configuration names. go-git (the round 12 decision) is for what it does
+// git Conductor runs goes through Run (run.go), or Alone (alone.go) for a
+// new project's first commit: argv arrays in the C locale, nothing a shell
+// string, and no program the repository's own configuration names. go-git (the round 12 decision) is for what it does
 // without hashing the working tree, the log and a commit's diffs; status
 // stays here.
 package gitcli

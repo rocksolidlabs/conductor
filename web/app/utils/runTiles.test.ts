@@ -1,7 +1,26 @@
+import { SHARES_MAX } from './wall'
 import { describe, expect, it } from 'vitest'
-import { ACTIVITY_AT_FIRST, RUN_TILES_CREWS, RUN_TILES_KEY, choiceFor, choose, crewOfRun, crewsForDoc, largeOf, parseRunTiles, readRunTiles, takeKept, withShares, writeRunTiles } from './runTiles'
+import { ACTIVITY_AT_FIRST, CREW, MEMBER, RUN_TILES_CREWS, RUN_TILES_KEY, choiceFor, choose, crewOfRun, crewsForDoc, largeOf, parseRunTiles, readRunTiles, takeKept, withShares, writeRunTiles } from './runTiles'
 
 describe('the run tiles record', () => {
+  it('never keeps nor sends what the layout document refuses: a member out of its pattern, an axis past the bound, a 31st crew', () => {
+    const r = choose(parseRunTiles(null), 'refunds', { layout: 'large', activity: false })
+    expect(choose(r, 'refunds', { large: 'Not A Member!' }).crews[0]!.large).toBeUndefined()
+    expect(choose(r, 'refunds', { large: 'core' }).crews[0]!.large).toBe('core')
+    const thirteen = Array.from({ length: SHARES_MAX + 1 }, () => 1)
+    expect(withShares(choiceFor(r, 'refunds'), 'columns', 'cols', thirteen)).toEqual({})
+    expect(withShares(choiceFor(r, 'refunds'), 'columns', 'cols', thirteen.slice(1))).toHaveProperty('sizes.columns.cols')
+    // A record that holds them anyway (an older page's) sends none of them.
+    const held = [
+      { crew: 'refunds', layout: 'columns' as const, activity: false, large: 'Bad Name', sizes: { columns: { cols: thirteen } } },
+      ...Array.from({ length: RUN_TILES_CREWS }, (_, i) => ({ crew: `crew-${i}`, layout: 'grid' as const, activity: false })),
+    ]
+    const sent = crewsForDoc(held)
+    expect(sent).toHaveLength(RUN_TILES_CREWS)
+    expect(sent[0]).toEqual({ crew: 'refunds', layout: 'columns', activity: false })
+    expect(CREW.test('refunds') && !CREW.test('Bad Id') && MEMBER.test('core') && !MEMBER.test('../x')).toBe(true)
+  })
+
   it("takes the server's last choice up, and a crew with a choice of its own keeps it", () => {
     const own = choose(parseRunTiles(null), 'refunds', { layout: 'large', activity: false })
     const lost = { ...own, last: { layout: 'grid' as const, activity: false } }

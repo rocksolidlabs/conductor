@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { DAILY, atRest, budget, expect, git, openMore, standingRoute, test, useTheme, type Api } from './fixtures'
+import { DAILY, atRest, budget, expect, git, logged, openMore, standingRoute, test, useTheme, type Api } from './fixtures'
+import { makeComparison } from './compare-helpers'
 import { noSideways, probeColour } from './layout'
 
 // New agent trial, the form on Crews (CP1, docs/plans/compare-crew.md, "The template", where it is called New comparison): it opens on
@@ -262,34 +263,49 @@ test('a press whose first problem is under More options opens it and puts the cu
   await dialog.locator('[data-compare-cancel]').click()
 })
 
-test("a folder agents may not use is marked as it is picked and holds the button; a new project's folder says nothing", async ({ page, state }) => {
+test("a folder agents may not use, and a repository with no commit, are marked as they are picked and hold the button; a new folder says nothing", async ({ page, state }) => {
   test.setTimeout(120_000)
-  // A folder outside the server's allowed root, and a new project inside it: a repository with no commit yet.
+  // A folder outside the server's allowed root; inside it a repository with no commit (refused: Conductor makes the first commit in a
+  // new folder alone) and a new folder.
   const outside = mkdtempSync(join(tmpdir(), 'e2e-trial-outside-'))
+  const started = mkdtempSync(join(state.root, 'e2e-trial-started-'))
+  git(started, 'init', '--quiet')
   const fresh = mkdtempSync(join(state.root, 'e2e-trial-new-'))
-  git(fresh, 'init', '--quiet')
   try {
     await page.setViewportSize(DAILY)
     await page.goto('/crews')
     const { dialog, form } = await openForm(page)
-    const folder = form.locator('[data-compare-cwd]').getByRole('combobox')
-    const checked = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === outside)
-    await folder.fill(outside)
-    await folder.press('Tab')
-    expect((await checked).status()).toBe(400)
+    const field = form.locator('[data-compare-cwd]')
+    const folder = field.getByRole('combobox')
+    const save = dialog.locator('[data-compare-create]')
+    /** Picks dir and waits for the server's answer and for the form to have applied it (its mark names the folder). */
+    const pick = async (dir: string, status: number) => {
+      const checked = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === dir)
+      await folder.fill(dir)
+      await folder.press('Tab')
+      expect((await checked).status()).toBe(status)
+      await expect(field).toHaveAttribute('data-folder-checked', dir)
+    }
+    await pick(outside, 400)
     await expect(folder).toHaveAttribute('aria-invalid', 'true')
-    await expect(dialog.locator('[data-compare-create]')).toBeDisabled()
-    // A new project: the server's answer comes and the form says nothing of it.
-    const again = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === fresh)
-    await folder.fill(fresh)
-    await folder.press('Tab')
-    expect((await again).status()).toBe(200)
+    await expect(save).toBeDisabled()
+    // A repository with no commit: the press would be refused, and the form says so under Folder in the server's sentence.
+    await pick(started, 200)
+    await expect(dialog).toContainText('This folder has no commit yet. Make its first commit yourself, then launch.')
+    await expect(folder).toHaveAttribute('aria-invalid', 'true')
+    await expect(save).toBeDisabled()
+    // A new folder: its first commit is the press's to make, and the form says nothing of it.
+    await pick(fresh, 200)
     await expect(folder).not.toHaveAttribute('aria-invalid', 'true')
-    await expect(dialog.locator('[data-compare-create]')).toBeEnabled()
-    for (const words of ['No commits', 'Not a git repository', 'first commit']) await expect(dialog).not.toContainText(words)
+    await expect(save).toBeEnabled()
+    for (const words of ['no commit', 'Not a git repository', 'first commit']) await expect(dialog).not.toContainText(words)
     await dialog.locator('[data-compare-cancel]').click()
+    // The checks made nothing in either.
+    expect(existsSync(join(fresh, '.git'))).toBe(false)
+    expect(git(started, 'rev-list', '--all', '--count').trim()).toBe('0')
   } finally {
     rmSync(outside, { recursive: true, force: true })
+    rmSync(started, { recursive: true, force: true })
     rmSync(fresh, { recursive: true, force: true })
   }
 })
@@ -372,5 +388,43 @@ test("New agent trial comes back as the last saved trial left it: its agents, fo
     await expect(form.locator('[data-trial-agent-args]'), step).toHaveCount(0)
     await dialog.locator('[data-compare-cancel]').click()
     await expect(dialog).toHaveCount(0)
+  }
+})
+
+test('an agent trial starts in a new project: the folder gets its first commit, the form shows no word of it, and the run says so', async ({ page, api, state }) => {
+  test.setTimeout(240_000)
+  // A new project: a folder with a file and no repository yet.
+  const fresh = mkdtempSync(join(state.root, 'e2e-trial-new-'))
+  writeFileSync(join(fresh, 'README.md'), '# new shop\n')
+  await page.setViewportSize(DESK)
+  await page.goto('/crews')
+  const { dialog, form } = await openForm(page)
+  const field = form.locator('[data-compare-cwd]')
+  const folder = field.getByRole('combobox')
+  const checked = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === fresh)
+  await folder.fill(fresh)
+  await folder.press('Tab')
+  const answer = await checked
+  expect(answer.status()).toBe(200)
+  // The server's own verdict is that this folder is a new project, and the form has applied that answer (its mark names the folder)
+  // before the form is read: a read made before then would pass on any page.
+  expect((await answer.json()).message).toBe("no commit yet: the operator's launch makes the folder's first commit")
+  await expect(field).toHaveAttribute('data-folder-checked', fresh)
+  await expect(folder).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(dialog.locator('[data-compare-create]')).toBeEnabled()
+  for (const words of ['commit', 'repository', 'git', 'Launch would be refused']) await expect(dialog).not.toContainText(words)
+  await dialog.locator('[data-compare-cancel]').click()
+  // The checks of the form made nothing there.
+  expect(existsSync(join(fresh, '.git'))).toBe(false)
+
+  // Saved, proposed on its ticket, approved and launched as a person does: the proposal makes the first commit, the launch starts.
+  const trial = await makeComparison(page, api, { cwd: fresh, checks: [{ id: 'unit', argv: ['true'] }], candidates: [{ agentId: 'worker' }, { agentId: 'worker-cli' }] })
+  made.push(trial.crewId)
+  try {
+    expect(git(fresh, 'log', '--format=%s', '-1').trim()).toBe('First commit, made by Conductor so that agents could each work on a copy of this folder')
+    expect(git(fresh, 'ls-tree', '-r', '--name-only', 'HEAD').trim()).toBe('README.md')
+    await expect.poll(async () => logged(await api.run(trial.runId), `started from the first commit Conductor made in ${fresh}`), { timeout: 30_000 }).toBe(true)
+  } finally {
+    await api.stopRun(trial.runId)
   }
 })

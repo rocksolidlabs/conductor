@@ -903,6 +903,11 @@ func TestCrewLaunchRefusals(t *testing.T) {
 	resp, out := e.do("POST", "/api/crews/nope/launch", adminToken, nil)
 	wantAPIError(t, "unknown crew", resp, out, http.StatusNotFound, "not_found", "")
 
+	home := filepath.Join(e.root, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
 	save := func(name string, change func(b map[string]any)) string {
 		b := e.runCrewBody("none")
 		b["name"] = name
@@ -917,7 +922,9 @@ func TestCrewLaunchRefusals(t *testing.T) {
 		{"no members", save("Empty", func(b map[string]any) { b["members"] = []any{} }), http.StatusBadRequest, "invalid_crew", "no members"},
 		{"on a host", save("Hosted", func(b map[string]any) { b["where"] = "host" }), http.StatusBadRequest, "invalid_crew", "host"},
 		{"arguments to cat", save("Cats", func(b map[string]any) { crewMember(b, 1)["agentId"] = "cat" }), http.StatusBadRequest, "invalid_crew", "arguments"},
-		{"worktrees without a repository", save("Trees", func(b map[string]any) { b["isolation"] = "worktree" }), http.StatusConflict, "not_a_repo", "git"},
+		// A folder with no repository is given its first commit by the operator's launch (firstcommit_test.go), unless it is the home
+		// folder, which Conductor never commits.
+		{"worktrees in the home folder without a repository", save("Trees", func(b map[string]any) { b["isolation"] = "worktree"; b["cwd"] = home }), http.StatusConflict, "not_a_repo", "home folder"},
 		{"a cwd outside the roots", save("Outside", func(b map[string]any) { b["cwd"] = t.TempDir() }), http.StatusBadRequest, "invalid_cwd", "allowed roots"},
 	}
 	hidden := save("Hidden", func(b map[string]any) {
@@ -939,6 +946,9 @@ func TestCrewLaunchRefusals(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Join(e.root, ".conductor")); len(entries) != 0 {
 		t.Fatalf("made %v", entries)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a repository was made in the home folder: %v", err)
 	}
 	if _, out := e.do("GET", "/api/runs", adminToken, nil); len(out["runs"].([]any)) != 0 {
 		t.Fatalf("runs %v", out)

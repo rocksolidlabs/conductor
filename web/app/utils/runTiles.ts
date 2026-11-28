@@ -30,9 +30,9 @@ export interface RunTilesRecord {
 }
 
 /** A crew id as the server writes it (a crew's file name). */
-const CREW = /^[a-z0-9][a-z0-9-]{0,63}$/
+export const CREW = /^[a-z0-9][a-z0-9-]{0,63}$/
 /** A member's name, as a crew's manifest takes it. */
-const MEMBER = /^[a-z0-9][a-z0-9._-]{0,39}$/
+export const MEMBER = /^[a-z0-9][a-z0-9._-]{0,39}$/
 
 export const FIRST_CHOICE: RunTilesChoice = { layout: 'grid', activity: ACTIVITY_AT_FIRST }
 
@@ -102,10 +102,12 @@ function fractions(shares: readonly number[]): number[] {
 
 /**
  * The crews' choices as the layout document keeps them (R73): the shares of each crew's own layout alone, made fractions, so thirty
- * crews of twelve members stay inside the document's bound. The other layouts' sizes stay in this page's storage.
+ * crews of twelve members stay inside the document's bound. The other layouts' sizes stay in this page's storage. Read through
+ * crewsOf first, so the document never carries what the server refuses: a crew past RUN_TILES_CREWS, a crew id or a member's name
+ * out of its pattern, an axis of fewer than 2 or more than SHARES_MAX shares.
  */
 export function crewsForDoc(crews: RunTilesRecord['crews']): RunTilesRecord['crews'] {
-  return crews.map((c) => {
+  return crewsOf(crews).map((c) => {
     const { sizes: all, ...rest } = c
     const s: WallShares | undefined = all?.[c.layout]
     if (!s || (!s.cols && !s.rows)) return rest
@@ -137,7 +139,9 @@ export function choiceFor(record: RunTilesRecord, crew: string): RunTilesChoice 
 
 /** The record after the person changed the crew's choice: the crew moves to the front, and the oldest past RUN_TILES_CREWS goes. */
 export function choose(record: RunTilesRecord, crew: string, change: Partial<RunTilesChoice>): RunTilesRecord {
-  const next = onlyChoice({ ...choiceFor(record, crew), ...change })
+  // A member drawn large is a member's name; one that is not changes nothing.
+  const { large, ...rest } = change
+  const next = onlyChoice({ ...choiceFor(record, crew), ...rest, ...(large !== undefined && MEMBER.test(large) ? { large } : {}) })
   if (!CREW.test(crew)) return { ...record, last: next }
   const crews = [{ crew, ...next }, ...record.crews.filter((e) => e.crew !== crew)].slice(0, RUN_TILES_CREWS)
   return { last: next, crews }
@@ -145,6 +149,8 @@ export function choose(record: RunTilesRecord, crew: string, change: Partial<Run
 
 /** The change that sets one axis of one layout's tracks to `shares` (a drag of a gap), the layout's other axis kept. */
 export function withShares(choice: RunTilesChoice, layout: RunLayout, axis: 'cols' | 'rows', shares: number[]): Partial<RunTilesChoice> {
+  // An axis of more tracks than a size is kept for has no gap to drag (RunWall); a call with one changes nothing.
+  if (shares.length < 2 || shares.length > SHARES_MAX) return {}
   return { sizes: { ...choice.sizes, [layout]: { ...choice.sizes?.[layout], [axis]: shares.map((s) => +s.toFixed(4)) } } }
 }
 

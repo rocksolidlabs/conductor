@@ -259,7 +259,7 @@ The design system's rules (`docs/design/system.md`) say what holds, and
   a turn runs and you may stop it), then Send. Send's tooltip says Enter sends
   and Shift+Enter makes a new line; the standing help lines under the box are
   gone. Only while the line begins with / does one line say what happens to
-  it: "Sent as plain text. To run a command, use the Terminal." The
+  it: "Sent as plain text. To run a command, switch to Terminal." The
   placeholder reads "Message <agent>". The box takes the cursor as the chat
   opens and after a send, when nothing else has it and no question waits for
   its number keys; Escape leaves it. A line you typed for one agent is there
