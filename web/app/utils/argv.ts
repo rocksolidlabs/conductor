@@ -2,13 +2,16 @@ import { shellQuote } from './hostCommand'
 
 // One argument per match: a double-quoted group, a single-quoted group, or a
 // run of non-space characters. A quote only opens a group at the start of an
-// argument, so it's and --x="a are plain characters.
-const argToken = () => /"([^"]*)"|'([^']*)'|(\S+)/g
+// argument, so it's and --x="a are plain characters. What follows a closing
+// quote up to the next white space is part of the same argument, as a shell
+// reads it: "a b"c is the one argument a bc, "a b" c is two. A backslash is
+// never special.
+const argToken = () => /"([^"]*)"(\S*)|'([^']*)'(\S*)|(\S+)/g
 
 /** Minimal shell-like splitting: whitespace separated, quotes group. Nothing is expanded. */
 export function splitArgs(s: string): string[] {
   const out: string[] = []
-  for (const m of s.matchAll(argToken())) out.push(m[1] ?? m[2] ?? m[3] ?? '')
+  for (const m of s.matchAll(argToken())) out.push(m[1] !== undefined ? m[1] + m[2] : m[3] !== undefined ? m[3] + m[4] : (m[5] ?? ''))
   return out
 }
 
@@ -34,7 +37,7 @@ export function argsText(args: readonly string[]): string {
 export function hasOpenQuote(s: string): boolean {
   for (const m of s.matchAll(argToken())) {
     // Only the bare-word branch can start with a quote, and only when no closing quote follows.
-    if (m[3] !== undefined && (m[3].startsWith('"') || m[3].startsWith("'"))) return true
+    if (m[5] !== undefined && (m[5].startsWith('"') || m[5].startsWith("'"))) return true
   }
   return false
 }

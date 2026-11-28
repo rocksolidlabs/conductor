@@ -259,8 +259,17 @@ test('a press whose first problem is under More options opens it and puts the cu
   await folder.press('Tab')
   const more = await openMore(form)
   await more.locator('[data-compare-agent-args="0"]').fill('--model "opus')
+  // Closing the fold moves neither Save trial nor Cancel: a press made as it closes lands on the button it was aimed at. Measured
+  // at rest (AGENTS.md), before and after the fold's own animation.
+  const save = dialog.locator('[data-compare-create]')
+  await atRest(dialog)
+  const before = (await save.boundingBox())!
   await form.locator('[data-more-options]').click()
   await expect(form.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'false')
+  await expect(more).toBeHidden()
+  await atRest(dialog)
+  const after = (await save.boundingBox())!
+  expect(Math.abs(after.y - before.y), 'Save trial stays where it was').toBeLessThanOrEqual(0.5)
   await dialog.locator('[data-compare-create]').click()
   await expect(form.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'true')
   await expect(more.locator('[data-compare-agent-args="0"]')).toBeFocused()

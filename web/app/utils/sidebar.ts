@@ -3,6 +3,7 @@ import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import type { EventMark, EventType, RouteRow } from './events'
 import { joinedPath, type JoinedEntry } from './joined'
 import type { AttentionKind, AttentionOption } from './protocol'
+import { attentionWords } from './attention'
 import { questionOf } from './reply'
 import { askedWhere } from './decisions'
 import type { NeedsItem } from './needsYou'
@@ -308,7 +309,7 @@ export function sessionRow(s: SessionInfo): SessionRow {
   const state = rowState(s)
   const row: SessionRow = { kind: 'session', id: s.id, session: s, state }
   if (s.kind === 'hosted') row.machine = s.hostName || UNNAMED_HOST
-  if (state === 'needs') row.prompt = { message: s.attention?.message || 'Waiting for input', options: s.attention?.options ?? [], kind: s.attention?.kind, since: s.attention?.since, question: questionOf(s.attention) }
+  if (state === 'needs') row.prompt = { message: attentionWords(s.attention) || 'Waiting for input', options: s.attention?.options ?? [], kind: s.attention?.kind, since: s.attention?.since, question: questionOf(s.attention) }
   if (state === 'exited') row.exitWord = s.status === 'host_disconnected' ? 'host away' : s.status === 'exited' && s.exitCode !== undefined ? `exit ${s.exitCode}` : s.status
   return row
 }
@@ -651,7 +652,7 @@ function railSquare(row: SessionRow, marks: Readonly<Record<string, EventMark>>,
   const s = row.session
   const status = sessionStatus(s, now)
   const parts = [s.name, status.word]
-  if (row.state === 'needs' && s.attention?.message) parts.push(s.attention.message)
+  if (row.state === 'needs' && attentionWords(s.attention)) parts.push(attentionWords(s.attention))
   if (row.machine) parts.push(`on ${row.machine}`)
   const mark = marks[s.id]
   // A finished turn's event is counted below, but not named while the status says finished: the status's word says it.

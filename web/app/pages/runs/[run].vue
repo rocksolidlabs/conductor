@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
+import { attentionWords } from '~/utils/attention'
 import { scopeItems } from '~/utils/chat'
 import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopRunPageQuestion, type Action } from '~/utils/actions'
@@ -542,7 +543,7 @@ palette.registerPage(() => {
       return {
         key: `page:member:${t.name}`,
         label: t.name,
-        detail: s ? s.attention?.message || `${s.agentId} · ${s.status}` : pending ? `${m.start.when === 'manual' ? 'waiting for a hand' : 'waiting to start'}${offer === 'start' ? ' · Enter starts it' : ''}` : (m?.error ?? m?.status ?? ''),
+        detail: s ? attentionWords(s.attention) || `${s.agentId} · ${s.status}` : pending ? `${m.start.when === 'manual' ? 'waiting for a hand' : 'waiting to start'}${offer === 'start' ? ' · Enter starts it' : ''}` : (m?.error ?? m?.status ?? ''),
         agentId: m?.agentId ?? s?.agentId,
         state,
         status: mark,

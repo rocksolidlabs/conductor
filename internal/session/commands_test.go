@@ -368,3 +368,35 @@ func TestCommandsWithdrawnWhenTheStandingChanges(t *testing.T) {
 // fromCode is the character of code point n, built from its number so that
 // no character a person cannot see sits in the source as itself.
 func fromCode(n rune) string { return string(n) }
+
+func TestAConversationTakenUpAgainSaysTheAgentForgot(t *testing.T) {
+	s, _ := commandsChat(t, Options{})
+	const a, b = "0d9b7c2e-1f3a-4b5c-8d6e-7f8091a2b3c4", "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f70819"
+	s.ReportAgentSession(a, PolicyLatest, true)
+	for _, e := range allEntries(t, s) {
+		if e.Code == noticeCleared {
+			t.Fatalf("the first conversation is no clear: %+v", e)
+		}
+	}
+	// The same conversation again: nothing.
+	s.ReportAgentSession(a, PolicyLatest, true)
+	// Another one in its place (the agent's /clear): one notice, in its words.
+	s.ReportAgentSession(b, PolicyLatest, false)
+	if e := lastEntry(t, s); e.Kind != EntryNotice || e.Code != noticeCleared || e.Words != ClearedWords {
+		t.Fatalf("last entry %+v, want the cleared notice", e)
+	}
+	n := 0
+	for _, e := range allEntries(t, s) {
+		if e.Code == noticeCleared {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d cleared notices, want 1", n)
+	}
+	// An id the lowest policy does not take changes nothing.
+	s.ReportAgentSession("ffffffff-ffff-4fff-bfff-ffffffffffff", PolicyLowest, false)
+	if e := lastEntry(t, s); e.Words != ClearedWords {
+		t.Fatalf("last entry %+v after an id not taken", e)
+	}
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { answerDigit, choiceKey } from '~/utils/attention'
+import { answerDigit, attentionWords, choiceKey } from '~/utils/attention'
 import { pillGoes } from '~/utils/needsCursor'
 import { pillWords } from '~/utils/needsYou'
 import { replyFailure } from '~/utils/reply'
@@ -154,7 +154,7 @@ watch(
           <span class="flex-none text-[11px] text-muted tabular-nums" data-pill-count>{{ countWords }}</span>
           <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted" data-mono="key"><UKbd value="enter" size="sm" /> open <UKbd value="escape" size="sm" /></span>
         </div>
-        <p class="break-words text-xs text-muted" data-pill-message>{{ prompt?.message || session.attention?.message || 'needs you' }}</p>
+        <p class="break-words text-xs text-muted" data-pill-message>{{ prompt?.message || attentionWords(session.attention) || 'needs you' }}</p>
         <div v-if="prompt?.choices.length" class="mt-1.5 flex flex-wrap gap-1">
           <UButton
             v-for="(o, i) in prompt.choices"

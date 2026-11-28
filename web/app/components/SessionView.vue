@@ -651,7 +651,7 @@ async function refreshLinks() {
 
 async function signal(state: 'needs_input' | 'working' | 'clear') {
   try {
-    await api.setAttention(id.value, state, state === 'needs_input' ? 'Marked by a person.' : undefined)
+    await api.setAttention(id.value, state, undefined)
   } catch (e) {
     toast.add({ title: 'Signal failed', description: (e as Error).message, color: 'error' })
   }

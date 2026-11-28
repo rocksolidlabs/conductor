@@ -9,16 +9,27 @@ export function waitsForTerminal(a: Pick<Attention, 'state' | 'source'> | undefi
   return a?.state === 'needs_input' && a.source === 'submit'
 }
 
-/** A person's own mark (Mark as Needs you, posted with the workbench's token): no question of the agent's. */
-export function markedByPerson(a: Pick<Attention, 'state' | 'source'> | undefined): boolean {
-  return a?.state === 'needs_input' && a.source === 'admin'
+/** What the card says for a person's own mark, in place of a question's words. */
+export const MARKED_BY_PERSON = 'Marked by a person.'
+
+/**
+ * A person's own mark (More's Mark as Needs you, the palette's row: posted with the workbench's token and no words of its own): no
+ * question to answer. A mark that carries words is a question, whatever its source, and keeps `<agent> asks:` before them.
+ */
+export function markedByPerson(a: Pick<Attention, 'state' | 'source' | 'message'> | undefined): boolean {
+  return a?.state === 'needs_input' && a.source === 'admin' && !a.message
 }
 
 /**
  * The heading a question's card shows for a session that needs input: the terminal's for a held turn, `<agent> needs you` for a
  * person's own mark, else `<agent> asks`, before the agent's own question.
  */
-export function waitingHeading(a: Pick<Attention, 'state' | 'source'> | undefined, agentName: string): string {
+/** The words a waiting session shows: its question's, or, for a person's own mark (which carries none), `Marked by a person.` */
+export function attentionWords(a: Pick<Attention, 'state' | 'source' | 'message'> | undefined): string {
+  return markedByPerson(a) ? MARKED_BY_PERSON : (a?.message ?? '')
+}
+
+export function waitingHeading(a: Pick<Attention, 'state' | 'source' | 'message'> | undefined, agentName: string): string {
   if (waitsForTerminal(a)) return 'Type in the terminal to go on'
   return markedByPerson(a) ? `${agentName} needs you` : `${agentName} asks`
 }
