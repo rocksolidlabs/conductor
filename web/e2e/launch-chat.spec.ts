@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import { budget, dayPage, expect, test, type Session } from './fixtures'
@@ -188,6 +188,8 @@ test('a launch as Chat starts in its terminal, says it moves, and is a chat afte
 })
 
 test('Run as comes back as the agent was last launched, is not kept by a cancel, is not offered without a chat, and Terminal keeps it', async ({ browser }) => {
+  // The server keeps each agent's Run as (its record of the last launch): the test starts from none, never from the last test's launch.
+  rmSync(join(own.root, 'data', 'launch', 'last.json'), { force: true })
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
   try {
     // A side pressed and the dialog cancelled is not kept.
