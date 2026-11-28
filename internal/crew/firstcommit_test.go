@@ -480,7 +480,7 @@ func saysIt(msg, words string) bool {
 }
 
 // The judgement gives the same answer whatever words a git prints for a
-// .git it does not read: this machine's git, a newer one's (2.56: "gitfile
+// .git it does not read: an older git's, a newer one's (2.56: "gitfile
 // does not point to a valid repository"), and words no git has printed
 // yet. A .git file or link is refused in the sentence, a .git folder in
 // git's own refusal, nothing named .git with words that are not "not a
@@ -488,7 +488,7 @@ func saysIt(msg, words string) bool {
 // .git here make a new folder. Nothing is made either way.
 func TestTheJudgementDoesNotDependOnGitsWords(t *testing.T) {
 	wordings := map[string]string{
-		"this machine's for a .git file": "fatal: not a git repository: /nowhere/at/all",
+		"an older git's for a .git file": "fatal: not a git repository: /nowhere/at/all",
 		"no repository anywhere":         "fatal: not a git repository (or any of the parent directories): .git",
 		"a newer git's for a .git file":  "fatal: gitfile does not point to a valid repository: /x/.git",
 		"words no git has printed yet":   "fatal: the repository could not be opened",
