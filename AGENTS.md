@@ -88,13 +88,42 @@ and moves the board for them.
 - Open a draft PR at the first commit, and tick the template's checklist.
   `Fixes #N` finishes the issue; `Part of #N` leaves it open. Say in the PR
   body which agent or person made it, with a session link when there is one.
+- **Every pull request gets a Codex adversarial review before it is
+  opened, and again at its final head before it is marked ready**: a
+  second model questioning the design, not only the lines. The draft at
+  the first commit is opened once that commit has had its review. The
+  review comes from the Codex plugin for Claude Code
+  (`openai/codex-plugin-cc`). A person types
+  `/codex:adversarial-review --base origin/main <focus>`; an agent cannot
+  invoke that command and runs the same review through the plugin's
+  script, from the worktree under review, with the plugin's root read from
+  `~/.claude/plugins/installed_plugins.json`:
+
+  ```bash
+  node "<root>/scripts/codex-companion.mjs" adversarial-review --wait \
+    --base origin/main "<focus: the risks this change touches>"
+  ```
+
+  It reads committed work only: commit first, and review again what is
+  committed after it. A large bundle is reviewed in passes, each with a
+  focus of its own. A finding is a claim: check it in the code, then fix
+  it or say why not, and list the findings and their answers under
+  Verification (a security finding goes to a draft advisory instead,
+  below). When the review cannot run (no sign-in, or no capacity on a
+  second try), the pull request is not opened, or stays a draft, and a
+  maintainer is told at once: no other review stands in for it, and no
+  pull request is marked ready with this review listed as not run. A
+  maintainer runs it for a contributor's pull request. (2026-11-27: a
+  bundle of some eighty parts was marked ready with the review listed as
+  not run.)
 - Keep the Project board current: an issue goes on it when it is filed
   (Backlog, or Ready), moves to In progress when its branch is cut and to
   In review when its PR is pushed; Done follows the merge by itself. New
   issues do not land on the board on their own.
 - Before every push run the checks for each affected surface
   (`docs/checks.md`). Report a check that did not run as not run, never as
-  passed. Mark the PR ready when it is complete and green.
+  passed. Mark the PR ready when it is complete and green, and its Codex
+  review at that head is answered (above).
 - Answer every review comment: fix it, or reply why not, then resolve the
   thread. A maintainer merges. Merged is done, and GitHub closes the issue.
 - Blocked or handing off: push, leave one PR comment saying what is left,
