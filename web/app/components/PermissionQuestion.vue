@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { markHidden, markWhole } from '~/utils/hiddenMarks'
-import { messageBytes, plainWords, shownInput, summaryLine, type ShownInput } from '~/utils/permissionInput'
+import { messageBytes, plainWords, shownInput, SKILL_GRANT, summaryLine, type ShownInput } from '~/utils/permissionInput'
 import type { PermissionAnswer, TranscriptEntry } from '~/utils/protocol'
 import { ReplyError } from '~/utils/reply'
 import { MAX_PERMISSION_MESSAGE } from '~/utils/protocol'
@@ -231,6 +231,7 @@ async function send(choice: 'allow_once' | 'deny') {
     <!-- The input's end: Allow once waits until this, and the mark before its first row, have been in view. -->
     <span ref="inputEnd" class="-mt-2.5 block h-px" aria-hidden="true" data-permission-input-end />
 
+    <p v-if="entry.plain === 'skill' && open" class="text-xs text-default" data-permission-skill-grant>{{ SKILL_GRANT }}</p>
     <p v-if="hidden" class="text-xs font-medium text-default" data-permission-hidden>This call holds characters that are not shown as typed.</p>
     <p v-if="readError && (open || opened)" class="text-xs text-muted" data-permission-unread>{{ readError }}</p>
     <p v-else-if="input && !input.exact && open" class="text-xs text-muted" data-permission-inexact>Conductor cannot show this call exactly.</p>

@@ -242,9 +242,15 @@ type protocolWay struct {
 	turnEnds  uint64
 	asked     map[string]bool
 	resulted  map[string]bool
-	showing   string
-	under     Attention
-	aside     []asideChange
+	// turnLines counts the lines written to the agent since the last turn
+	// ended, and turnOthers those of them that were not the operator's own
+	// (operatorLine): a skill call is the operator's only in a turn of lines
+	// all theirs (skillRefusedLocked).
+	turnLines  int
+	turnOthers int
+	showing    string
+	under      Attention
+	aside      []asideChange
 
 	// commands is the agent's own commands (commands.go): kept with the
 	// chat, gone with it, sent to the operator's own chat connections alone.
@@ -546,6 +552,12 @@ func (s *Local) sendNext(p *protocolWay) bool {
 	// move between the ways begins while the message's credential is
 	// taken and it is sent.
 	p.sending, p.inflight = true, q
+	// Counted for the turn it is written into before it is written: one
+	// whose write fails may have reached the agent.
+	p.turnLines++
+	if !operatorLine(q.sub) {
+		p.turnOthers++
+	}
 	d := p.driver
 	s.mu.Unlock()
 	// The sender's credential, taken and asked as the terminal's writer
@@ -1303,6 +1315,7 @@ func (s *Local) endTurnLocked(p *protocolWay, outcome string, u Usage, out *appl
 	p.turnEnds++
 	clear(p.asked)
 	clear(p.resulted)
+	p.turnLines, p.turnOthers = 0, 0
 	p.announceLocked()
 	d := s.now().Sub(p.turnAt).Milliseconds()
 	if d < 0 {
@@ -1748,12 +1761,22 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 		why = TooManyRequestsWords
 	default:
 		call, why = s.bindInStreamLocked(p, r.Call, r.Tool, digest)
+		if why == "" && s.skillRefusedLocked(p, r.Tool) {
+			why = SkillOwnLineWords
+		}
 		if why == "" && walked != "" {
 			why = walked
 		}
 		if why == "" && s.flooredLocked(r.Tool, r.Input) {
 			why = FloorWords
 		}
+	}
+	if why == SkillOwnLineWords {
+		// Refused, nothing put to anyone and no entry: the agent told why.
+		out.replies = append(out.replies, verdictReply{d: p.driver, ref: r.Ref, v: Verdict{Message: why}})
+		s.mu.Unlock()
+		s.sendApplied(out)
+		return
 	}
 	if why != "" {
 		entry.State, entry.Why = PermissionDenied, why
@@ -1954,6 +1977,9 @@ func canonicalJSON(input []byte) []byte {
 
 // plainOf is the closed set of a request's plain words by its tool.
 func plainOf(tool string) string {
+	if skillTool(tool) {
+		return "skill"
+	}
 	switch strings.ToLower(tool) {
 	case "bash", "shell", "exec", "command", "commandexecution", "execute":
 		return "command"

@@ -13,13 +13,21 @@ export function plainWords(plain: string | undefined): string {
       return 'Change a file?'
     case 'read':
       return 'Read a file?'
+    case 'skill':
+      return 'Run a skill?'
   }
   return 'Use a tool?'
 }
 
+/** What an Allow of a skill grants, said once on its question. */
+export const SKILL_GRANT = 'A skill can run the tools its own file allows without asking again.'
+
+
 /** The plain words of a tool by its name, as the session computes `plain` (session.plainOf). */
-export function plainOfTool(tool: string): 'command' | 'file' | 'read' | 'tool' {
+export function plainOfTool(tool: string): 'command' | 'file' | 'read' | 'skill' | 'tool' {
   switch (tool.toLowerCase()) {
+    case 'skill':
+      return 'skill'
     case 'bash':
     case 'shell':
     case 'exec':
@@ -344,7 +352,12 @@ function rowsOf(text: string): number {
   return text.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(Array.from(l).length / SHORT_ROW_CHARS)), 0)
 }
 
-const LINE_KEYS: Record<string, string[]> = { command: ['command', 'cmd'], file: ['file_path', 'notebook_path', 'path'], read: ['file_path', 'notebook_path', 'path', 'pattern'] }
+const LINE_KEYS: Record<string, string[]> = {
+  command: ['command', 'cmd'],
+  file: ['file_path', 'notebook_path', 'path'],
+  read: ['file_path', 'notebook_path', 'path', 'pattern'],
+  skill: ['skill'],
+}
 
 /** The request's input as the question shows it, from its bytes (the entry's `input` part, whole) and its entry. */
 export function shownInput(entry: Pick<TranscriptEntry, 'tool' | 'plain' | 'inputSha256'> & Partial<Pick<TranscriptEntry, 'cwd'>>, bytes: Uint8Array): ShownInput {

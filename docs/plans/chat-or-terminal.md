@@ -1061,6 +1061,23 @@ is `PermissionWithdrawn`.
    program does with an operator's `@` of a file under the deny list is
    read and stated by row 12 before it is built (Row 12, Read and stated
    before).
+   **A skill the agent runs on its own.** A call of the agent's own
+   skill tool (Claude Code's `Skill`, by which the model runs a folder's
+   command or a skill; Codex and the Agent Client Protocol have none:
+   their skills are files the agent reads, its reads and commands asked
+   as any other) is refused, with no question and no entry, in a turn
+   that is not the operator's own: "Folder commands and skills run only
+   from the operator's own line." A turn is the operator's own when at
+   least one line was written to the agent since the last turn ended and
+   every one of them was sent on the operator's own connection (the one
+   that answers the chat's questions), relaying nobody; a link's line, a
+   relayed one, and every line Conductor writes itself (a first message,
+   a crew's, Brakeman's, a run's) are not. What the model does next is
+   asked as any call. In the operator's own turn the call is asked as
+   "Run a skill?", its line the skill's name, saying once that a skill
+   can run the tools its own file allows without asking again; like
+   every question it offers Allow once and Deny alone. The operator's
+   own typed `/command` (row 12) and a Yolo chat are as before.
 3. **The bound.** At most `MaxPendingPermissions` (8) open or waiting
    per session; past it, denied "Too many requests are waiting; this one
    was denied."

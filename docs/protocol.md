@@ -9669,7 +9669,8 @@ A request taken is a `permission` entry (`state: "open"`, its `question`,
 `["allow_once","deny"]`; its whole input a part) and the session's
 question: while any is open the attention shows the oldest, `needs_input`
 of source `protocol` and kind `permission`, its message the plain words
-alone (`Run a command?`, `Change a file?`, `Read a file?`, `Use a tool?`),
+alone (`Run a command?`, `Change a file?`, `Read a file?`, `Run a skill?`,
+`Use a tool?`; `plain` is `command`, `file`, `read`, `skill` or `tool`),
 with no quick replies; no other report replaces or withdraws it (a
 question asked meanwhile is shown once none is open, under the id its ask
 was answered with; one withdrawn meanwhile goes). A router is told of it
@@ -9682,6 +9683,16 @@ its input as compact JSON, every run of white space one space, cut to
 1 KiB with `…` at its end when cut; the whole input is its part. An
 in-stream request whose input is past 256 KiB is denied `This call's
 input is too large for Conductor to show it whole.`.
+
+A call of the agent's own skill tool (Claude Code's `Skill`; Codex and
+the Agent Client Protocol have none) is refused, with no question and no
+entry, the agent told `Folder commands and skills run only from the
+operator's own line.`, in a turn that is not the operator's own: one in
+which no line was written to the agent since the last turn ended, or one
+was not sent on the operator's own connection (a link's, a relayed one,
+one Conductor wrote itself). In the operator's own turn it is asked as any
+call, `plain` `skill`; the page says under it `A skill can run the tools
+its own file allows without asking again.`
 
 The operator alone answers it, with `permission_answer` on the session's
 socket. Who answered is recorded first (the question's result, the

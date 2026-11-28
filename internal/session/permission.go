@@ -45,7 +45,10 @@ const (
 
 // The words of the permission request (the plan's, design 13).
 const (
-	FloorWords              = "Conductor keeps agents out of its own files."
+	FloorWords = "Conductor keeps agents out of its own files."
+	// SkillOwnLineWords is the refusal of a skill call in a turn that is
+	// not the operator's own.
+	SkillOwnLineWords       = "Folder commands and skills run only from the operator's own line."
 	NobodyAnsweredWords     = "Nobody answered in time."
 	NotACallWords           = "Not a call this session is making."
 	AlreadyAskedWords       = "Already asked."
@@ -284,6 +287,13 @@ func (s *Local) RequestPermission(ctx context.Context, a PermissionAsk, reply fu
 
 	var out applied
 	out.event = "permission"
+	if s.skillRefusedLocked(p, a.Tool) {
+		// A skill in a turn not all the operator's: refused, nothing put
+		// to anyone and no entry, the agent told why.
+		s.mu.Unlock()
+		deny(SkillOwnLineWords)
+		return
+	}
 	entry := s.permissionEntryLocked(p, ref, a.Tool, a.Input, digest, "")
 	if s.flooredLocked(a.Tool, a.Input) {
 		// Conductor's own files: denied before any question.
@@ -458,9 +468,37 @@ func (s *Local) listedLocked(p *protocolWay, r *openPermission) bool {
 	return false
 }
 
+// skillTools are the agents' own tools by which the model runs a folder's
+// command or a skill (Claude Code's Skill). Codex and the Agent Client
+// Protocol have none: their skills are files the agent reads, its reads
+// and commands asked as any other.
+var skillTools = []string{"skill"}
+
+// skillTool says tool is one of skillTools.
+func skillTool(tool string) bool { return slices.Contains(skillTools, strings.ToLower(tool)) }
+
+// operatorLine says a line was the operator's own: sent on the operator's
+// own connection (operatorAnswers: the one that answers the chat's
+// questions), relaying nobody. A line Conductor wrote itself (a first
+// message, a crew's, Brakeman's, a run's), a link's, and one relayed are
+// not; nor is one whose sender is not known.
+func operatorLine(sub Submission) bool {
+	return sub.From == nil && sub.By != nil && operatorAnswers(sub.By)
+}
+
+// skillRefusedLocked says a call of tool is refused without a question: a
+// skill tool's, in a turn that is not the operator's own, which is a turn
+// with at least one line written since the last turn ended and every one
+// of them the operator's own (operatorLine). The caller holds s.mu.
+func (s *Local) skillRefusedLocked(p *protocolWay, tool string) bool {
+	return skillTool(tool) && (p.turnLines == 0 || p.turnOthers > 0)
+}
+
 // permissionWords is the question's plain words, by its tool's.
 func permissionWords(plain string) string {
 	switch plain {
+	case "skill":
+		return "Run a skill?"
 	case "command":
 		return "Run a command?"
 	case "file":

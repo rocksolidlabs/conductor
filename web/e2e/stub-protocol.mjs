@@ -41,8 +41,8 @@
 //                cannot see), padded (a command whose end lies 40 empty lines down, a description beside it), nbsp (a command
 //                of 800 no-break spaces before its last word), described (a short command with its description, as every real
 //                Bash call has), seven (a command of six lines), edit or bigedit (an Edit of a deep path, its change small or
-//                twenty lines long) or withdraw (short, its request given up once <conversation>.withdraw exists, as a cancelled call
-//                ends its POST). Allowed, the step runs (its output "ran: <command's first line>") and <conversation>.allowed
+//                twenty lines long), skill (a call of the Skill tool for the folder's command hello, as the model makes one) or
+//                withdraw (short, its request given up once <conversation>.withdraw exists, as a cancelled call ends its POST). Allowed, the step runs (its output "ran: <command's first line>") and <conversation>.allowed
 //                is written; denied, the step fails and the answer's message is written to <conversation>.denied.
 //   "question"   a report and a question through Conductor's own tools, as an agent calls them (mcp__conductor__report with a
 //                progress, then mcp__conductor__ask "Shall I go on?"): each a step announced in the stream, the question put to the
@@ -149,6 +149,7 @@ const deepPath = () => join(process.cwd(), 'src', 'services', 'accounts', 'inter
 /** The tool and input of a call to ask about: a Bash command, or an Edit (`edit`: a small change; `bigedit`: a long one). */
 function askCall(kind) {
   if (kind === 'edit') return { tool: 'Edit', input: { file_path: deepPath(), old_string: 'alpha', new_string: 'alpha and beta' } }
+  if (kind === 'skill') return { tool: 'Skill', input: { skill: 'hello' } }
   if (kind === 'bigedit') return { tool: 'Edit', input: { file_path: deepPath(), old_string: 'alpha', new_string: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n') } }
   return { tool: 'Bash', input: askInput(kind) }
 }
@@ -176,7 +177,7 @@ async function ask(kind) {
     // the request went: the documented deny
   }
   watching = false
-  const first = (input.command ?? input.file_path).split('\n')[0]
+  const first = (input.command ?? input.file_path ?? input.skill).split('\n')[0]
   if (answer.behavior === 'allow') {
     if (existsSync(kept)) writeFileSync(keptFile('allowed'), `${call}\n`)
     toolResult(call, `ran: ${first}`, false, { stdout: `ran: ${first}`, stderr: '', interrupted: false, isImage: false })
@@ -224,7 +225,7 @@ async function steps(text) {
     const lines = [...old.map((l) => ` ${l}`), '+gamma']
     toolResult(call, 'The file was edited.', false, { type: 'update', filePath: path, structuredPatch: [{ oldStart: 1, oldLines: old.length, newStart: 1, newLines: old.length + 1, lines }] })
   }
-  const m = /\bask (short|long|hidden|withdraw|padded|nbsp|described|seven|edit|bigedit)\b/.exec(text)
+  const m = /\bask (short|long|hidden|withdraw|padded|nbsp|described|seven|edit|bigedit|skill)\b/.exec(text)
   if (m) await ask(m[1])
   if (/\bhold\b/.test(text) && existsSync(kept)) {
     writeFileSync(keptFile('held'), 'held\n')
