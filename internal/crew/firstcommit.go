@@ -267,33 +267,51 @@ func readFolderState(ctx context.Context, g gitAt) (st State, refusal, err error
 // ctx's, or a *headError.
 func judgeFolder(ctx context.Context, g gitAt, lstat func(name string) (fs.FileInfo, error), path string) (st State, newFolder bool, refusal, err error) {
 	st, refusal, err = readFolderState(ctx, g)
+	return judged(st, refusal, err, lstat, path)
+}
+
+// judged is judgeFolder on git's answer (readFolderState's st, refusal and
+// err), so that the answer is the same whatever words a git prints:
+//
+//   - A commit to branch from, or git's own failure: as git answered.
+//   - Anything named .git in the folder, looked at by lstat whatever git
+//     said: a file or a link is refused in the sentence; a folder git read
+//     as a repository with no commit (by git's exit status alone), in the
+//     sentence; a folder git does not read keeps git's own refusal.
+//   - Nothing named .git: a repository above with no commit (by exit
+//     status) is refused in the sentence; any other refusal of git's is
+//     kept. The one place git's words count is classifyRevParse's "not a
+//     git repository", the only answer that lets a folder be a new one: a
+//     git that says so in other words is refused in its own words, never
+//     taken for a new folder.
+func judged(st State, refusal, err error, lstat func(name string) (fs.FileInfo, error), path string) (State, bool, error, error) {
 	if err != nil || refusal == nil {
 		return st, false, refusal, err
 	}
-	switch refusal {
-	case errNotInRepo:
-		fi, err := lstat(".git")
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-		case err != nil:
-			return st, false, &repoError{"the folder's .git cannot be looked at: " + err.Error()}, nil
-		case fi.IsDir():
-			// A .git folder git does not read as a repository: git's own
-			// refusal, and Conductor makes nothing over it.
-			return st, false, errNotInRepo, nil
-		default:
-			return st, false, errMakeItYourself, nil
-		}
-		if why := notCommittedIn(path); why != nil {
-			return st, false, why, nil
-		}
-		return st, true, nil, nil
-	case errNoCommit:
+	fi, lerr := lstat(".git")
+	switch {
+	case lerr == nil && fi.IsDir() && refusal == errNoCommit:
 		// A repository with no commit, whatever it holds: Conductor writes
 		// in no .git it did not make.
 		return st, false, errMakeItYourself, nil
+	case lerr == nil && fi.IsDir():
+		// A .git folder git does not read as a repository: git's own
+		// refusal, and Conductor makes nothing over it.
+		return st, false, refusal, nil
+	case lerr == nil:
+		return st, false, errMakeItYourself, nil
+	case !errors.Is(lerr, fs.ErrNotExist):
+		return st, false, &repoError{"the folder's .git cannot be looked at: " + lerr.Error()}, nil
+	case refusal == errNoCommit:
+		// Below the top of a repository with no commit.
+		return st, false, errMakeItYourself, nil
+	case refusal != errNotInRepo:
+		return st, false, refusal, nil
 	}
-	return st, false, refusal, nil
+	if why := notCommittedIn(path); why != nil {
+		return st, false, why, nil
+	}
+	return st, true, nil, nil
 }
 
 // notCommittedIn is why Conductor makes no first commit in dir by itself:

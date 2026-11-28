@@ -296,7 +296,7 @@ func TestAGitThatIsNoRepositoryIsRefusedAndLeftAsItWas(t *testing.T) {
 			gitOf(t, dir, "add", "a.txt")
 			personCommits(t, dir, "mine")
 			writeFile(t, filepath.Join(dir, ".git", "HEAD"), "")
-		}, errNotInRepo.Error()},
+		}, gitsOwn},
 		{"a .git folder with no refs/", func(t *testing.T, dir, _ string) {
 			gitOf(t, dir, "init", "-q")
 			writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
@@ -306,7 +306,7 @@ func TestAGitThatIsNoRepositoryIsRefusedAndLeftAsItWas(t *testing.T) {
 			if err := os.RemoveAll(filepath.Join(dir, ".git", "refs")); err != nil {
 				t.Fatal(err)
 			}
-		}, errNotInRepo.Error()},
+		}, gitsOwn},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -314,11 +314,16 @@ func TestAGitThatIsNoRepositoryIsRefusedAndLeftAsItWas(t *testing.T) {
 			elsewhere := t.TempDir()
 			writeFile(t, filepath.Join(dir, "mine.txt"), "m\n")
 			c.make(t, dir, elsewhere)
+			judged := dir
 			before, target := folderListing(t, dir), folderListing(t, elsewhere)
-			if st, err := GitState(t.Context(), dir); err != nil || st.Message != c.words {
+			st, err := GitState(t.Context(), judged)
+			if err != nil || !saysIt(st.Message, c.words) {
 				t.Fatalf("the folder's check: %+v %v", st, err)
 			}
-			refused(t, in, c.words)
+			fc, err := EnsureFirstCommit(t.Context(), in)
+			if !errors.Is(err, ErrNotRepo) || fc.Made || !saysIt(err.Error(), c.words) {
+				t.Fatalf("the press: %+v %v", fc, err)
+			}
 			if after := folderListing(t, dir); after != before {
 				t.Fatalf("the folder changed:\n%s\nwas\n%s", after, before)
 			}
@@ -457,6 +462,89 @@ func TestLaunchOptionsRefuseAFirstCommitForAnyoneElse(t *testing.T) {
 	}
 	if err := (LaunchOpts{FirstCommit: first}).check(); err != nil {
 		t.Fatalf("the operator's: %v", err)
+	}
+}
+
+// gitsOwn stands for git's own refusal, in whatever words the installed
+// git uses (saysIt): what a .git folder git does not read is refused with.
+const gitsOwn = "git's own refusal"
+
+// saysIt reports whether msg is the refusal words names: the sentence word
+// for word, or, for gitsOwn, a refusal of git's in any of its wordings
+// (errNotInRepo, or git's own line after classifyRevParse's start).
+func saysIt(msg, words string) bool {
+	if words != gitsOwn {
+		return msg == words
+	}
+	return msg == errNotInRepo.Error() || strings.HasPrefix(msg, "git cannot use the working directory's repository: ")
+}
+
+// The judgement gives the same answer whatever words a git prints for a
+// .git it does not read: this machine's git, a newer one's (2.56: "gitfile
+// does not point to a valid repository"), and words no git has printed
+// yet. A .git file or link is refused in the sentence, a .git folder in
+// git's own refusal, nothing named .git with words that are not "not a
+// git repository" in those words; only those words with nothing named
+// .git here make a new folder. Nothing is made either way.
+func TestTheJudgementDoesNotDependOnGitsWords(t *testing.T) {
+	wordings := map[string]string{
+		"this machine's for a .git file": "fatal: not a git repository: /nowhere/at/all",
+		"no repository anywhere":         "fatal: not a git repository (or any of the parent directories): .git",
+		"a newer git's for a .git file":  "fatal: gitfile does not point to a valid repository: /x/.git",
+		"words no git has printed yet":   "fatal: the repository could not be opened",
+	}
+	kinds := []string{"a .git file", "a .git link", "a .git folder git does not read", "nothing named .git"}
+	for wname, words := range wordings {
+		for _, kind := range kinds {
+			t.Run(wname+", "+kind, func(t *testing.T) {
+				top := t.TempDir()
+				dir := filepath.Join(top, "app")
+				if err := os.Mkdir(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				switch kind {
+				case "a .git file":
+					writeFile(t, filepath.Join(dir, ".git"), "gitdir: /nowhere\n")
+				case "a .git link":
+					if err := os.Symlink(t.TempDir(), filepath.Join(dir, ".git")); err != nil {
+						t.Fatal(err)
+					}
+				case "a .git folder git does not read":
+					if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				root, err := os.OpenRoot(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer root.Close()
+				before := folderListing(t, top)
+				refusal := classifyRevParse(fmt.Errorf("git rev-parse: %s", words))
+				_, isNew, why, err := judged(State{}, refusal, nil, root.Lstat, dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				knownWords := strings.Contains(words, "not a git repository")
+				switch {
+				case kind == "nothing named .git" && knownWords:
+					if !isNew || why != nil {
+						t.Fatalf("a new folder is judged %v %v", isNew, why)
+					}
+				case isNew || why == nil:
+					t.Fatalf("judged a new folder")
+				case kind == "a .git file" || kind == "a .git link":
+					if why.Error() != msgMakeItYourself {
+						t.Fatalf("refused in other words: %v", why)
+					}
+				case !saysIt(why.Error(), gitsOwn):
+					t.Fatalf("not git's own refusal: %v", why)
+				}
+				if after := folderListing(t, top); after != before {
+					t.Fatalf("the folder changed:\n%s", after)
+				}
+			})
+		}
 	}
 }
 
