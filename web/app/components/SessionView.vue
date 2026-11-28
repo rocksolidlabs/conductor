@@ -951,13 +951,15 @@ palette.registerPage(() => {
               <span :id="nameHint" hidden>Show the whole name</span>
               <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
-              <WaySwitch v-if="sm && ready" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" @held="showHeld" />
+              <WaySwitch v-if="sm" :class="!ready && 'invisible'" :inert="!ready || undefined" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" @held="showHeld" />
             </div>
             <span v-if="headline" class="truncate font-mono text-[11.5px] text-muted" :title="headline.title" data-session-meta>{{ headline.line }}</span>
           </div>
         </template>
         <template #right>
-          <template v-if="!gone && ready">
+          <!-- Drawn from the start, so the bar and the terminal under it keep their layout, but inert and unseen until the session's
+               first read has answered and allowed it (UX3 R72): a cold load's head offers no control that acts on a session not read. -->
+          <div v-if="!gone" class="contents" :class="!ready && 'invisible'" :inert="!ready || undefined" data-session-controls>
             <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" compact class="hidden md:inline-flex" />
             <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
             <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. Below sm Files, Share and
@@ -973,7 +975,7 @@ palette.registerPage(() => {
             <UDropdownMenu :items="menu">
               <IconButton icon="i-lucide-ellipsis" color="neutral" variant="outline" label="More" data-more-button />
             </UDropdownMenu>
-          </template>
+          </div>
           <div class="hidden sm:flex"><FullscreenButton /></div>
         </template>
       </UDashboardNavbar>
